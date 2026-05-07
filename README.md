@@ -1,0 +1,1 @@
+# lenta_tech_life_2026
