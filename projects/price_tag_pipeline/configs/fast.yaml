@@ -1,0 +1,36 @@
+runtime:
+  profile_name: fast
+  output_jsonl: null
+  log_every_n_frames: 60
+
+detector:
+  model_path: yolo11n.pt
+  conf: 0.30
+  iou: 0.50
+  device: null
+  classes: [0]
+  tracker_yaml: ultralytics/cfg/trackers/bytetrack.yaml
+
+rectifier:
+  padding_ratio: 0.04
+  clahe_clip_limit: 2.0
+  clahe_tile_grid_size: 8
+  rotate_vertical_tags: true
+
+ocr:
+  backend: noop
+  min_frames_between_ocr_per_track: 8
+  min_sharpness: 45.0
+  min_crop_area_px: 1800
+  min_detection_confidence: 0.40
+
+parser:
+  decimal_preferred: true
+  min_price: 0.01
+  max_price: 99999.99
+
+aggregation:
+  min_observations_per_track: 2
+  min_final_confidence: 0.55
+  track_ttl_frames: 45
+
