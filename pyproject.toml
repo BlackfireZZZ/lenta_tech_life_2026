@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["data", "runs", "outputs", "wandb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",  # line length handled by formatter
+    "B008",  # function calls in argument defaults — fine for argparse defaults
+    "SIM108", # ternary vs if/else — prefer readable
+]
+
+[tool.ruff.lint.per-file-ignores]
+"projects/price_tag_pipeline/tests/*" = ["E402"]
+"projects/price_tag_pipeline/scripts/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["projects/price_tag_pipeline/tests"]
+addopts = "-q"

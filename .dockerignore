@@ -1,0 +1,26 @@
+.git
+.github
+.idea
+.vscode
+.venv
+.venv-lenta
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Don't ship dataset or weights into the image — mount them at runtime.
+data/raw/videos/*
+data/raw/frames/*
+data/raw/annotations/*
+data/processed/*
+data/checkpoints/**/*.pt
+data/checkpoints/**/*.pth
+data/checkpoints/**/*.onnx
+data/checkpoints/**/*.safetensors
+runs/
+outputs/
+wandb/
