@@ -1,39 +1,53 @@
 # lenta_tech_life_2026
 
-Production-ready starter for automatic price tag recognition from robot video.
+End-to-end price-tag recognition for the Lenta Tech Life 2026 hackathon
+(Russian retail chain; price-tag detection + structured field extraction
+from robot-captured video).
 
-## Included now
+## Documents
 
-- Modular price-tag pipeline in `projects/price_tag_pipeline`
-- YOLO-based detection/tracking integration point
-- OCR stage abstraction (`noop`, `tesseract`, `paddle`)
-- Price parser with currency/unit normalization
-- Track-level voting and confidence aggregation
-- Runtime profiles: `fast`, `balanced`, `hq`
-- Unit tests for parser and aggregation core
+- `ANALYSIS.md` — analysis of the original scaffold (what worked, what didn't, why we rewrote).
+- `STRATEGY.md` — model-selection and pipeline strategy (RF-DETR / YOLO26 / PaddleOCR-VL / BoT-SORT).
+- `data/README.md` — exactly where data goes when it arrives.
+- `projects/price_tag_pipeline/README.md` — pipeline usage and CLI reference.
+
+## Pipeline at a glance
+
+```
+video.mp4
+  └─► YOLO26 / RF-DETR detector (1280 input, BoT-SORT tracker)
+        └─► Per-track top-K-sharpest crop buffer
+              └─► PaddleOCR-VL 1.5 with JSON-schema prompt
+                    └─► Per-field weighted voting (fuzzy buckets for prices)
+                          └─► Cross-track IoU + content dedup
+                                └─► outputs/{video}.jsonl
+```
 
 ## Quick start
 
 ```bash
-python projects/price_tag_pipeline/scripts/run_price_tag_pipeline.py \
-  --video /absolute/path/to/video.mp4 \
-  --config projects/price_tag_pipeline/configs/balanced.yaml \
-  --output /absolute/path/to/out.jsonl
+# 1. Install (Python 3.11 or 3.12 recommended; 3.14 is too new for some deps).
+pip install -r projects/price_tag_pipeline/requirements.txt
+
+# 2. Drop data under data/raw/ (see data/README.md).
+
+# 3. Prepare + split + train + infer.
+python projects/price_tag_pipeline/scripts/prepare_data.py     --raw data/raw --processed data/processed
+python projects/price_tag_pipeline/scripts/make_splits.py      --processed data/processed --out data/splits --n_splits 5 --emit-dataset-yaml-fold 0
+python projects/price_tag_pipeline/scripts/train_detector_yolo.py --dataset data/processed/dataset.yaml --model yolo26l.pt --imgsz 1280 --batch 8 --epochs 200
+python projects/price_tag_pipeline/scripts/run_inference.py    --video path/to/video.mp4 --config projects/price_tag_pipeline/configs/balanced.yaml --output outputs/video01.jsonl
 ```
 
-## Project structure
+## Tests
 
-```text
-projects/price_tag_pipeline/
-  configs/
-  scripts/
-  src/price_tag_pipeline/
-  tests/
+```bash
+pip install -r projects/price_tag_pipeline/requirements/dev.txt
+pytest projects/price_tag_pipeline/tests -v
 ```
 
-## Next milestones
+## Status
 
-1. Train detector on real shelf footage.
-2. Enable PaddleOCR backend for production runs.
-3. Add CI checks and benchmark suite (FPS/latency/quality).
-4. Add fallback server OCR for low-confidence tracks.
+- Pre-data scaffold is complete. Drop data into `data/raw/` and the pipeline above is
+  copy-pasteable.
+- RF-DETR detector backend and PaddleOCR-VL LoRA fine-tuning are scaffolded as
+  stubs; both land once data is available (see STRATEGY.md §§2.1, 3.3).
