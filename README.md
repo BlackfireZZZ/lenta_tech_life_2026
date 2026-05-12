@@ -32,7 +32,15 @@ pip install -r projects/price_tag_pipeline/requirements.txt
 
 # 2. Drop data under data/raw/ (see data/README.md).
 
-# 3. Prepare + split + train + infer.
+# 3A. Zero-shot baseline (no labels, no training).
+python projects/price_tag_pipeline/scripts/run_batch_inference.py \
+    --videos-dir data/raw/videos \
+    --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
+    --outputs-dir outputs/jsonl
+python projects/price_tag_pipeline/scripts/export_hack_csv.py \
+    --inputs outputs/jsonl --out-csv submission/hack_submission.csv
+
+# 3B. Trainable path (if labels are available): prepare + split + train + infer.
 python projects/price_tag_pipeline/scripts/prepare_data.py     --raw data/raw --processed data/processed
 python projects/price_tag_pipeline/scripts/make_splits.py      --processed data/processed --out data/splits --n_splits 5 --emit-dataset-yaml-fold 0
 python projects/price_tag_pipeline/scripts/train_detector_yolo.py --dataset data/processed/dataset.yaml --model yolo26l.pt --imgsz 1280 --batch 8 --epochs 200

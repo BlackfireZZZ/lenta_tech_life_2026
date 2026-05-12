@@ -16,6 +16,7 @@ projects/price_tag_pipeline/
 │   ├── fast.yaml                  #   small detector, classical OCR
 │   ├── balanced.yaml              #   default
 │   └── hq.yaml                    #   larger detector + PaddleOCR-VL
+│   └── zeroshot_nolabel.yaml      #   no-label zero-shot baseline (YOLO-World)
 ├── requirements/                  # split installs
 │   ├── base.txt                   #   inference only
 │   ├── ocr.txt                    #   adds PaddleOCR / VLM
@@ -106,7 +107,7 @@ python projects/price_tag_pipeline/scripts/eval_e2e.py \
 # 9. Batch inference for all videos + hackathon CSV export.
 python projects/price_tag_pipeline/scripts/run_batch_inference.py \
     --videos-dir data/raw/videos \
-    --config projects/price_tag_pipeline/configs/balanced.yaml \
+    --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
     --outputs-dir outputs/jsonl
 
 python projects/price_tag_pipeline/scripts/export_hack_csv.py \
@@ -119,6 +120,7 @@ python projects/price_tag_pipeline/scripts/export_hack_csv.py \
 - `fast.yaml`   — small model, classical PaddleOCR, low TTL. Use for quick smoke runs.
 - `balanced.yaml` — production default; classical PaddleOCR + BoT-SORT.
 - `hq.yaml`     — larger detector + PaddleOCR-VL 1.5 VLM. Best quality, slowest.
+- `zeroshot_nolabel.yaml` — no training/labels required (YOLO-World + OCR baseline).
 
 All three point at `data/checkpoints/detector/best.pt` by default. Override
 `detector.model_path` in the YAML or drop your checkpoint there.

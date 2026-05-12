@@ -1,6 +1,7 @@
 # ML Baseline (GPU) — Google Colab Runbook
 
-Этот гайд покрывает только ML-часть: подготовка данных, обучение, инференс, экспорт CSV под формат кейса, локальная оценка метрики.
+Этот гайд покрывает только ML-часть: инференс, экспорт CSV под формат кейса, локальная оценка метрики.
+Базовый путь ниже не требует разметки и обучения (zero-shot).
 
 ## 1. Создать Colab с GPU
 
@@ -38,54 +39,16 @@
 
 Если есть обучающая разметка, положите ее в `data/raw/annotations/` и при необходимости `data/raw/metadata.csv`.
 
-## 5. Обучить baseline-детектор (если есть разметка)
-
-```bash
-!python projects/price_tag_pipeline/scripts/prepare_data.py \
-  --raw data/raw \
-  --processed data/processed
-
-!python projects/price_tag_pipeline/scripts/make_splits.py \
-  --processed data/processed \
-  --metadata data/raw/metadata.csv \
-  --out data/splits \
-  --n_splits 5 \
-  --emit-dataset-yaml-fold 0
-
-!python projects/price_tag_pipeline/scripts/train_detector_yolo.py \
-  --dataset data/processed/dataset.yaml \
-  --model yolo26l.pt \
-  --epochs 120 \
-  --imgsz 1280 \
-  --batch 8 \
-  --device 0 \
-  --name yolo26l_fold0_baseline
-```
-
-Скопировать лучший вес в дефолтный путь инференса:
-
-```bash
-!cp runs/lenta/yolo26l_fold0_baseline/weights/best.pt data/checkpoints/detector/best.pt
-```
-
-Оценка детектора:
-
-```bash
-!python projects/price_tag_pipeline/scripts/eval_detector.py \
-  --weights data/checkpoints/detector/best.pt \
-  --dataset data/processed/dataset.yaml
-```
-
-## 6. Batch inference по видео
+## 5. Batch inference по видео (zero-shot, без разметки)
 
 ```bash
 !python projects/price_tag_pipeline/scripts/run_batch_inference.py \
   --videos-dir data/raw/videos \
-  --config projects/price_tag_pipeline/configs/balanced.yaml \
+  --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
   --outputs-dir outputs/jsonl
 ```
 
-## 7. Экспорт в CSV формата задания
+## 6. Экспорт в CSV формата задания
 
 ```bash
 !python projects/price_tag_pipeline/scripts/export_hack_csv.py \
@@ -96,7 +59,7 @@
 
 Итоговый файл: `submission/hack_submission.csv`.
 
-## 8. Оценка end-to-end (если у вас есть GT CSV)
+## 7. Оценка end-to-end (если у вас есть GT CSV)
 
 ```bash
 !python projects/price_tag_pipeline/scripts/eval_hack_csv.py \
@@ -106,10 +69,21 @@
   --tag-pass-threshold 0.8
 ```
 
-## 9. Скачать артефакты из Colab
+## 8. Скачать артефакты из Colab
 
 ```bash
 !zip -r artifacts.zip submission outputs/jsonl runs/lenta
 ```
 
 После этого скачайте `artifacts.zip` из файлов Colab.
+
+## 9. Опционально: усилить OCR (если есть VRAM)
+
+Если на Colab A100 и хотите лучше качество текста, переключитесь на VLM-профиль:
+
+```bash
+!python projects/price_tag_pipeline/scripts/run_batch_inference.py \
+  --videos-dir data/raw/videos \
+  --config projects/price_tag_pipeline/configs/hq_glm_ocr.yaml \
+  --outputs-dir outputs/jsonl
+```

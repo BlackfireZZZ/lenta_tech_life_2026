@@ -84,6 +84,15 @@ class YOLOTrackerDetector(BaseDetector):
 
         self._YOLO = YOLO
         self.model = YOLO(self.cfg.model_path)
+        if self.cfg.open_vocab_labels:
+            if hasattr(self.model, "set_classes"):
+                self.model.set_classes(list(self.cfg.open_vocab_labels))
+                LOGGER.info("Open-vocabulary labels set: %s", ", ".join(self.cfg.open_vocab_labels))
+            else:
+                LOGGER.warning(
+                    "Detector does not expose set_classes(); open_vocab_labels ignored: %s",
+                    self.cfg.open_vocab_labels,
+                )
 
     def stream_video(
         self,
@@ -107,40 +116,129 @@ class YOLOTrackerDetector(BaseDetector):
         if self.cfg.classes is not None:
             track_kwargs["classes"] = self.cfg.classes
 
-        results = self.model.track(**track_kwargs)
+        try:
+            results = self.model.track(**track_kwargs)
+            for frame_idx, result in enumerate(results):
+                frame = result.orig_img  # do not copy — downstream rectifier copies its slice
+                boxes = getattr(result, "boxes", None)
+                names = getattr(result, "names", {}) or {}
 
-        for frame_idx, result in enumerate(results):
-            frame = result.orig_img  # do not copy — downstream rectifier copies its slice
+                if boxes is None or len(boxes) == 0:
+                    yield frame, []
+                    continue
+
+                ids = getattr(boxes, "id", None)
+                xyxy = boxes.xyxy
+                confs = boxes.conf
+                classes = boxes.cls
+
+                detections: list[Detection] = []
+                for i in range(len(boxes)):
+                    x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
+                    conf = float(confs[i].item()) if confs is not None else 1.0
+                    cls_id = int(classes[i].item()) if classes is not None else 0
+                    track_id = int(ids[i].item()) if ids is not None else None
+                    detections.append(
+                        Detection(
+                            frame_idx=frame_idx,
+                            timestamp_s=frame_idx / fps,
+                            bbox_xyxy=(x1, y1, x2, y2),
+                            confidence=conf,
+                            class_id=cls_id,
+                            class_name=str(names.get(cls_id, cls_id)),
+                            track_id=track_id,
+                        )
+                    )
+                yield frame, detections
+            return
+        except Exception as exc:
+            LOGGER.warning(
+                "model.track() failed (%s). Falling back to predict()+lightweight IoU tracker.",
+                exc,
+            )
+
+        yield from self._stream_with_predict_fallback(video_path=video_path, fps=fps)
+
+    def _stream_with_predict_fallback(
+        self,
+        video_path: str,
+        fps: float,
+    ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+
+        next_tid = 1
+        # [tid, bbox, last_seen_frame]
+        tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
+        max_age = 15
+        iou_gate = 0.3
+
+        frame_idx = -1
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_idx += 1
+
+            pred = self.model.predict(
+                source=frame,
+                conf=self.cfg.conf,
+                iou=self.cfg.iou,
+                device=self.cfg.device,
+                verbose=False,
+                imgsz=self.cfg.image_size,
+            )
+            result = pred[0]
             boxes = getattr(result, "boxes", None)
             names = getattr(result, "names", {}) or {}
-
-            if boxes is None or len(boxes) == 0:
-                yield frame, []
-                continue
-
-            ids = getattr(boxes, "id", None)
-            xyxy = boxes.xyxy
-            confs = boxes.conf
-            classes = boxes.cls
-
             detections: list[Detection] = []
-            for i in range(len(boxes)):
-                x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
-                conf = float(confs[i].item()) if confs is not None else 1.0
-                cls_id = int(classes[i].item()) if classes is not None else 0
-                track_id = int(ids[i].item()) if ids is not None else None
-                detections.append(
-                    Detection(
-                        frame_idx=frame_idx,
-                        timestamp_s=frame_idx / fps,
-                        bbox_xyxy=(x1, y1, x2, y2),
-                        confidence=conf,
-                        class_id=cls_id,
-                        class_name=str(names.get(cls_id, cls_id)),
-                        track_id=track_id,
+            if boxes is not None and len(boxes) > 0:
+                xyxy = boxes.xyxy
+                confs = boxes.conf
+                classes = boxes.cls
+                assigned: set[int] = set()
+                for i in range(len(boxes)):
+                    x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
+                    bbox = (x1, y1, x2, y2)
+                    conf = float(confs[i].item()) if confs is not None else 1.0
+                    cls_id = int(classes[i].item()) if classes is not None else 0
+
+                    best_j = -1
+                    best_iou = 0.0
+                    for j, (tid, tb, last_seen) in enumerate(tracks):
+                        if frame_idx - last_seen > max_age or j in assigned:
+                            continue
+                        iou = _bbox_iou(bbox, tb)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_j = j
+                    if best_j >= 0 and best_iou >= iou_gate:
+                        tid, _, _ = tracks[best_j]
+                        tracks[best_j] = (tid, bbox, frame_idx)
+                        assigned.add(best_j)
+                        track_id = tid
+                    else:
+                        track_id = next_tid
+                        next_tid += 1
+                        tracks.append((track_id, bbox, frame_idx))
+                        assigned.add(len(tracks) - 1)
+
+                    detections.append(
+                        Detection(
+                            frame_idx=frame_idx,
+                            timestamp_s=frame_idx / fps,
+                            bbox_xyxy=bbox,
+                            confidence=conf,
+                            class_id=cls_id,
+                            class_name=str(names.get(cls_id, cls_id)),
+                            track_id=track_id,
+                        )
                     )
-                )
+            tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
             yield frame, detections
+
+        cap.release()
 
 
 # ---------------------------------------------------------------------------
@@ -179,8 +277,21 @@ class RFDETRDetector(BaseDetector):
 
 def build_detector(cfg: DetectorConfig) -> BaseDetector:
     backend = cfg.backend.lower().strip()
-    if backend in {"yolo", "ultralytics", "yolo11", "yolo26"}:
+    if backend in {"yolo", "ultralytics", "yolo11", "yolo26", "yolo_world", "yolo-world"}:
         return YOLOTrackerDetector(cfg)
     if backend in {"rfdetr", "rf-detr", "rf_detr"}:
         return RFDETRDetector(cfg)
     raise ValueError(f"Unsupported detector backend: {cfg.backend}")
+
+
+def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    iw = max(0, min(ax2, bx2) - max(ax1, bx1))
+    ih = max(0, min(ay2, by2) - max(ay1, by1))
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    return inter / max(1, area_a + area_b - inter)

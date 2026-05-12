@@ -32,6 +32,7 @@ class DetectorConfig:
     device: Optional[str]
     classes: Optional[list[int]]  # None = use all classes the model exposes
     tracker_yaml: str
+    open_vocab_labels: tuple[str, ...] = ()
     image_size: int = 1280
 
 
@@ -148,6 +149,7 @@ def _as_detector(node: dict[str, Any]) -> DetectorConfig:
     classes = node.get("classes")
     if classes is not None:
         classes = [int(v) for v in classes]
+    labels = tuple(str(v).strip() for v in (_opt(node, "open_vocab_labels", []) or []) if str(v).strip())
     return DetectorConfig(
         backend=str(_opt(node, "backend", "yolo")).lower(),
         model_path=str(node["model_path"]),
@@ -155,6 +157,7 @@ def _as_detector(node: dict[str, Any]) -> DetectorConfig:
         iou=float(node["iou"]),
         device=_opt(node, "device"),
         classes=classes,
+        open_vocab_labels=labels,
         tracker_yaml=str(node["tracker_yaml"]),
         image_size=int(_opt(node, "image_size", 1280)),
     )
