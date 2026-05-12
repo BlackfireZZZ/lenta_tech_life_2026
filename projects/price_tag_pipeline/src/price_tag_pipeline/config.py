@@ -1,27 +1,37 @@
+"""Pipeline configuration. All sections are loaded from a single YAML file."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
 
+# ---------------------------------------------------------------------------
+# Dataclasses (mutable=False — config is immutable after loading)
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     profile_name: str
-    output_jsonl: Optional[str]
+    output_path: Optional[str]
     log_every_n_frames: int
+    seed: int = 42
+    fps_override: Optional[float] = None  # if set, ignore container FPS
 
 
 @dataclass(frozen=True)
 class DetectorConfig:
+    backend: str  # 'yolo' | 'rfdetr'
     model_path: str
     conf: float
     iou: float
     device: Optional[str]
-    classes: list[int]
+    classes: Optional[list[int]]  # None = use all classes the model exposes
     tracker_yaml: str
+    image_size: int = 1280
 
 
 @dataclass(frozen=True)
@@ -30,20 +40,24 @@ class RectifierConfig:
     clahe_clip_limit: float
     clahe_tile_grid_size: int
     rotate_vertical_tags: bool
+    keep_color: bool = True  # apply CLAHE on luminance only, preserve RGB
 
 
 @dataclass(frozen=True)
 class OCRConfig:
-    backend: str
+    backend: str  # 'paddle_vl' | 'paddle' | 'tesseract' | 'noop'
     min_frames_between_ocr_per_track: int
     min_sharpness: float
     min_crop_area_px: int
     min_detection_confidence: float
+    top_k_crops_per_track: int = 5
+    vlm_model: str = "PaddlePaddle/PaddleOCR-VL"
+    vlm_prompt_path: Optional[str] = None
+    paddleocr_lang: str = "ru"
 
 
 @dataclass(frozen=True)
 class ParserConfig:
-    decimal_preferred: bool
     min_price: float
     max_price: float
 
@@ -53,6 +67,25 @@ class AggregationConfig:
     min_observations_per_track: int
     min_final_confidence: float
     track_ttl_frames: int
+    price_fuzzy_tolerance: float = 0.5    # bucket prices within ±0.5 RUB
+    name_fuzzy_ratio: float = 0.85        # Levenshtein ratio threshold for name bucketing
+    dedup_iou_threshold: float = 0.4
+    dedup_time_window_frames: int = 150
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    dataset_yaml: str
+    output_dir: str
+    epochs: int = 60
+    batch_size: int = 8
+    image_size: int = 1280
+    lr0: float = 1e-3
+    workers: int = 4
+    pretrained: Optional[str] = None
+    project_name: str = "lenta-2026"
+    run_name: Optional[str] = None
+    seed: int = 42
 
 
 @dataclass(frozen=True)
@@ -63,24 +96,40 @@ class PipelineConfig:
     ocr: OCRConfig
     parser: ParserConfig
     aggregation: AggregationConfig
+    training: Optional[TrainingConfig] = None
+
+
+# ---------------------------------------------------------------------------
+# Parsers
+# ---------------------------------------------------------------------------
+
+def _opt(d: dict[str, Any], key: str, default: Any = None) -> Any:
+    return d.get(key, default)
 
 
 def _as_runtime(node: dict[str, Any]) -> RuntimeConfig:
     return RuntimeConfig(
         profile_name=str(node["profile_name"]),
-        output_jsonl=node.get("output_jsonl"),
+        output_path=_opt(node, "output_path") or _opt(node, "output_jsonl"),
         log_every_n_frames=int(node["log_every_n_frames"]),
+        seed=int(_opt(node, "seed", 42)),
+        fps_override=(float(node["fps_override"]) if node.get("fps_override") is not None else None),
     )
 
 
 def _as_detector(node: dict[str, Any]) -> DetectorConfig:
+    classes = node.get("classes")
+    if classes is not None:
+        classes = [int(v) for v in classes]
     return DetectorConfig(
+        backend=str(_opt(node, "backend", "yolo")).lower(),
         model_path=str(node["model_path"]),
         conf=float(node["conf"]),
         iou=float(node["iou"]),
-        device=node.get("device"),
-        classes=[int(v) for v in node["classes"]],
+        device=_opt(node, "device"),
+        classes=classes,
         tracker_yaml=str(node["tracker_yaml"]),
+        image_size=int(_opt(node, "image_size", 1280)),
     )
 
 
@@ -90,6 +139,7 @@ def _as_rectifier(node: dict[str, Any]) -> RectifierConfig:
         clahe_clip_limit=float(node["clahe_clip_limit"]),
         clahe_tile_grid_size=int(node["clahe_tile_grid_size"]),
         rotate_vertical_tags=bool(node["rotate_vertical_tags"]),
+        keep_color=bool(_opt(node, "keep_color", True)),
     )
 
 
@@ -100,12 +150,15 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         min_sharpness=float(node["min_sharpness"]),
         min_crop_area_px=int(node["min_crop_area_px"]),
         min_detection_confidence=float(node["min_detection_confidence"]),
+        top_k_crops_per_track=int(_opt(node, "top_k_crops_per_track", 5)),
+        vlm_model=str(_opt(node, "vlm_model", "PaddlePaddle/PaddleOCR-VL")),
+        vlm_prompt_path=_opt(node, "vlm_prompt_path"),
+        paddleocr_lang=str(_opt(node, "paddleocr_lang", "ru")),
     )
 
 
 def _as_parser(node: dict[str, Any]) -> ParserConfig:
     return ParserConfig(
-        decimal_preferred=bool(node["decimal_preferred"]),
         min_price=float(node["min_price"]),
         max_price=float(node["max_price"]),
     )
@@ -116,6 +169,28 @@ def _as_aggregation(node: dict[str, Any]) -> AggregationConfig:
         min_observations_per_track=int(node["min_observations_per_track"]),
         min_final_confidence=float(node["min_final_confidence"]),
         track_ttl_frames=int(node["track_ttl_frames"]),
+        price_fuzzy_tolerance=float(_opt(node, "price_fuzzy_tolerance", 0.5)),
+        name_fuzzy_ratio=float(_opt(node, "name_fuzzy_ratio", 0.85)),
+        dedup_iou_threshold=float(_opt(node, "dedup_iou_threshold", 0.4)),
+        dedup_time_window_frames=int(_opt(node, "dedup_time_window_frames", 150)),
+    )
+
+
+def _as_training(node: Optional[dict[str, Any]]) -> Optional[TrainingConfig]:
+    if not node:
+        return None
+    return TrainingConfig(
+        dataset_yaml=str(node["dataset_yaml"]),
+        output_dir=str(node["output_dir"]),
+        epochs=int(_opt(node, "epochs", 60)),
+        batch_size=int(_opt(node, "batch_size", 8)),
+        image_size=int(_opt(node, "image_size", 1280)),
+        lr0=float(_opt(node, "lr0", 1e-3)),
+        workers=int(_opt(node, "workers", 4)),
+        pretrained=_opt(node, "pretrained"),
+        project_name=str(_opt(node, "project_name", "lenta-2026")),
+        run_name=_opt(node, "run_name"),
+        seed=int(_opt(node, "seed", 42)),
     )
 
 
@@ -130,5 +205,5 @@ def load_config(path: str | Path) -> PipelineConfig:
         ocr=_as_ocr(data["ocr"]),
         parser=_as_parser(data["parser"]),
         aggregation=_as_aggregation(data["aggregation"]),
+        training=_as_training(data.get("training")),
     )
-
