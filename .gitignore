@@ -216,3 +216,36 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data — large files, never commit
+data/raw/videos/*
+data/raw/annotations/*
+data/raw/frames/*
+data/raw/metadata.csv
+data/processed/*
+data/checkpoints/**/*.pt
+data/checkpoints/**/*.pth
+data/checkpoints/**/*.onnx
+data/checkpoints/**/*.engine
+data/checkpoints/**/*.bin
+data/checkpoints/**/*.safetensors
+
+# Keep directory structure but not contents
+!data/raw/videos/.gitkeep
+!data/raw/annotations/.gitkeep
+!data/processed/.gitkeep
+!data/checkpoints/detector/.gitkeep
+!data/checkpoints/vlm/.gitkeep
+
+# Split manifests ARE versioned — they're tiny JSON
+!data/splits/*.json
+
+# W&B local cache
+wandb/
+
+# Inference outputs
+outputs/
+runs/
+
+# Project virtualenv
+.venv-lenta/
