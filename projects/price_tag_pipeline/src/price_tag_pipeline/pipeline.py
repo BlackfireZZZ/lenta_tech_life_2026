@@ -1,16 +1,34 @@
+"""End-to-end inference pipeline.
+
+Per-frame loop:
+    detect -> mark_seen on aggregator -> rectify crop -> push to track buffer
+    (no immediate OCR — we OCR the best crops per track at finalization)
+
+On track expiry / video end:
+    pick top-K-sharpest crops per track -> OCR/VLM each -> parse -> add observations
+    -> aggregator runs per-field voting -> emits FinalTag
+
+Cross-track deduplication runs once at the end on the full list of FinalTags.
+
+This is a meaningful change from the scaffold, which OCR'd every Nth frame
+without buffering. Buffering lets us spend OCR/VLM compute on the *sharpest*
+crops only, materially improving accuracy at the same call budget.
+"""
+
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
-from .aggregator import TrackAggregator
+from .aggregator import TrackAggregator, dedup_final_tags
 from .config import PipelineConfig
-from .detector import YoloTrackerDetector
-from .ocr import build_ocr_engine
-from .parser import PriceParser
+from .detector import build_detector
+from .ocr import BaseOCREngine, build_ocr_engine
+from .parser import TagParser
 from .rectifier import TagRectifier
-from .types import FinalPrediction, PriceObservation
+from .types import FinalTag, ParsedTag, TagObservation
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,35 +36,32 @@ LOGGER = logging.getLogger(__name__)
 class PriceTagPipeline:
     def __init__(self, cfg: PipelineConfig):
         self.cfg = cfg
-        self.detector = YoloTrackerDetector(cfg.detector)
+        self.detector = build_detector(cfg.detector)
         self.rectifier = TagRectifier(cfg.rectifier)
-        self.ocr = build_ocr_engine(cfg.ocr.backend)
-        self.parser = PriceParser(cfg.parser)
+        self.ocr: BaseOCREngine = build_ocr_engine(cfg.ocr)
+        self.parser = TagParser(cfg.parser)
         self.aggregator = TrackAggregator(cfg.aggregation)
 
-    def run(self, video_path: str, output_jsonl: str | None = None) -> list[FinalPrediction]:
-        output_path = output_jsonl or self.cfg.runtime.output_jsonl
-        resolved_out = Path(output_path).expanduser().resolve() if output_path else None
-        if resolved_out:
-            resolved_out.parent.mkdir(parents=True, exist_ok=True)
+    # -----------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------
 
-        finalized: list[FinalPrediction] = []
-        for frame_idx, (frame, detections) in enumerate(self.detector.stream_video(video_path)):
+    def run(self, video_path: str, output_path: Optional[str] = None) -> list[FinalTag]:
+        resolved_out = self._resolve_output(output_path)
+        finalized: list[FinalTag] = []
+
+        for frame_idx, (frame, detections) in enumerate(
+            self.detector.stream_video(video_path, fps_override=self.cfg.runtime.fps_override)
+        ):
             for det in detections:
                 if det.track_id is None:
                     continue
-                self.aggregator.mark_seen(track_id=det.track_id, frame_idx=det.frame_idx)
+                self.aggregator.mark_seen(det.track_id, det.frame_idx, det.bbox_xyxy)
 
                 if det.confidence < self.cfg.ocr.min_detection_confidence:
                     continue
-                if not self.aggregator.should_run_ocr(
-                    track_id=det.track_id,
-                    frame_idx=det.frame_idx,
-                    min_gap=self.cfg.ocr.min_frames_between_ocr_per_track,
-                ):
-                    continue
 
-                crop = self.rectifier.rectify(frame, det.bbox_xyxy)
+                crop = self.rectifier.rectify(frame, det)
                 if crop is None:
                     continue
                 if crop.sharpness < self.cfg.ocr.min_sharpness:
@@ -54,32 +69,22 @@ class PriceTagPipeline:
                 if crop.area_px < self.cfg.ocr.min_crop_area_px:
                     continue
 
-                ocr_out = self.ocr.recognize(crop.image)
-                if not ocr_out.text.strip():
-                    continue
-                parsed = self.parser.parse(ocr_out.text, ocr_confidence=ocr_out.confidence)
-                if parsed is None:
-                    continue
+                self.aggregator.push_crop(det.track_id, crop)
 
-                obs = PriceObservation(
-                    frame_idx=det.frame_idx,
-                    timestamp_s=det.timestamp_s,
-                    track_id=det.track_id,
-                    bbox_xyxy=crop.bbox_xyxy,
-                    parsed=parsed,
-                    detection_confidence=det.confidence,
-                    ocr_confidence=ocr_out.confidence,
-                    sharpness=crop.sharpness,
-                )
-                self.aggregator.add_observation(obs)
+            # Tracks whose last_seen is older than TTL get finalized now.
+            expiring = self._find_expiring_track_ids(frame_idx)
+            for tid in expiring:
+                self._run_ocr_for_track(tid)
 
-            expired = self.aggregator.flush_expired(frame_idx)
-            if expired:
-                finalized.extend(expired)
-                if resolved_out:
-                    self._append_jsonl(resolved_out, expired)
+            new_finals = self.aggregator.flush_expired(frame_idx)
+            if new_finals:
+                finalized.extend(new_finals)
 
-            if frame_idx % self.cfg.runtime.log_every_n_frames == 0 and frame_idx > 0:
+            if (
+                frame_idx > 0
+                and self.cfg.runtime.log_every_n_frames > 0
+                and frame_idx % self.cfg.runtime.log_every_n_frames == 0
+            ):
                 LOGGER.info(
                     "profile=%s frame=%d detections=%d finalized=%d",
                     self.cfg.runtime.profile_name,
@@ -88,16 +93,106 @@ class PriceTagPipeline:
                     len(finalized),
                 )
 
-        tail = self.aggregator.flush_all()
-        if tail:
-            finalized.extend(tail)
-            if resolved_out:
-                self._append_jsonl(resolved_out, tail)
-        return finalized
+        # Flush any tracks still live at end of video.
+        for tid in list(self.aggregator._tracks.keys()):
+            self._run_ocr_for_track(tid)
+        finalized.extend(self.aggregator.flush_all())
+
+        # Cross-track deduplication on the full list.
+        deduped = dedup_final_tags(
+            finalized,
+            iou_threshold=self.cfg.aggregation.dedup_iou_threshold,
+            time_window_frames=self.cfg.aggregation.dedup_time_window_frames,
+        )
+        LOGGER.info(
+            "Finalized %d -> %d after dedup (saved %d duplicates).",
+            len(finalized), len(deduped), len(finalized) - len(deduped),
+        )
+
+        if resolved_out:
+            self._write_output(resolved_out, deduped)
+
+        return deduped
+
+    # -----------------------------------------------------------------
+    # Internal: OCR-on-best-crops
+    # -----------------------------------------------------------------
+
+    def _find_expiring_track_ids(self, frame_idx: int) -> list[int]:
+        ttl = self.cfg.aggregation.track_ttl_frames
+        return [
+            tid
+            for tid, state in self.aggregator._tracks.items()
+            if state.last_seen_frame >= 0
+            and frame_idx - state.last_seen_frame > ttl
+        ]
+
+    def _run_ocr_for_track(self, track_id: int) -> None:
+        """OCR the top-K-sharpest crops in the buffer and turn them into observations."""
+        k = self.cfg.ocr.top_k_crops_per_track
+        crops = self.aggregator.best_crops(track_id, k)
+        if not crops:
+            return
+
+        for entry in crops:
+            try:
+                res = self.ocr.recognize(entry.crop.image)
+            except Exception as exc:  # do not abort the whole video on a single OCR fail
+                LOGGER.warning("OCR failed on track=%d frame=%d: %s", track_id, entry.crop.frame_idx, exc)
+                continue
+            if not res.text:
+                continue
+            if self.ocr.structured:
+                parsed = self.parser.parse_vlm_json(res.text, vlm_confidence=res.confidence, backend=res.backend)
+            else:
+                parsed = self.parser.parse_text(res.text, ocr_confidence=res.confidence, backend=res.backend)
+            if self._parsed_is_empty(parsed):
+                continue
+            obs = TagObservation(
+                frame_idx=entry.crop.frame_idx,
+                timestamp_s=entry.crop.timestamp_s,
+                track_id=track_id,
+                bbox_xyxy=entry.crop.bbox_xyxy,
+                parsed=parsed,
+                detection_confidence=entry.crop.detection_confidence,
+                sharpness=entry.crop.sharpness,
+            )
+            self.aggregator.add_observation(obs)
+
+        # Drop the buffer once we have committed observations.
+        self.aggregator.clear_crops(track_id)
 
     @staticmethod
-    def _append_jsonl(path: Path, rows: list[FinalPrediction]) -> None:
-        with path.open("a", encoding="utf-8") as f:
-            for row in rows:
-                f.write(json.dumps(row.to_dict(), ensure_ascii=False) + "\n")
+    def _parsed_is_empty(parsed: ParsedTag) -> bool:
+        return (
+            parsed.regular_price is None
+            and parsed.loyalty_price is None
+            and parsed.product_name is None
+            and parsed.weight_value is None
+            and parsed.price_per_unit_value is None
+        )
 
+    # -----------------------------------------------------------------
+    # Output
+    # -----------------------------------------------------------------
+
+    def _resolve_output(self, override: Optional[str]) -> Optional[Path]:
+        path = override or self.cfg.runtime.output_path
+        if not path:
+            return None
+        p = Path(path).expanduser().resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Truncate so re-runs do not accumulate stale predictions.
+        p.write_text("", encoding="utf-8")
+        return p
+
+    @staticmethod
+    def _write_output(path: Path, rows: list[FinalTag]) -> None:
+        # JSONL preferred. If the caller asked for .json we wrap as array; otherwise jsonl.
+        if path.suffix.lower() == ".json":
+            with path.open("w", encoding="utf-8") as f:
+                json.dump([r.to_dict() for r in rows], f, ensure_ascii=False, indent=2)
+        else:
+            with path.open("w", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")

@@ -1,36 +1,45 @@
 runtime:
   profile_name: balanced
-  output_jsonl: null
+  output_path: null
   log_every_n_frames: 50
+  seed: 42
+  fps_override: null
 
 detector:
-  model_path: yolo11n.pt
+  backend: yolo
+  model_path: data/checkpoints/detector/best.pt
   conf: 0.25
   iou: 0.50
   device: null
-  classes: [0]
-  tracker_yaml: ultralytics/cfg/trackers/bytetrack.yaml
+  classes: null
+  tracker_yaml: botsort.yaml         # CMC helps because the robot moves
+  image_size: 1280
 
 rectifier:
   padding_ratio: 0.06
   clahe_clip_limit: 2.5
   clahe_tile_grid_size: 8
   rotate_vertical_tags: true
+  keep_color: true
 
 ocr:
-  backend: noop
+  backend: paddle
+  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 5
   min_sharpness: 35.0
   min_crop_area_px: 1400
   min_detection_confidence: 0.30
+  top_k_crops_per_track: 5
 
 parser:
-  decimal_preferred: true
   min_price: 0.01
-  max_price: 99999.99
+  max_price: 999999.99
 
 aggregation:
-  min_observations_per_track: 3
-  min_final_confidence: 0.60
+  min_observations_per_track: 2
+  min_final_confidence: 0.50
   track_ttl_frames: 60
-
+  price_fuzzy_tolerance: 0.5
+  name_fuzzy_ratio: 0.85
+  dedup_iou_threshold: 0.4
+  dedup_time_window_frames: 150

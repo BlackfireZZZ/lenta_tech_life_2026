@@ -1,36 +1,47 @@
 runtime:
   profile_name: hq
-  output_jsonl: null
+  output_path: null
   log_every_n_frames: 40
+  seed: 42
+  fps_override: null
 
 detector:
-  model_path: yolo11s.pt
+  backend: yolo
+  model_path: data/checkpoints/detector/best.pt
   conf: 0.20
   iou: 0.50
   device: null
-  classes: [0]
-  tracker_yaml: ultralytics/cfg/trackers/bytetrack.yaml
+  classes: null
+  tracker_yaml: botsort.yaml
+  image_size: 1280
 
 rectifier:
   padding_ratio: 0.08
   clahe_clip_limit: 3.0
   clahe_tile_grid_size: 8
   rotate_vertical_tags: true
+  keep_color: true
 
 ocr:
-  backend: noop
+  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
+  vlm_model: PaddlePaddle/PaddleOCR-VL
+  vlm_prompt_path: null
+  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000
   min_detection_confidence: 0.25
+  top_k_crops_per_track: 8
 
 parser:
-  decimal_preferred: true
   min_price: 0.01
-  max_price: 99999.99
+  max_price: 999999.99
 
 aggregation:
-  min_observations_per_track: 4
-  min_final_confidence: 0.65
+  min_observations_per_track: 2
+  min_final_confidence: 0.55
   track_ttl_frames: 90
-
+  price_fuzzy_tolerance: 0.5
+  name_fuzzy_ratio: 0.85
+  dedup_iou_threshold: 0.4
+  dedup_time_window_frames: 200
