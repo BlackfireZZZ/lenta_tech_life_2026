@@ -10,7 +10,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import cv2
+import pytest
+
+cv2 = pytest.importorskip("cv2")
 import numpy as np
 
 SRC = Path(__file__).resolve().parent.parent / "src"
