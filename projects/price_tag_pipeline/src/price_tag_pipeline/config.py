@@ -45,7 +45,14 @@ class RectifierConfig:
 
 @dataclass(frozen=True)
 class OCRConfig:
-    backend: str  # 'paddle_vl' | 'paddle' | 'tesseract' | 'noop'
+    backend: str
+    # Backends:
+    #   classical: noop | tesseract | paddle
+    #   VLM (transformers): paddle_vl | glm_ocr | qwen3_vl | dots_ocr |
+    #                       hunyuan_ocr | rolm_ocr | monkey_ocr | intern_vl3 |
+    #                       transformers_vlm
+    #   production server: vllm_server (OpenAI-compatible, any vLLM-served model)
+    #   pipeline: mineru
     min_frames_between_ocr_per_track: int
     min_sharpness: float
     min_crop_area_px: int
@@ -54,6 +61,9 @@ class OCRConfig:
     vlm_model: str = "PaddlePaddle/PaddleOCR-VL"
     vlm_prompt_path: Optional[str] = None
     paddleocr_lang: str = "ru"
+    vlm_max_new_tokens: int = 512
+    vlm_temperature: float = 0.0
+    vllm_url: Optional[str] = None  # e.g. http://localhost:8000/v1
 
 
 @dataclass(frozen=True)
@@ -154,6 +164,9 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         vlm_model=str(_opt(node, "vlm_model", "PaddlePaddle/PaddleOCR-VL")),
         vlm_prompt_path=_opt(node, "vlm_prompt_path"),
         paddleocr_lang=str(_opt(node, "paddleocr_lang", "ru")),
+        vlm_max_new_tokens=int(_opt(node, "vlm_max_new_tokens", 512)),
+        vlm_temperature=float(_opt(node, "vlm_temperature", 0.0)),
+        vllm_url=_opt(node, "vllm_url"),
     )
 
 
