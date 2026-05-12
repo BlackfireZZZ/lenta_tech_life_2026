@@ -1,5 +1,13 @@
+# HQ profile — Qwen3-VL (Alibaba)
+# 201 languages incl Russian, 256K context, well-supported LoRA fine-tuning.
+# Default model id below = 8B dense. Switch to 32B-Instruct or 235B-A22B MoE
+# for top quality if you have the VRAM.
+#
+# Requires: pip install transformers accelerate torch
+# 8B fits on a 4070 Ti at bf16. For 32B+ rent an A100/H100.
+
 runtime:
-  profile_name: hq
+  profile_name: hq_qwen3vl
   output_path: null
   log_every_n_frames: 40
   seed: 42
@@ -23,12 +31,11 @@ rectifier:
   keep_color: true
 
 ocr:
-  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
-  vlm_model: PaddlePaddle/PaddleOCR-VL
+  backend: qwen3_vl
+  vlm_model: Qwen/Qwen3-VL-8B-Instruct
   vlm_prompt_path: null
   vlm_max_new_tokens: 512
   vlm_temperature: 0.0
-  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000

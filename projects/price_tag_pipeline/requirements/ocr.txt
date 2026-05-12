@@ -1,15 +1,30 @@
-# OCR / VLM backends. Install at least one.
-# PaddleOCR 3.x is the primary path for both classical OCR and the VLM.
+# OCR / VLM backends. Install ONLY the ones you'll use — they don't all coexist
+# cheaply (e.g. paddlepaddle + torch is heavy). All paths import lazily, so
+# missing deps only error when you actually select the backend.
 -r base.txt
 
-paddleocr>=3.0            # classical PaddleOCR (Russian model) AND PaddleOCR-VL loader
-paddlepaddle>=2.6         # backend for paddleocr; pick paddlepaddle-gpu if CUDA-only
+# Classical PaddleOCR + PaddleOCR-VL 1.5
+paddleocr>=3.0
+paddlepaddle>=2.6        # pick paddlepaddle-gpu for CUDA-only
 
-# Optional fallback OCR
-pytesseract>=0.3.10       # requires the tesseract binary; for Russian: tesseract-ocr-rus
+# Tesseract fallback (needs the tesseract binary; for Russian: tesseract-ocr-rus)
+pytesseract>=0.3.10
 
-# Optional transformers path for PaddleOCR-VL when the paddleocr import is unavailable.
-# Uncomment if you go this route:
-# transformers>=4.45
-# accelerate>=0.30
-# torch>=2.3
+# Transformers VLMs: Qwen3-VL, GLM-OCR, dots.ocr, HunyuanOCR, RolmOCR, MonkeyOCR, InternVL3
+transformers>=4.45
+accelerate>=0.30
+torch>=2.3
+qwen-vl-utils>=0.0.10    # helper for Qwen3-VL image preprocessing
+einops>=0.7              # required by several VLM model defs
+sentencepiece>=0.2
+timm>=1.0                # used by some vision encoders (InternVL, dots.ocr)
+Pillow>=10.0
+
+# Production server path: works with ANY model served by vLLM / SGLang
+openai>=1.40             # OpenAI-compatible client for vllm_server backend
+
+# Optional: serve VLMs locally for the vllm_server backend
+# vllm>=0.11               # uncomment if you want to run a vLLM server in-process
+
+# Optional: MinerU 2.5 pipeline path
+# magic-pdf>=2.5           # heavy; only enable if mineru is the chosen path

@@ -1,5 +1,9 @@
+# HQ profile — dots.ocr (rednote-hilab, 3B)
+# 88.41 on OmniDocBench. SOTA multilingual document parser.
+# vLLM-integrated since vLLM 0.11.0 — for production prefer the vllm_server backend.
+
 runtime:
-  profile_name: hq
+  profile_name: hq_dots
   output_path: null
   log_every_n_frames: 40
   seed: 42
@@ -23,12 +27,11 @@ rectifier:
   keep_color: true
 
 ocr:
-  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
-  vlm_model: PaddlePaddle/PaddleOCR-VL
+  backend: dots_ocr
+  vlm_model: rednote-hilab/dots.ocr
   vlm_prompt_path: null
   vlm_max_new_tokens: 512
   vlm_temperature: 0.0
-  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000

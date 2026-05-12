@@ -1,5 +1,8 @@
+# HQ profile — MonkeyOCR-pro-3B
+# Beats GPT-4o, Qwen2.5-VL-72B, InternVL3-78B on OmniDocBench at 3B parameters.
+
 runtime:
-  profile_name: hq
+  profile_name: hq_monkey
   output_path: null
   log_every_n_frames: 40
   seed: 42
@@ -23,12 +26,11 @@ rectifier:
   keep_color: true
 
 ocr:
-  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
-  vlm_model: PaddlePaddle/PaddleOCR-VL
+  backend: monkey_ocr
+  vlm_model: echo840/MonkeyOCR-pro-3B
   vlm_prompt_path: null
   vlm_max_new_tokens: 512
   vlm_temperature: 0.0
-  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000

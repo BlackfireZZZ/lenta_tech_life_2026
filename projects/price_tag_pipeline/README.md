@@ -112,10 +112,43 @@ All three point at `data/checkpoints/detector/best.pt` by default. Override
 
 ## Backends
 
-- **Detector:** `backend: yolo` (Ultralytics) for now. `backend: rfdetr` is
-  scaffolded and lands once we install `rfdetr` and convert data to COCO.
-- **OCR:** `paddle_vl` (PaddleOCR-VL 1.5 VLM, primary) | `paddle` (classical
-  PaddleOCR 3.x, Russian model) | `tesseract` | `noop`.
+### Detector
+- `backend: yolo` — Ultralytics (YOLO11 / YOLO12 / YOLO26). Default.
+- `backend: rfdetr` — Roboflow RF-DETR (ICLR 2026, current COCO SOTA). Stub;
+  lands once we install `rfdetr` and convert data to COCO.
+
+### OCR / structured extraction (May 2026 SOTA matrix)
+
+| Backend           | Params | OmniDocBench v1.5 | Russian | Notes |
+|-------------------|--------|-------------------|---------|-------|
+| `glm_ocr`         | 0.9B   | 94.62 (#1)        | yes     | Z.AI, Apache-2.0, vLLM/SGLang ready |
+| `paddle_vl`       | 0.9B   | 94.50             | yes     | Tied for top; default in `hq.yaml` |
+| `mineru` *(stub)* | 1.2B   | 90.67             | yes     | Pipeline-based; not recommended for crops |
+| `dots_ocr`        | 3B     | 88.41             | yes     | SOTA multilingual; vLLM-integrated |
+| `monkey_ocr`      | 3B     | top of 3B class   | yes     | Beats GPT-4o / Qwen2.5-VL-72B / InternVL3-78B |
+| `qwen3_vl`        | 4–235B | strong            | yes     | 201 languages, 256K ctx, best fine-tune story |
+| `hunyuan_ocr`     | 1B     | multiple SOTA     | yes     | Tencent; lightweight |
+| `rolm_ocr`        | 7B     | strong on olmOCR-Bench | yes | Qwen2.5-VL fine-tune by Reducto |
+| `intern_vl3`      | 1–78B  | varies            | yes     | OpenGVLab; multi-tile preprocessing |
+| `paddle`          | small  | n/a (classical)   | yes     | Classical PaddleOCR 3.x; fast |
+| `tesseract`       | tiny   | n/a (classical)   | partial | Last-resort fallback |
+| `noop`            | —      | —                 | —       | Tests / CI only |
+
+### Production server: `vllm_server`
+Run a vLLM (or SGLang) server with ANY of the models above and point the
+pipeline at `http://localhost:8000/v1`. Model swap is config-only.
+
+```bash
+vllm serve zai-org/GLM-OCR --port 8000 --max-model-len 8192
+# or:
+vllm serve PaddlePaddle/PaddleOCR-VL --port 8000
+vllm serve Qwen/Qwen3-VL-32B-Instruct --port 8000 --tensor-parallel-size 2
+```
+
+Then use `configs/hq_vllm.yaml`. Ready-to-go per-backend configs:
+`hq.yaml` (PaddleOCR-VL), `hq_glm_ocr.yaml`, `hq_qwen3_vl.yaml`,
+`hq_dots_ocr.yaml`, `hq_hunyuan_ocr.yaml`, `hq_rolm_ocr.yaml`,
+`hq_monkey_ocr.yaml`, `hq_vllm.yaml`.
 
 ## Tracking
 

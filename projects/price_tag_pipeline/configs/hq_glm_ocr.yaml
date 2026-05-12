@@ -1,5 +1,10 @@
+# HQ profile — GLM-OCR (0.9B, Z.AI / Zhipu)
+# Currently #1 on OmniDocBench v1.5 (94.62). Apache-2.0. Russian-capable.
+# Requires: pip install transformers accelerate torch
+# Loads ~2 GB into VRAM. Slightly slower than PaddleOCR-VL but higher score.
+
 runtime:
-  profile_name: hq
+  profile_name: hq_glm
   output_path: null
   log_every_n_frames: 40
   seed: 42
@@ -23,12 +28,11 @@ rectifier:
   keep_color: true
 
 ocr:
-  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
-  vlm_model: PaddlePaddle/PaddleOCR-VL
+  backend: glm_ocr
+  vlm_model: zai-org/GLM-OCR
   vlm_prompt_path: null
   vlm_max_new_tokens: 512
   vlm_temperature: 0.0
-  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000

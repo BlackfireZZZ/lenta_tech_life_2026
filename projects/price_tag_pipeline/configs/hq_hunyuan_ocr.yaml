@@ -1,5 +1,8 @@
+# HQ profile — Tencent HunyuanOCR (1B)
+# Lightweight, multiple SOTA benchmarks, vLLM-ready.
+
 runtime:
-  profile_name: hq
+  profile_name: hq_hunyuan
   output_path: null
   log_every_n_frames: 40
   seed: 42
@@ -23,12 +26,11 @@ rectifier:
   keep_color: true
 
 ocr:
-  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
-  vlm_model: PaddlePaddle/PaddleOCR-VL
+  backend: hunyuan_ocr
+  vlm_model: Tencent-Hunyuan/HunyuanOCR
   vlm_prompt_path: null
   vlm_max_new_tokens: 512
   vlm_temperature: 0.0
-  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000

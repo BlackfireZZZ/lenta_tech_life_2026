@@ -1,5 +1,19 @@
+# HQ profile — any model served by a local vLLM (or SGLang) server.
+#
+# Why this profile: model swapping is config-only. Run any of the top OCR
+# VLMs (GLM-OCR, PaddleOCR-VL, Qwen3-VL, dots.ocr, HunyuanOCR, RolmOCR,
+# MonkeyOCR, InternVL3) with one server and switch by changing vlm_model.
+#
+# Start a server, for example:
+#     vllm serve zai-org/GLM-OCR --port 8000 --max-model-len 8192
+#     vllm serve PaddlePaddle/PaddleOCR-VL --port 8000
+#     vllm serve Qwen/Qwen3-VL-32B-Instruct --port 8000 --tensor-parallel-size 2
+#     vllm serve rednote-hilab/dots.ocr --port 8000
+#
+# Then update vllm_url + vlm_model below.
+
 runtime:
-  profile_name: hq
+  profile_name: hq_vllm
   output_path: null
   log_every_n_frames: 40
   seed: 42
@@ -23,12 +37,12 @@ rectifier:
   keep_color: true
 
 ocr:
-  backend: paddle_vl                  # PaddleOCR-VL 1.5 — primary VLM path
-  vlm_model: PaddlePaddle/PaddleOCR-VL
+  backend: vllm_server
+  vllm_url: http://localhost:8000/v1
+  vlm_model: zai-org/GLM-OCR        # change to swap models
   vlm_prompt_path: null
   vlm_max_new_tokens: 512
   vlm_temperature: 0.0
-  paddleocr_lang: ru
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0
   min_crop_area_px: 1000
