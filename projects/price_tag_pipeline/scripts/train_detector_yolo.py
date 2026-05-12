@@ -103,10 +103,9 @@ def main() -> int:
     )
 
     if args.use_albu:
-        logging.info("Albumentations override requested; see training docs for the hook.")
-        # Ultralytics 8.x reads from a `default_augmentations.yaml`. For now we
-        # rely on the built-in args above. A full Albumentations override would
-        # subclass the Ultralytics dataset class — out of scope until data arrives.
+        from price_tag_pipeline.training.augmentation_albu import attach_to_ultralytics
+        attached = attach_to_ultralytics(model)
+        logging.info("Heavy Albumentations attached: %s", attached)
 
     results = model.train(**train_kwargs)
     logging.info("Done. Best checkpoint: %s", model.trainer.best if hasattr(model, "trainer") else "see runs/")
