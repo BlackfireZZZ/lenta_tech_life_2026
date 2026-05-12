@@ -1,10 +1,7 @@
-# Core runtime
-numpy>=1.23.0
-opencv-python>=4.6.0
-pyyaml>=5.3.1
-ultralytics
+# Top-level convenience: install everything for a full dev + training environment.
+# For lighter installs, point at requirements/{base,ocr,train,dev}.txt directly.
 
-# Optional OCR backends
-# pytesseract>=0.3.10
-# paddleocr>=2.8.0
-
+-r requirements/base.txt
+-r requirements/ocr.txt
+-r requirements/train.txt
+-r requirements/dev.txt

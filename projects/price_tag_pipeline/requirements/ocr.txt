@@ -1,0 +1,15 @@
+# OCR / VLM backends. Install at least one.
+# PaddleOCR 3.x is the primary path for both classical OCR and the VLM.
+-r base.txt
+
+paddleocr>=3.0            # classical PaddleOCR (Russian model) AND PaddleOCR-VL loader
+paddlepaddle>=2.6         # backend for paddleocr; pick paddlepaddle-gpu if CUDA-only
+
+# Optional fallback OCR
+pytesseract>=0.3.10       # requires the tesseract binary; for Russian: tesseract-ocr-rus
+
+# Optional transformers path for PaddleOCR-VL when the paddleocr import is unavailable.
+# Uncomment if you go this route:
+# transformers>=4.45
+# accelerate>=0.30
+# torch>=2.3

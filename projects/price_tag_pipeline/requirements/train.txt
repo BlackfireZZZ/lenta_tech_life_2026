@@ -1,0 +1,19 @@
+# Training-time deps (detector + VLM fine-tuning).
+# Skip if you're only running inference.
+-r base.txt
+
+torch>=2.3
+torchvision>=0.18
+torchmetrics>=1.4         # detection mAP
+albumentations>=1.4       # for the Albumentations augmentation override
+wandb>=0.17               # experiment logging
+tqdm>=4.66
+
+# For VLM LoRA fine-tuning (PaddleOCR-VL via transformers + PEFT path)
+peft>=0.11
+transformers>=4.45
+accelerate>=0.30
+datasets>=2.20
+
+# Optional second detector backend
+# rfdetr>=0.5             # uncomment once RFDETRDetector is wired in

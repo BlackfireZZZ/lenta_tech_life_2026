@@ -1,0 +1,7 @@
+# Developer tooling.
+-r base.txt
+
+pytest>=8.0
+pytest-xdist>=3.5
+ruff>=0.6
+black>=24.0
