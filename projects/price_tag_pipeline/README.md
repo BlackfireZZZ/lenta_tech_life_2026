@@ -30,6 +30,9 @@ projects/price_tag_pipeline/
 │   ├── eval_detector.py           #   mAP on a fold
 │   ├── eval_e2e.py                #   per-field + overall accuracy on a video
 │   └── run_inference.py           #   video -> JSONL tags
+│   ├── run_batch_inference.py     #   all videos dir -> per-video JSONL
+│   ├── export_hack_csv.py         #   JSONL -> CSV in hackathon schema
+│   └── eval_hack_csv.py           #   CSV-vs-CSV evaluator (>=80% per-tag score)
 ├── src/price_tag_pipeline/
 │   ├── aggregator.py              # per-track per-field voting + cross-track dedup
 │   ├── cli.py
@@ -99,6 +102,16 @@ python projects/price_tag_pipeline/scripts/run_inference.py \
 python projects/price_tag_pipeline/scripts/eval_e2e.py \
     --pred outputs/video01.jsonl \
     --gt   data/processed/gt_e2e/video01.jsonl
+
+# 9. Batch inference for all videos + hackathon CSV export.
+python projects/price_tag_pipeline/scripts/run_batch_inference.py \
+    --videos-dir data/raw/videos \
+    --config projects/price_tag_pipeline/configs/balanced.yaml \
+    --outputs-dir outputs/jsonl
+
+python projects/price_tag_pipeline/scripts/export_hack_csv.py \
+    --inputs outputs/jsonl \
+    --out-csv submission/hack_submission.csv
 ```
 
 ## Profiles

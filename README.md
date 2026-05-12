@@ -8,6 +8,7 @@ from robot-captured video).
 
 - `ANALYSIS.md` — analysis of the original scaffold (what worked, what didn't, why we rewrote).
 - `STRATEGY.md` — model-selection and pipeline strategy (RF-DETR / YOLO26 / PaddleOCR-VL / BoT-SORT).
+- `ML_BASELINE_COLAB.md` — GPU-only ML baseline runbook for Google Colab (train/infer/eval/export).
 - `data/README.md` — exactly where data goes when it arrives.
 - `projects/price_tag_pipeline/README.md` — pipeline usage and CLI reference.
 
