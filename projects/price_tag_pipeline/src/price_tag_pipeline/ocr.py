@@ -89,6 +89,69 @@ Disambiguation rules:
 Do not invent. If unsure, output null for that field."""
 
 
+# JSON Schema for guided decoding (vLLM / SGLang `guided_json` / Outlines).
+PRICE_TAG_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "regular_price": {"type": ["number", "null"]},
+        "loyalty_price": {"type": ["number", "null"]},
+        "product_name": {"type": ["string", "null"]},
+        "weight_value": {"type": ["number", "null"]},
+        "weight_unit": {"type": ["string", "null"], "enum": ["кг", "г", "л", "мл", "шт", None]},
+        "price_per_unit_value": {"type": ["number", "null"]},
+        "price_per_unit_unit": {"type": ["string", "null"]},
+        "promo_flag": {"type": "boolean"},
+        "currency": {"type": "string"},
+    },
+    "required": [
+        "regular_price", "loyalty_price", "product_name",
+        "weight_value", "weight_unit",
+        "price_per_unit_value", "price_per_unit_unit",
+        "promo_flag", "currency",
+    ],
+}
+
+
+def build_few_shot_prompt(base_prompt: str, examples_path: Optional[str]) -> str:
+    """Append example (description -> JSON) pairs to the prompt.
+
+    Examples YAML format:
+      - description: "Tag with regular + loyalty price, milk, 1 L"
+        json:
+          regular_price: 89.90
+          loyalty_price: 69.90
+          product_name: "Молоко Простоквашино 2.5% 1л"
+          weight_value: 1.0
+          weight_unit: "л"
+          promo_flag: true
+          currency: "RUB"
+    """
+    if not examples_path:
+        return base_prompt
+    p = Path(examples_path)
+    if not p.exists():
+        LOGGER.warning("few_shot_examples_path=%s not found; using base prompt", examples_path)
+        return base_prompt
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        LOGGER.warning("pyyaml not available; skipping few-shot examples")
+        return base_prompt
+
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or []
+    if not isinstance(data, list) or not data:
+        return base_prompt
+
+    lines = [base_prompt, "", "EXAMPLES (read carefully and follow the same JSON shape):"]
+    for i, ex in enumerate(data, 1):
+        desc = ex.get("description", f"Example {i}")
+        body = ex.get("json", {})
+        lines.append(f"\nExample {i} ({desc}):")
+        lines.append(json.dumps(body, ensure_ascii=False, indent=2))
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
@@ -98,6 +161,9 @@ class BaseOCREngine(ABC):
 
     Subclasses set `structured = True` if their output is JSON intended for
     `TagParser.parse_vlm_json`.
+
+    Ensemble engines override `recognize_all` to return multiple results from
+    a single crop; the default just wraps `recognize` in a single-item list.
     """
 
     structured: bool = False
@@ -106,6 +172,9 @@ class BaseOCREngine(ABC):
     @abstractmethod
     def recognize(self, image: np.ndarray) -> OCRResult:
         raise NotImplementedError
+
+    def recognize_all(self, image: np.ndarray) -> list[OCRResult]:
+        return [self.recognize(image)]
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +641,7 @@ class VLLMServerEngine(BaseOCREngine):
         max_new_tokens: int = 512,
         temperature: float = 0.0,
         timeout: float = 120.0,
+        guided_json: bool = False,
     ):
         self.url = url.rstrip("/")
         self.model_id = model_id
@@ -580,6 +650,7 @@ class VLLMServerEngine(BaseOCREngine):
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.timeout = timeout
+        self.guided_json = guided_json
         self._client = None
 
     def _ensure_client(self) -> None:
@@ -597,7 +668,7 @@ class VLLMServerEngine(BaseOCREngine):
     def recognize(self, image: np.ndarray) -> OCRResult:
         self._ensure_client()
         data_url = _image_to_base64_url(image)
-        response = self._client.chat.completions.create(  # type: ignore[union-attr]
+        kwargs: dict[str, Any] = dict(
             model=self.model_id,
             messages=[{
                 "role": "user",
@@ -609,10 +680,61 @@ class VLLMServerEngine(BaseOCREngine):
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
         )
+        if self.guided_json:
+            # vLLM accepts `guided_json` via extra_body. SGLang uses the same key.
+            kwargs["extra_body"] = {"guided_json": PRICE_TAG_JSON_SCHEMA}
+        response = self._client.chat.completions.create(**kwargs)  # type: ignore[union-attr]
         msg = response.choices[0].message
         text = (msg.content or "").strip()
         text = _strip_json_fence(text)
         return OCRResult(text=text, confidence=0.9, backend=f"vllm:{self.model_id}")
+
+
+# ---------------------------------------------------------------------------
+# Ensemble engine — runs N engines per crop
+# ---------------------------------------------------------------------------
+
+class EnsembleOCREngine(BaseOCREngine):
+    """Run multiple OCR engines per crop, return all their results.
+
+    The pipeline ingests each result as a separate observation, so per-field
+    voting in the aggregator naturally fuses three (or N) different VLMs.
+
+    Engines run sequentially; for production prefer a vllm_server backend
+    with two or three models served from the same server (different model_id
+    per ensemble entry).
+    """
+
+    structured = True  # majority of practical configurations include VLMs
+    backend_name = "ensemble"
+
+    def __init__(self, engines: list[BaseOCREngine]):
+        if not engines:
+            raise ValueError("EnsembleOCREngine requires at least one sub-engine.")
+        self.engines = engines
+        # If any sub-engine is unstructured the ensemble is mixed; treat as
+        # structured if the majority are.
+        struct_count = sum(1 for e in engines if e.structured)
+        self.structured = struct_count >= len(engines) / 2
+
+    def recognize(self, image: np.ndarray) -> OCRResult:
+        results = self.recognize_all(image)
+        # Single-result fallback: pick the highest-confidence.
+        return max(results, key=lambda r: r.confidence) if results else OCRResult(
+            text="", confidence=0.0, backend="ensemble:empty"
+        )
+
+    def recognize_all(self, image: np.ndarray) -> list[OCRResult]:
+        out: list[OCRResult] = []
+        for eng in self.engines:
+            try:
+                res = eng.recognize(image)
+            except Exception as e:
+                LOGGER.warning("Ensemble sub-engine %s failed: %s", eng.backend_name, e)
+                continue
+            if res.text:
+                out.append(res)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +801,7 @@ _BACKEND_ALIASES = {
     "transformers_vlm": "transformers_vlm", "hf_vlm": "transformers_vlm",
     "vllm": "vllm_server", "vllm_server": "vllm_server", "sglang": "vllm_server",
     "mineru": "mineru",
+    "ensemble": "ensemble", "vlm_ensemble": "ensemble",
 }
 
 
@@ -691,7 +814,8 @@ def build_ocr_engine(cfg: OCRConfig) -> BaseOCREngine:
             f"Known: {sorted(set(_BACKEND_ALIASES.values()))}"
         )
 
-    prompt = _load_prompt(None, cfg.vlm_prompt_path)
+    base_prompt = _load_prompt(None, cfg.vlm_prompt_path)
+    prompt = build_few_shot_prompt(base_prompt, cfg.few_shot_examples_path)
 
     if key == "noop":
         return NoOpOCREngine()
@@ -746,7 +870,35 @@ def build_ocr_engine(cfg: OCRConfig) -> BaseOCREngine:
         return VLLMServerEngine(
             url=cfg.vllm_url, model_id=cfg.vlm_model, prompt=prompt,
             max_new_tokens=cfg.vlm_max_new_tokens, temperature=cfg.vlm_temperature,
+            guided_json=cfg.guided_json,
         )
     if key == "mineru":
         return MinerUEngine()
+    if key == "ensemble":
+        if not cfg.ensemble_backends:
+            raise ValueError(
+                "ensemble backend requires ocr.ensemble_backends with at least one entry."
+            )
+        engines: list[BaseOCREngine] = []
+        for entry in cfg.ensemble_backends:
+            # Build a per-entry OCRConfig overlay so each engine picks up its own
+            # backend and (optionally) model id, while inheriting other fields.
+            sub_cfg = OCRConfig(
+                backend=entry.backend,
+                min_frames_between_ocr_per_track=cfg.min_frames_between_ocr_per_track,
+                min_sharpness=cfg.min_sharpness,
+                min_crop_area_px=cfg.min_crop_area_px,
+                min_detection_confidence=cfg.min_detection_confidence,
+                top_k_crops_per_track=cfg.top_k_crops_per_track,
+                vlm_model=entry.vlm_model or cfg.vlm_model,
+                vlm_prompt_path=cfg.vlm_prompt_path,
+                paddleocr_lang=cfg.paddleocr_lang,
+                vlm_max_new_tokens=cfg.vlm_max_new_tokens,
+                vlm_temperature=cfg.vlm_temperature,
+                vllm_url=cfg.vllm_url,
+                guided_json=cfg.guided_json,
+                few_shot_examples_path=cfg.few_shot_examples_path,
+            )
+            engines.append(build_ocr_engine(sub_cfg))
+        return EnsembleOCREngine(engines)
     raise ValueError(f"Backend resolved to unknown key: {key}")

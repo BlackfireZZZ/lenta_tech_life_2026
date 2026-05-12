@@ -22,13 +22,15 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from typing import Optional
+
 from .aggregator import TrackAggregator, dedup_final_tags
 from .config import PipelineConfig
 from .detector import build_detector
 from .ocr import BaseOCREngine, build_ocr_engine
 from .parser import TagParser
-from .rectifier import TagRectifier
-from .types import FinalTag, ParsedTag, TagObservation
+from .rectifier import build_rectifier
+from .types import CropCandidate, FinalTag, ParsedTag, TagObservation
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,10 +39,19 @@ class PriceTagPipeline:
     def __init__(self, cfg: PipelineConfig):
         self.cfg = cfg
         self.detector = build_detector(cfg.detector)
-        self.rectifier = TagRectifier(cfg.rectifier)
+        self.rectifier = build_rectifier(cfg.rectifier)
         self.ocr: BaseOCREngine = build_ocr_engine(cfg.ocr)
         self.parser = TagParser(cfg.parser)
         self.aggregator = TrackAggregator(cfg.aggregation)
+        self._sr = None
+        if cfg.rectifier.super_resolution:
+            from .super_resolution import SuperResolution
+            self._sr = SuperResolution(scale=2)
+        self._audit_path: Optional[Path] = None
+        if cfg.runtime.audit_path:
+            self._audit_path = Path(cfg.runtime.audit_path).expanduser().resolve()
+            self._audit_path.parent.mkdir(parents=True, exist_ok=True)
+            self._audit_path.write_text("", encoding="utf-8")  # truncate on start
 
     # -----------------------------------------------------------------
     # Public API
@@ -69,6 +80,7 @@ class PriceTagPipeline:
                 if crop.area_px < self.cfg.ocr.min_crop_area_px:
                     continue
 
+                crop = self._maybe_upscale(crop)
                 self.aggregator.push_crop(det.track_id, crop)
 
             # Tracks whose last_seen is older than TTL get finalized now.
@@ -128,7 +140,11 @@ class PriceTagPipeline:
         ]
 
     def _run_ocr_for_track(self, track_id: int) -> None:
-        """OCR the top-K-sharpest crops in the buffer and turn them into observations."""
+        """OCR the top-K-sharpest crops in the buffer and turn them into observations.
+
+        Supports ensemble engines: one crop may produce multiple OCRResults,
+        each becoming a separate observation that the aggregator votes on.
+        """
         k = self.cfg.ocr.top_k_crops_per_track
         crops = self.aggregator.best_crops(track_id, k)
         if not crops:
@@ -136,31 +152,85 @@ class PriceTagPipeline:
 
         for entry in crops:
             try:
-                res = self.ocr.recognize(entry.crop.image)
+                results = self.ocr.recognize_all(entry.crop.image)
             except Exception as exc:  # do not abort the whole video on a single OCR fail
                 LOGGER.warning("OCR failed on track=%d frame=%d: %s", track_id, entry.crop.frame_idx, exc)
                 continue
-            if not res.text:
-                continue
-            if self.ocr.structured:
-                parsed = self.parser.parse_vlm_json(res.text, vlm_confidence=res.confidence, backend=res.backend)
-            else:
-                parsed = self.parser.parse_text(res.text, ocr_confidence=res.confidence, backend=res.backend)
-            if self._parsed_is_empty(parsed):
-                continue
-            obs = TagObservation(
-                frame_idx=entry.crop.frame_idx,
-                timestamp_s=entry.crop.timestamp_s,
-                track_id=track_id,
-                bbox_xyxy=entry.crop.bbox_xyxy,
-                parsed=parsed,
-                detection_confidence=entry.crop.detection_confidence,
-                sharpness=entry.crop.sharpness,
-            )
-            self.aggregator.add_observation(obs)
+            for res in results:
+                if not res.text:
+                    continue
+                if self.ocr.structured or res.text.lstrip().startswith("{"):
+                    parsed = self.parser.parse_vlm_json(
+                        res.text, vlm_confidence=res.confidence, backend=res.backend
+                    )
+                else:
+                    parsed = self.parser.parse_text(
+                        res.text, ocr_confidence=res.confidence, backend=res.backend
+                    )
+                self._audit(track_id, entry.crop.frame_idx, res, parsed)
+                if self._parsed_is_empty(parsed):
+                    continue
+                obs = TagObservation(
+                    frame_idx=entry.crop.frame_idx,
+                    timestamp_s=entry.crop.timestamp_s,
+                    track_id=track_id,
+                    bbox_xyxy=entry.crop.bbox_xyxy,
+                    parsed=parsed,
+                    detection_confidence=entry.crop.detection_confidence,
+                    sharpness=entry.crop.sharpness,
+                )
+                self.aggregator.add_observation(obs)
 
         # Drop the buffer once we have committed observations.
         self.aggregator.clear_crops(track_id)
+
+    def _audit(self, track_id: int, frame_idx: int, res, parsed: ParsedTag) -> None:
+        """Append one JSONL line describing this OCR call. No-op when disabled."""
+        if self._audit_path is None:
+            return
+        try:
+            row = {
+                "track_id": int(track_id),
+                "frame_idx": int(frame_idx),
+                "backend": res.backend,
+                "ocr_confidence": float(res.confidence),
+                "raw_text": res.text,
+                "parsed": {
+                    "regular_price": parsed.regular_price,
+                    "loyalty_price": parsed.loyalty_price,
+                    "product_name": parsed.product_name,
+                    "weight_value": parsed.weight_value,
+                    "weight_unit": (parsed.weight_unit.value
+                                    if parsed.weight_unit is not None else None),
+                    "price_per_unit_value": parsed.price_per_unit_value,
+                    "price_per_unit_unit": parsed.price_per_unit_unit,
+                    "promo_flag": parsed.promo_flag,
+                    "currency": parsed.currency,
+                },
+            }
+            with self._audit_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            LOGGER.warning("Audit write failed: %s", exc)
+
+    def _maybe_upscale(self, crop: CropCandidate) -> CropCandidate:
+        if self._sr is None or crop.area_px >= self.cfg.rectifier.sr_min_area_px:
+            return crop
+        try:
+            upscaled = self._sr.upscale(crop.image)
+        except Exception as exc:  # never let SR kill the pipeline
+            LOGGER.warning("Super-resolution failed for frame=%d: %s", crop.frame_idx, exc)
+            return crop
+        new_area = int(upscaled.shape[0] * upscaled.shape[1])
+        return CropCandidate(
+            image=upscaled,
+            sharpness=crop.sharpness,
+            area_px=new_area,
+            bbox_xyxy=crop.bbox_xyxy,
+            detection_confidence=crop.detection_confidence,
+            frame_idx=crop.frame_idx,
+            timestamp_s=crop.timestamp_s,
+        )
 
     @staticmethod
     def _parsed_is_empty(parsed: ParsedTag) -> bool:

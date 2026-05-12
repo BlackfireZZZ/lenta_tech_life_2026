@@ -1,0 +1,72 @@
+# HQ profile — ENSEMBLE OF VLMs
+# Runs PaddleOCR-VL + GLM-OCR + Qwen3-VL per crop. Each output becomes a
+# separate observation; the aggregator votes per field across all of them.
+# Expensive (3x the VLM compute) but typically the highest-quality option,
+# especially on tricky fields like product_name.
+#
+# For production prefer the vllm_server backend serving multiple models on
+# the same server (one VRAM instance, no python overhead).
+
+runtime:
+  profile_name: hq_ensemble
+  output_path: null
+  log_every_n_frames: 40
+  seed: 42
+  fps_override: null
+  audit_path: outputs/audit.jsonl
+
+detector:
+  backend: yolo
+  model_path: data/checkpoints/detector/best.pt
+  conf: 0.20
+  iou: 0.50
+  device: null
+  classes: null
+  tracker_yaml: botsort.yaml
+  image_size: 1280
+
+rectifier:
+  padding_ratio: 0.08
+  clahe_clip_limit: 3.0
+  clahe_tile_grid_size: 8
+  rotate_vertical_tags: true
+  keep_color: true
+  perspective: true                # try corner-quad rectification first
+  super_resolution: true           # upscale tiny crops
+  sr_min_area_px: 8000
+
+ocr:
+  backend: ensemble
+  ensemble_backends:
+    - backend: paddle_vl
+      vlm_model: PaddlePaddle/PaddleOCR-VL
+      weight: 1.0
+    - backend: glm_ocr
+      vlm_model: zai-org/GLM-OCR
+      weight: 1.0
+    - backend: qwen3_vl
+      vlm_model: Qwen/Qwen3-VL-8B-Instruct
+      weight: 1.0
+  vlm_prompt_path: null
+  few_shot_examples_path: projects/price_tag_pipeline/configs/prompts/few_shot_examples.yaml
+  vlm_max_new_tokens: 512
+  vlm_temperature: 0.0
+  guided_json: false
+  min_frames_between_ocr_per_track: 3
+  min_sharpness: 28.0
+  min_crop_area_px: 1000
+  min_detection_confidence: 0.25
+  top_k_crops_per_track: 5         # fewer crops × more engines = same OCR budget
+
+parser:
+  min_price: 0.01
+  max_price: 999999.99
+
+aggregation:
+  min_observations_per_track: 2    # ensemble produces many obs per track already
+  min_final_confidence: 0.55
+  track_ttl_frames: 90
+  price_fuzzy_tolerance: 0.5
+  name_fuzzy_ratio: 0.85
+  dedup_iou_threshold: 0.4
+  dedup_time_window_frames: 200

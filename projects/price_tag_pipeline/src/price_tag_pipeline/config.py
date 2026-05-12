@@ -20,6 +20,7 @@ class RuntimeConfig:
     log_every_n_frames: int
     seed: int = 42
     fps_override: Optional[float] = None  # if set, ignore container FPS
+    audit_path: Optional[str] = None  # JSONL audit trail per OCR call
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,17 @@ class RectifierConfig:
     clahe_tile_grid_size: int
     rotate_vertical_tags: bool
     keep_color: bool = True  # apply CLAHE on luminance only, preserve RGB
+    perspective: bool = False  # try 4-point quad detection + warp before falling back
+    super_resolution: bool = False  # upscale tiny crops before OCR
+    sr_min_area_px: int = 8_000  # crops smaller than this get the SR boost
+
+
+@dataclass(frozen=True)
+class EnsembleEntry:
+    """One member of an OCR ensemble. Backend + optional model override."""
+    backend: str
+    vlm_model: Optional[str] = None
+    weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -53,6 +65,7 @@ class OCRConfig:
     #                       transformers_vlm
     #   production server: vllm_server (OpenAI-compatible, any vLLM-served model)
     #   pipeline: mineru
+    #   ensemble: runs multiple engines, each output becomes a separate observation
     min_frames_between_ocr_per_track: int
     min_sharpness: float
     min_crop_area_px: int
@@ -64,6 +77,9 @@ class OCRConfig:
     vlm_max_new_tokens: int = 512
     vlm_temperature: float = 0.0
     vllm_url: Optional[str] = None  # e.g. http://localhost:8000/v1
+    guided_json: bool = False  # vLLM/SGLang structured-output enforcement
+    few_shot_examples_path: Optional[str] = None  # YAML with example crops + JSON
+    ensemble_backends: tuple[EnsembleEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,6 +140,7 @@ def _as_runtime(node: dict[str, Any]) -> RuntimeConfig:
         log_every_n_frames=int(node["log_every_n_frames"]),
         seed=int(_opt(node, "seed", 42)),
         fps_override=(float(node["fps_override"]) if node.get("fps_override") is not None else None),
+        audit_path=_opt(node, "audit_path"),
     )
 
 
@@ -150,10 +167,22 @@ def _as_rectifier(node: dict[str, Any]) -> RectifierConfig:
         clahe_tile_grid_size=int(node["clahe_tile_grid_size"]),
         rotate_vertical_tags=bool(node["rotate_vertical_tags"]),
         keep_color=bool(_opt(node, "keep_color", True)),
+        perspective=bool(_opt(node, "perspective", False)),
+        super_resolution=bool(_opt(node, "super_resolution", False)),
+        sr_min_area_px=int(_opt(node, "sr_min_area_px", 8_000)),
     )
 
 
 def _as_ocr(node: dict[str, Any]) -> OCRConfig:
+    entries_raw = node.get("ensemble_backends") or []
+    entries = tuple(
+        EnsembleEntry(
+            backend=str(e["backend"]).lower().strip(),
+            vlm_model=_opt(e, "vlm_model"),
+            weight=float(_opt(e, "weight", 1.0)),
+        )
+        for e in entries_raw
+    )
     return OCRConfig(
         backend=str(node["backend"]).lower().strip(),
         min_frames_between_ocr_per_track=int(node["min_frames_between_ocr_per_track"]),
@@ -167,6 +196,9 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         vlm_max_new_tokens=int(_opt(node, "vlm_max_new_tokens", 512)),
         vlm_temperature=float(_opt(node, "vlm_temperature", 0.0)),
         vllm_url=_opt(node, "vllm_url"),
+        guided_json=bool(_opt(node, "guided_json", False)),
+        few_shot_examples_path=_opt(node, "few_shot_examples_path"),
+        ensemble_backends=entries,
     )
 
 
