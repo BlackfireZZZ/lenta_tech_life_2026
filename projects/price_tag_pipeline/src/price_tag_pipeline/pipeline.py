@@ -29,6 +29,7 @@ from .config import PipelineConfig
 from .detector import build_detector
 from .ocr import BaseOCREngine, build_ocr_engine
 from .parser import TagParser
+from .qr import QRCodeExtractor
 from .rectifier import build_rectifier
 from .types import CropCandidate, FinalTag, ParsedTag, TagObservation
 
@@ -41,6 +42,7 @@ class PriceTagPipeline:
         self.detector = build_detector(cfg.detector)
         self.rectifier = build_rectifier(cfg.rectifier)
         self.ocr: BaseOCREngine = build_ocr_engine(cfg.ocr)
+        self.qr = QRCodeExtractor()
         self.parser = TagParser(cfg.parser)
         self.aggregator = TrackAggregator(cfg.aggregation)
         self._sr = None
@@ -151,6 +153,20 @@ class PriceTagPipeline:
             return
 
         for entry in crops:
+            qr_parsed = self.qr.extract(entry.crop.image)
+            if not self._parsed_is_empty(qr_parsed):
+                self._audit(track_id, entry.crop.frame_idx, _PseudoOCRResult(qr_parsed), qr_parsed)
+                self.aggregator.add_observation(
+                    TagObservation(
+                        frame_idx=entry.crop.frame_idx,
+                        timestamp_s=entry.crop.timestamp_s,
+                        track_id=track_id,
+                        bbox_xyxy=entry.crop.bbox_xyxy,
+                        parsed=qr_parsed,
+                        detection_confidence=entry.crop.detection_confidence,
+                        sharpness=entry.crop.sharpness,
+                    )
+                )
             try:
                 results = self.ocr.recognize_all(entry.crop.image)
             except Exception as exc:  # do not abort the whole video on a single OCR fail
@@ -206,6 +222,7 @@ class PriceTagPipeline:
                     "price_per_unit_unit": parsed.price_per_unit_unit,
                     "promo_flag": parsed.promo_flag,
                     "currency": parsed.currency,
+                    "extra_fields": parsed.extra_fields,
                 },
             }
             with self._audit_path.open("a", encoding="utf-8") as f:
@@ -240,6 +257,7 @@ class PriceTagPipeline:
             and parsed.product_name is None
             and parsed.weight_value is None
             and parsed.price_per_unit_value is None
+            and not parsed.extra_fields
         )
 
     # -----------------------------------------------------------------
@@ -266,3 +284,13 @@ class PriceTagPipeline:
             with path.open("w", encoding="utf-8") as f:
                 for r in rows:
                     f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
+
+
+class _PseudoOCRResult:
+    """Tiny adapter so QR observations land in the same audit trail as OCR."""
+
+    backend = "qr"
+    confidence = 0.97
+
+    def __init__(self, parsed: ParsedTag):
+        self.text = parsed.raw_text or ""

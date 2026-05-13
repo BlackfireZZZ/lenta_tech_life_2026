@@ -9,6 +9,9 @@ from robot-captured video).
 - `ANALYSIS.md` — analysis of the original scaffold (what worked, what didn't, why we rewrote).
 - `STRATEGY.md` — model-selection and pipeline strategy (RF-DETR / YOLO26 / PaddleOCR-VL / BoT-SORT).
 - `ML_BASELINE_COLAB.md` — GPU-only ML baseline runbook for Google Colab (train/infer/eval/export).
+- `BRANCHES.md` — what each hackathon branch is for.
+- `HACKATHON_RUNBOOK.md` — local runbook for annotated video + final CSV.
+- `COLAB_REAL_DATA.md` — private-repo SSH clone + real-video Colab workflow.
 - `data/README.md` — exactly where data goes when it arrives.
 - `projects/price_tag_pipeline/README.md` — pipeline usage and CLI reference.
 
@@ -16,12 +19,12 @@ from robot-captured video).
 
 ```
 video.mp4
-  └─► YOLO26 / RF-DETR detector (1280 input, BoT-SORT tracker)
+  └─► YOLO-World / YOLO26 / RF-DETR detector (1280 input, BoT-SORT tracker)
         └─► Per-track top-K-sharpest crop buffer
-              └─► PaddleOCR-VL 1.5 with JSON-schema prompt
+              └─► QR/barcode decoder + PaddleOCR/PaddleOCR-VL JSON prompt
                     └─► Per-field weighted voting (fuzzy buckets for prices)
                           └─► Cross-track IoU + content dedup
-                                └─► outputs/{video}.jsonl
+                                └─► outputs/{video}.jsonl + annotated MP4 + CSV
 ```
 
 ## Quick start
@@ -40,7 +43,18 @@ python projects/price_tag_pipeline/scripts/run_batch_inference.py \
 python projects/price_tag_pipeline/scripts/export_hack_csv.py \
     --inputs outputs/jsonl --out-csv submission/hack_submission.csv
 
-# 3B. Trainable path (if labels are available): prepare + split + train + infer.
+# 3B. Visual debug video.
+python projects/price_tag_pipeline/scripts/visualize_predictions.py \
+    --video data/raw/videos/video01.mp4 \
+    --pred outputs/jsonl/video01.jsonl \
+    --out outputs/vis/video01_annotated.mp4
+
+# 3C. Local UI.
+python projects/price_tag_pipeline/scripts/gradio_app.py \
+    --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
+    --outputs-dir outputs/demo
+
+# 3D. Trainable path (if labels are available): prepare + split + train + infer.
 python projects/price_tag_pipeline/scripts/prepare_data.py     --raw data/raw --processed data/processed
 python projects/price_tag_pipeline/scripts/make_splits.py      --processed data/processed --out data/splits --n_splits 5 --emit-dataset-yaml-fold 0
 python projects/price_tag_pipeline/scripts/train_detector_yolo.py --dataset data/processed/dataset.yaml --model yolo26l.pt --imgsz 1280 --batch 8 --epochs 200

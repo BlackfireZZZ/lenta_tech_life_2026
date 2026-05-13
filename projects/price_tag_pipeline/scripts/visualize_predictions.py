@@ -47,6 +47,8 @@ def _format_label(tag: dict[str, Any]) -> list[str]:
         lines.append(f"{tag['weight_value']:g} {tag['weight_unit']}")
     if tag.get("promo_flag"):
         lines.append("PROMO")
+    if tag.get("qr_code_barcode"):
+        lines.append(f"QR: {tag['qr_code_barcode']}")
     return lines
 
 
@@ -82,13 +84,56 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _format_audit(row: dict[str, Any]) -> str:
+    parsed = row.get("parsed") or {}
+    bits = [str(row.get("backend", "ocr"))]
+    if parsed.get("qr_code_barcode") or (parsed.get("extra_fields") or {}).get("qr_code_barcode"):
+        bits.append("QR")
+    for key in ("regular_price", "loyalty_price", "product_name"):
+        value = parsed.get(key)
+        if value not in (None, ""):
+            bits.append(f"{key}={value}")
+    extras = parsed.get("extra_fields") or {}
+    for key in ("barcode", "price1_qr", "price2_qr", "action_price_qr"):
+        if extras.get(key) not in (None, ""):
+            bits.append(f"{key}={extras[key]}")
+    text = " | ".join(bits)
+    return text[:120]
+
+
+def _draw_audit_panel(frame: np.ndarray, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    lines = ["OCR/QR read:"] + [_format_audit(r) for r in rows[:5]]
+    pad = 8
+    line_h = 20
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.48
+    width = min(
+        frame.shape[1] - 20,
+        max(cv2.getTextSize(line, font, scale, 1)[0][0] for line in lines) + 2 * pad,
+    )
+    height = line_h * len(lines) + 2 * pad
+    x1, y1 = 10, 10
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x1 + width, y1 + height), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, dst=frame)
+    for i, line in enumerate(lines):
+        color = (80, 240, 255) if i == 0 else (255, 255, 255)
+        cv2.putText(frame, line, (x1 + pad, y1 + pad + (i + 1) * line_h - 5),
+                    font, scale, color, 1, cv2.LINE_AA)
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--video", required=True)
     p.add_argument("--pred", required=True, help="JSONL of FinalTag predictions")
     p.add_argument("--out", required=True, help="Output annotated MP4")
+    p.add_argument("--audit", default=None, help="Optional OCR/QR audit JSONL from config runtime.audit_path")
     p.add_argument("--fourcc", default="mp4v")
     p.add_argument("--frame-stride", type=int, default=1)
+    p.add_argument("--linger-frames", type=int, default=45,
+                   help="Keep each final tag visible for N frames after source frames")
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -97,8 +142,18 @@ def main() -> int:
     by_frame: dict[int, list[dict[str, Any]]] = {}
     for t in tags:
         for f in t.get("source_frames", []):
-            by_frame.setdefault(int(f), []).append(t)
+            start = int(f)
+            for ff in range(start, start + max(1, args.linger_frames + 1)):
+                by_frame.setdefault(ff, []).append(t)
     logging.info("Loaded %d tags spanning %d unique frames", len(tags), len(by_frame))
+
+    audit_by_frame: dict[int, list[dict[str, Any]]] = {}
+    if args.audit:
+        audit_rows = _load_jsonl(Path(args.audit))
+        for row in audit_rows:
+            if row.get("frame_idx") is not None:
+                audit_by_frame.setdefault(int(row["frame_idx"]), []).append(row)
+        logging.info("Loaded %d OCR/QR audit events", len(audit_rows))
 
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -122,6 +177,7 @@ def main() -> int:
         if frame_idx % args.frame_stride == 0:
             for t in by_frame.get(frame_idx, []):
                 _draw_tag(frame, t)
+            _draw_audit_panel(frame, audit_by_frame.get(frame_idx, []))
             writer.write(frame)
             written += 1
         frame_idx += 1

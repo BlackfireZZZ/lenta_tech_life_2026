@@ -23,9 +23,25 @@ from .types import (
     CropBufferEntry,
     CropCandidate,
     FinalTag,
+    HACK_EXTRA_FIELDS,
     ParsedTag,
     TagObservation,
 )
+
+
+_NUMERIC_EXTRA_FIELDS = {
+    "price_discount",
+    "discount_amount",
+    "price1_qr",
+    "price2_qr",
+    "price3_qr",
+    "price4_qr",
+    "wholesale_level_1_count",
+    "wholesale_level_1_price",
+    "wholesale_level_2_count",
+    "wholesale_level_2_price",
+    "action_price_qr",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +157,13 @@ class TrackAggregator:
         name, name_conf = self._vote_text(obs_list, "product_name", "product_name_confidence")
         promo = self._vote_promo(obs_list)
         currency = self._vote_categorical(obs_list, "currency", None) or "RUB"
+        extra_fields: dict[str, object] = {}
+        extra_confidences: dict[str, float] = {}
+        for key in HACK_EXTRA_FIELDS:
+            value, conf = self._vote_extra_field(obs_list, key)
+            if value not in (None, ""):
+                extra_fields[key] = value
+                extra_confidences[key] = conf
 
         field_confidences = {
             "regular_price": regular_conf,
@@ -149,6 +172,7 @@ class TrackAggregator:
             "price_per_unit": ppu_conf,
             "product_name": name_conf,
         }
+        field_confidences.update({f"extra:{k}": v for k, v in extra_confidences.items()})
         non_zero = [v for v in field_confidences.values() if v > 0]
         overall_conf = (sum(non_zero) / len(non_zero)) if non_zero else 0.0
 
@@ -175,6 +199,7 @@ class TrackAggregator:
             promo_flag=promo,
             currency=str(currency) if currency else "RUB",
             field_confidences=field_confidences,
+            extra_fields=extra_fields,
             overall_confidence=overall_conf,
             n_observations=len(obs_list),
         )
@@ -271,6 +296,63 @@ class TrackAggregator:
         # Representative: longest original string in the winning bucket (more info).
         rep = max(best[2], key=len)
         return rep, (best[1] / total if total > 0 else 0.0)
+
+    def _vote_extra_field(self, obs_list: list[TagObservation], key: str) -> tuple[object, float]:
+        """Vote arbitrary hackathon CSV fields carried in ParsedTag.extra_fields."""
+        if key in _NUMERIC_EXTRA_FIELDS:
+            return self._vote_extra_numeric(obs_list, key)
+        return self._vote_extra_text(obs_list, key)
+
+    def _vote_extra_numeric(self, obs_list: list[TagObservation], key: str) -> tuple[object, float]:
+        buckets: list[tuple[float, float, int]] = []
+        none_weight = 0.0
+        for obs in obs_list:
+            raw = obs.parsed.extra_fields.get(key)
+            conf = float(obs.parsed.extra_confidences.get(key, 0.0))
+            w = obs.field_weight(conf)
+            value = _coerce_float(raw)
+            if value is None or conf <= 0:
+                none_weight += w
+                continue
+            placed = False
+            tol = self.cfg.price_fuzzy_tolerance if "price" in key or "amount" in key else 0.01
+            for i, (center, weight, count) in enumerate(buckets):
+                if abs(center - value) <= tol:
+                    buckets[i] = ((center * count + value) / (count + 1), weight + w, count + 1)
+                    placed = True
+                    break
+            if not placed:
+                buckets.append((value, w, 1))
+        if not buckets:
+            return None, 0.0
+        best = max(buckets, key=lambda b: b[1])
+        if best[1] < none_weight:
+            return None, 0.0
+        total = sum(b[1] for b in buckets) + none_weight
+        return round(best[0], 2), (best[1] / total if total > 0 else 0.0)
+
+    def _vote_extra_text(self, obs_list: list[TagObservation], key: str) -> tuple[object, float]:
+        votes: defaultdict[str, float] = defaultdict(float)
+        originals: dict[str, str] = {}
+        none_weight = 0.0
+        for obs in obs_list:
+            raw = obs.parsed.extra_fields.get(key)
+            conf = float(obs.parsed.extra_confidences.get(key, 0.0))
+            w = obs.field_weight(conf)
+            if raw in (None, "") or conf <= 0:
+                none_weight += w
+                continue
+            original = str(raw).strip()
+            norm = " ".join(original.lower().split())
+            votes[norm] += w
+            originals.setdefault(norm, original)
+        if not votes:
+            return None, 0.0
+        best_key, best_weight = max(votes.items(), key=lambda kv: kv[1])
+        if best_weight < none_weight:
+            return None, 0.0
+        total = sum(votes.values()) + none_weight
+        return originals[best_key], (best_weight / total if total > 0 else 0.0)
 
     def _vote_promo(self, obs_list: list[TagObservation]) -> bool:
         on_w = 0.0
@@ -396,3 +478,12 @@ def _name_ratio(a: str, b: str) -> float:
     # Levenshtein-like ratio using SequenceMatcher (stdlib, no dependency).
     from difflib import SequenceMatcher
     return SequenceMatcher(a=a, b=b).ratio()
+
+
+def _coerce_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace(",", ".").replace(" ", "").replace("\xa0", ""))
+    except (TypeError, ValueError):
+        return None

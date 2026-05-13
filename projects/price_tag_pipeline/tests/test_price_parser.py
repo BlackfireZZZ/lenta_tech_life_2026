@@ -101,13 +101,15 @@ def test_weight_l_with_comma_decimal():
 # ---------------------------------------------------------------------------
 
 def test_vlm_json_parse_happy_path():
-    raw = '{"regular_price":"199.99","loyalty_price":"149.99","product_name":"Молоко","weight_value":1,"weight_unit":"л","promo_flag":true,"currency":"RUB"}'
+    raw = '{"regular_price":"199.99","loyalty_price":"149.99","product_name":"Молоко","weight_value":1,"weight_unit":"л","promo_flag":true,"currency":"RUB","barcode":"4601234567890","action_code_qr":"A123"}'
     out = _parser().parse_vlm_json(raw, vlm_confidence=0.95)
     assert out.regular_price == 199.99
     assert out.loyalty_price == 149.99
     assert out.product_name == "Молоко"
     assert out.weight_unit == WeightUnit.L
     assert out.promo_flag is True
+    assert out.extra_fields["barcode"] == "4601234567890"
+    assert out.extra_fields["action_code_qr"] == "A123"
 
 
 def test_vlm_invalid_json_falls_back_to_text_parser():

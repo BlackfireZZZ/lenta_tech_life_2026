@@ -21,6 +21,7 @@ projects/price_tag_pipeline/
 │   ├── base.txt                   #   inference only
 │   ├── ocr.txt                    #   adds PaddleOCR / VLM
 │   ├── train.txt                  #   adds torch + wandb + albumentations
+│   ├── demo.txt                   #   adds Gradio + optional barcode decoder
 │   └── dev.txt                    #   adds pytest + ruff + black
 ├── scripts/                       # CLI entry points
 │   ├── prepare_data.py            #   raw -> processed (idempotent)
@@ -30,10 +31,12 @@ projects/price_tag_pipeline/
 │   ├── train_vlm_lora.py          #   PaddleOCR-VL LoRA fine-tune (stub)
 │   ├── eval_detector.py           #   mAP on a fold
 │   ├── eval_e2e.py                #   per-field + overall accuracy on a video
-│   └── run_inference.py           #   video -> JSONL tags
+│   ├── run_inference.py           #   video -> JSONL tags
 │   ├── run_batch_inference.py     #   all videos dir -> per-video JSONL
 │   ├── export_hack_csv.py         #   JSONL -> CSV in hackathon schema
-│   └── eval_hack_csv.py           #   CSV-vs-CSV evaluator (>=80% per-tag score)
+│   ├── eval_hack_csv.py           #   CSV-vs-CSV evaluator (>=80% per-tag score)
+│   ├── visualize_predictions.py   #   JSONL + video -> annotated MP4
+│   └── gradio_app.py              #   upload video -> annotated MP4 + CSV UI
 ├── src/price_tag_pipeline/
 │   ├── aggregator.py              # per-track per-field voting + cross-track dedup
 │   ├── cli.py
@@ -42,6 +45,7 @@ projects/price_tag_pipeline/
 │   ├── ocr.py                     # PaddleOCR-VL / PaddleOCR / Tesseract / NoOp
 │   ├── parser.py                  # raw text -> structured ParsedTag
 │   ├── pipeline.py                # main inference loop
+│   ├── qr.py                      # QR/barcode payload extraction
 │   ├── quality.py                 # sharpness metric
 │   ├── rectifier.py               # padded crop + CLAHE on luminance (keeps color)
 │   ├── types.py                   # domain types (ParsedTag, FinalTag, ...)
@@ -113,6 +117,17 @@ python projects/price_tag_pipeline/scripts/run_batch_inference.py \
 python projects/price_tag_pipeline/scripts/export_hack_csv.py \
     --inputs outputs/jsonl \
     --out-csv submission/hack_submission.csv
+
+# 10. Render visual QA video with boxes and recognized fields.
+python projects/price_tag_pipeline/scripts/visualize_predictions.py \
+    --video data/raw/videos/video01.mp4 \
+    --pred outputs/jsonl/video01.jsonl \
+    --out outputs/vis/video01_annotated.mp4
+
+# 11. Launch local upload-video UI.
+python projects/price_tag_pipeline/scripts/gradio_app.py \
+    --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
+    --outputs-dir outputs/demo
 ```
 
 ## Profiles
@@ -200,8 +215,17 @@ Per tag (one line of `outputs/*.jsonl`):
   "price_per_unit_unit": "руб/л",
   "promo_flag": true,
   "currency": "RUB",
+  "barcode": "4601234567890",
+  "qr_code_barcode": "4601234567890",
+  "price1_qr": 129.99,
+  "action_price_qr": 99.99,
+  "action_code_qr": "A12345",
   "field_confidences": {"regular_price": 0.92, ...},
   "overall_confidence": 0.86,
   "n_observations": 5
 }
 ```
+
+`export_hack_csv.py` maps JSONL to the exact 29-column hackathon CSV. Fields
+that are not recognized stay empty; if OCR/VLM explicitly returns `нет`, the
+CSV keeps `нет`.

@@ -95,3 +95,27 @@ def test_dedup_keeps_distinct_when_prices_differ():
                  source_frames=[12], regular_price=149.99, overall_confidence=0.7, n_observations=1)
     merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_frames=50)
     assert len(merged) == 2
+
+
+def test_extra_fields_are_voted_into_final_tag():
+    agg = TrackAggregator(_cfg())
+    parsed = ParsedTag(
+        extra_fields={"qr_code_barcode": "4601234567890", "price1_qr": 129.99},
+        extra_confidences={"qr_code_barcode": 0.97, "price1_qr": 0.97},
+    )
+    for frame in (1, 2):
+        agg.add_observation(TagObservation(
+            frame_idx=frame,
+            timestamp_s=frame / 30.0,
+            track_id=9,
+            bbox_xyxy=(10, 20, 100, 60),
+            parsed=parsed,
+            detection_confidence=0.9,
+            sharpness=120.0,
+        ))
+    agg.mark_seen(9, 2, (10, 20, 100, 60))
+    out = agg.flush_all()
+    assert len(out) == 1
+    row = out[0].to_dict()
+    assert row["qr_code_barcode"] == "4601234567890"
+    assert row["price1_qr"] == 129.99

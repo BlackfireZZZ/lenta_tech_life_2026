@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .config import ParserConfig
-from .types import ParsedTag, WeightUnit
+from .types import HACK_EXTRA_FIELDS, ParsedTag, WeightUnit
 
 
 # Superscript-digit -> ASCII-digit translation table.
@@ -76,6 +76,7 @@ _PRODUCT_NAME_RE = re.compile(
     r"(?:[А-ЯЁа-яё][А-ЯЁа-яё\-]{2,}(?:\s+[А-ЯЁа-яё\d\-\.%,]+){0,8})",
     flags=re.UNICODE,
 )
+_BARCODE_RE = re.compile(r"(?<!\d)(\d{8,14})(?!\d)")
 
 
 def _normalize_text(text: str) -> str:
@@ -254,6 +255,15 @@ def _extract_product_name(text: str) -> Optional[str]:
     return candidates[0]
 
 
+def _extract_barcode(text: str) -> Optional[str]:
+    for m in _BARCODE_RE.finditer(text):
+        value = m.group(1)
+        # Price-tag QR payloads and OCR often contain dates; prefer GTIN-like lengths.
+        if len(value) in {8, 12, 13, 14}:
+            return value
+    return None
+
+
 @dataclass(frozen=True)
 class TagParser:
     cfg: ParserConfig
@@ -277,6 +287,12 @@ class TagParser:
         ppu_value, ppu_unit = _extract_ppu(normalized)
         name = _extract_product_name(normalized)
         promo = _detect_promo(text_lower)
+        barcode = _extract_barcode(normalized)
+        extra_fields = {}
+        extra_confidences = {}
+        if barcode:
+            extra_fields["barcode"] = barcode
+            extra_confidences["barcode"] = ocr_confidence * 0.65
 
         # Confidence: scale OCR confidence by parser certainty proxies.
         price_conf = ocr_confidence * (1.0 if any(t in text_lower for t in _RUB_TOKENS) else 0.85)
@@ -301,6 +317,8 @@ class TagParser:
             currency="RUB",
             backend=backend,
             raw_text=text,
+            extra_fields=extra_fields,
+            extra_confidences=extra_confidences,
         )
 
     def parse_vlm_json(self, raw_json: str, vlm_confidence: float, backend: str = "vlm") -> ParsedTag:
@@ -331,6 +349,14 @@ class TagParser:
         name = obj.get("product_name")
         promo = bool(obj.get("promo_flag", False))
         currency = obj.get("currency") or "RUB"
+        extra_fields: dict[str, object] = {}
+        extra_confidences: dict[str, float] = {}
+        for key in HACK_EXTRA_FIELDS:
+            value = obj.get(key)
+            if value in (None, ""):
+                continue
+            extra_fields[key] = value
+            extra_confidences[key] = vlm_confidence
 
         return ParsedTag(
             regular_price=regular,
@@ -349,4 +375,6 @@ class TagParser:
             currency=currency,
             backend=backend,
             raw_text=raw_json,
+            extra_fields=extra_fields,
+            extra_confidences=extra_confidences,
         )

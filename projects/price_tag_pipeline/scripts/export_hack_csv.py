@@ -75,6 +75,14 @@ def _fmt_price(v: Any) -> str:
         return ""
 
 
+def _fmt_cell(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return f"{v:.2f}"
+    return str(v)
+
+
 def _as_int_str(v: Any) -> str:
     if v is None:
         return ""
@@ -116,36 +124,40 @@ def _row_from_tag(tag: dict[str, Any], filename: str) -> dict[str, str]:
         except (TypeError, ValueError):
             ts_ms = None
 
+    price_discount = tag.get("price_discount")
+    if price_discount in (None, ""):
+        price_discount = _derive_discount(regular, card)
+
     row = {
         "filename": filename,
         "product_name": str(tag.get("product_name") or ""),
         "price_default": _fmt_price(regular),
         "price_card": _fmt_price(card),
-        "price_discount": _derive_discount(regular, card),
-        "barcode": "",
-        "discount_amount": "",
-        "id_sku": "",
-        "print_datetime": "",
-        "code": "",
-        "additional_info": "",
-        "color": "",
-        "special_symbols": "",
+        "price_discount": _fmt_cell(price_discount),
+        "barcode": _fmt_cell(tag.get("barcode")),
+        "discount_amount": _fmt_cell(tag.get("discount_amount")),
+        "id_sku": _fmt_cell(tag.get("id_sku")),
+        "print_datetime": _fmt_cell(tag.get("print_datetime")),
+        "code": _fmt_cell(tag.get("code")),
+        "additional_info": _fmt_cell(tag.get("additional_info")),
+        "color": _fmt_cell(tag.get("color")),
+        "special_symbols": _fmt_cell(tag.get("special_symbols")),
         "frame_timestamp": _as_int_str(ts_ms),
         "x_min": _as_int_str(bbox[0]),
         "y_min": _as_int_str(bbox[1]),
         "x_max": _as_int_str(bbox[2]),
         "y_max": _as_int_str(bbox[3]),
-        "qr_code_barcode": "",
-        "price1_qr": "",
-        "price2_qr": "",
-        "price3_qr": "",
-        "price4_qr": "",
-        "wholesale_level_1_count": "",
-        "wholesale_level_1_price": "",
-        "wholesale_level_2_count": "",
-        "wholesale_level_2_price": "",
-        "action_price_qr": "",
-        "action_code_qr": "",
+        "qr_code_barcode": _fmt_cell(tag.get("qr_code_barcode")),
+        "price1_qr": _fmt_cell(tag.get("price1_qr")),
+        "price2_qr": _fmt_cell(tag.get("price2_qr")),
+        "price3_qr": _fmt_cell(tag.get("price3_qr")),
+        "price4_qr": _fmt_cell(tag.get("price4_qr")),
+        "wholesale_level_1_count": _fmt_cell(tag.get("wholesale_level_1_count")),
+        "wholesale_level_1_price": _fmt_cell(tag.get("wholesale_level_1_price")),
+        "wholesale_level_2_count": _fmt_cell(tag.get("wholesale_level_2_count")),
+        "wholesale_level_2_price": _fmt_cell(tag.get("wholesale_level_2_price")),
+        "action_price_qr": _fmt_cell(tag.get("action_price_qr")),
+        "action_code_qr": _fmt_cell(tag.get("action_code_qr")),
     }
     return row
 
@@ -166,7 +178,7 @@ def main() -> int:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     ext = args.video_ext if args.video_ext.startswith(".") else f".{args.video_ext}"
 
-    jsonl_files = sorted(inputs_dir.glob("*.jsonl"))
+    jsonl_files = [p for p in sorted(inputs_dir.glob("*.jsonl")) if not p.name.endswith("_audit.jsonl")]
     if not jsonl_files:
         raise SystemExit(f"No JSONL files found in: {inputs_dir}")
 

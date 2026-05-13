@@ -23,6 +23,30 @@ from typing import Any, Optional
 import numpy as np
 
 
+HACK_EXTRA_FIELDS = (
+    "price_discount",
+    "barcode",
+    "discount_amount",
+    "id_sku",
+    "print_datetime",
+    "code",
+    "additional_info",
+    "color",
+    "special_symbols",
+    "qr_code_barcode",
+    "price1_qr",
+    "price2_qr",
+    "price3_qr",
+    "price4_qr",
+    "wholesale_level_1_count",
+    "wholesale_level_1_price",
+    "wholesale_level_2_count",
+    "wholesale_level_2_price",
+    "action_price_qr",
+    "action_code_qr",
+)
+
+
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
@@ -120,6 +144,8 @@ class ParsedTag:
 
     backend: str = "unknown"
     raw_text: Optional[str] = None
+    extra_fields: dict[str, Any] = field(default_factory=dict)
+    extra_confidences: dict[str, float] = field(default_factory=dict)
 
     def has_any_price(self) -> bool:
         return self.regular_price is not None or self.loyalty_price is not None
@@ -179,6 +205,7 @@ class FinalTag:
     currency: str = "RUB"
 
     field_confidences: dict[str, float] = field(default_factory=dict)
+    extra_fields: dict[str, Any] = field(default_factory=dict)
     overall_confidence: float = 0.0
     n_observations: int = 0
 
@@ -201,6 +228,8 @@ class FinalTag:
             "overall_confidence": round(float(self.overall_confidence), 4),
             "n_observations": int(self.n_observations),
         }
+        for key in HACK_EXTRA_FIELDS:
+            out[key] = self.extra_fields.get(key)
         return out
 
 

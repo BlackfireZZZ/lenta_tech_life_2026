@@ -5,3 +5,4 @@
 -r requirements/ocr.txt
 -r requirements/train.txt
 -r requirements/dev.txt
+-r requirements/demo.txt

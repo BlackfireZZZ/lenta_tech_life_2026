@@ -1,0 +1,9 @@
+# Demo UI dependencies.
+-r base.txt
+-r ocr.txt
+
+gradio>=4.44
+
+# Optional, improves 1D barcode and QR decoding. It may require a system zbar
+# library, so the runtime code treats it as optional.
+pyzbar>=0.1.9
