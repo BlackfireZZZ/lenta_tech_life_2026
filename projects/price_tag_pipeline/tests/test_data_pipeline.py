@@ -63,8 +63,10 @@ def test_ingest_validate_split(tmp_path: Path) -> None:
 
     yaml_path = write_dataset_yaml(processed, classes, fold=folds[0])
     assert yaml_path.exists()
+    assert (processed / "images").is_symlink()
     assert (processed / "train_images.txt").exists()
     assert (processed / "val_images.txt").exists()
+    assert "/images/" in (processed / "train_images.txt").read_text(encoding="utf-8")
 
 
 def test_ingest_lenta_csv(tmp_path: Path) -> None:
@@ -95,7 +97,7 @@ def test_ingest_lenta_csv(tmp_path: Path) -> None:
                 "filename,product_name,frame_timestamp,x_min,y_min,x_max,y_max,price_default",
                 "sample_video.mp4,Milk,2,\"50,0\",\"60,0\",\"120,0\",\"140,0\",\"129,99\"",
                 "sample_video.mp4,Bread,2,150,70,210,130,59.99",
-                "sample_video.mp4,Tea,5,10,20,70,80,199.99",
+                "sample_video.mp4,Tea,500,10,20,70,80,199.99",
             ]
         )
         + "\n",
@@ -113,4 +115,5 @@ def test_ingest_lenta_csv(tmp_path: Path) -> None:
 
     frame_two_label = processed / "labels" / "sample_video" / "000002.txt"
     assert len(frame_two_label.read_text(encoding="utf-8").splitlines()) == 2
+    assert (processed / "labels" / "sample_video" / "000005.txt").exists()
     assert (processed / "gt_e2e" / "sample_video.jsonl").exists()

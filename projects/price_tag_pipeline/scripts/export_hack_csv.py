@@ -10,6 +10,8 @@ Output:
 Notes:
   - Fields unsupported by the current baseline are emitted as empty strings.
   - `frame_timestamp` is emitted in milliseconds.
+  - `filename` defaults to the JSONL stem because the released Lenta CSVs use
+    stems such as `25_2-10`, not `25_2-10.mp4`.
   - `price_discount` is derived as max(price_default - price_card, 0) when both
     prices are present; otherwise empty.
 """
@@ -20,8 +22,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Optional
-
+from typing import Any
 
 CSV_COLUMNS = [
     "filename",
@@ -92,7 +93,7 @@ def _as_int_str(v: Any) -> str:
         return ""
 
 
-def _derive_discount(regular: Optional[float], card: Optional[float]) -> str:
+def _derive_discount(regular: float | None, card: float | None) -> str:
     if regular is None or card is None:
         return ""
     diff = float(regular) - float(card)
@@ -101,7 +102,7 @@ def _derive_discount(regular: Optional[float], card: Optional[float]) -> str:
     return f"{diff:.2f}"
 
 
-def _to_float(v: Any) -> Optional[float]:
+def _to_float(v: Any) -> float | None:
     if v is None:
         return None
     try:
@@ -168,15 +169,17 @@ def main() -> int:
     p.add_argument("--out-csv", required=True, help="Output CSV path")
     p.add_argument(
         "--video-ext",
-        default=".mp4",
-        help="Video extension used to populate `filename` from jsonl stem (default: .mp4)",
+        default="",
+        help="Optional video extension appended to JSONL stem for `filename` (default: none)",
     )
     args = p.parse_args()
 
     inputs_dir = Path(args.inputs).expanduser().resolve()
     out_csv = Path(args.out_csv).expanduser().resolve()
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    ext = args.video_ext if args.video_ext.startswith(".") else f".{args.video_ext}"
+    ext = ""
+    if args.video_ext:
+        ext = args.video_ext if args.video_ext.startswith(".") else f".{args.video_ext}"
 
     jsonl_files = [p for p in sorted(inputs_dir.glob("*.jsonl")) if not p.name.endswith("_audit.jsonl")]
     if not jsonl_files:

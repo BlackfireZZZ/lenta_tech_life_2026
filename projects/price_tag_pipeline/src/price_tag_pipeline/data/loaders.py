@@ -13,7 +13,6 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
 
 import cv2
 
@@ -57,7 +56,7 @@ def extract_frames(video_path: Path, out_dir: Path, jpeg_quality: int = 95) -> i
     out_dir.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise IOError(f"Could not open {video_path}")
+        raise OSError(f"Could not open {video_path}")
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     existing = len(list(out_dir.glob("*.jpg")))
     if total > 0 and existing == total:
@@ -183,7 +182,7 @@ def ingest_yolo(
     return records, classes
 
 
-def _find_video_file(videos_dir: Path, video_id: str) -> Optional[Path]:
+def _find_video_file(videos_dir: Path, video_id: str) -> Path | None:
     for ext in (".mp4", ".avi", ".mov", ".mkv"):
         p = videos_dir / f"{video_id}{ext}"
         if p.exists():
@@ -246,6 +245,8 @@ def ingest_lenta_csv(
             continue
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         if width <= 0 or height <= 0:
             cap.release()
             LOGGER.warning("Could not read video dimensions for %s", video_path)
@@ -254,7 +255,7 @@ def ingest_lenta_csv(
         labels_by_frame: dict[int, list[str]] = {}
         gt_rows: list[dict[str, object]] = []
         for row_no, row in enumerate(rows, start=2):
-            frame_idx = _parse_int(row.get("frame_timestamp"))
+            frame_idx = _parse_lenta_frame_idx(row.get("frame_timestamp"), fps=fps, frame_count=frame_count)
             box = _parse_lenta_bbox(row, width, height)
             if frame_idx is None or box is None:
                 LOGGER.warning("Skipping bad row %s:%d", csv_path, row_no)
@@ -282,9 +283,8 @@ def ingest_lenta_csv(
             dst_img = out_frame_dir / f"{frame_idx:06d}.jpg"
             dst_label = out_label_dir / f"{frame_idx:06d}.txt"
             if not dst_img.exists():
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ok, frame = cap.read()
-                if not ok or frame is None:
+                frame = _read_frame_near(cap, frame_idx, frame_count=frame_count)
+                if frame is None:
                     LOGGER.warning("Could not extract frame %d from %s", frame_idx, video_path)
                     continue
                 cv2.imwrite(str(dst_img), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -315,7 +315,7 @@ def _read_lenta_csv(csv_path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def _find_lenta_video_file(videos_dir: Path, video_id: str, rows: list[dict[str, str]]) -> Optional[Path]:
+def _find_lenta_video_file(videos_dir: Path, video_id: str, rows: list[dict[str, str]]) -> Path | None:
     direct = _find_video_file(videos_dir, video_id)
     if direct is not None:
         return direct
@@ -337,7 +337,7 @@ def _find_lenta_video_file(videos_dir: Path, video_id: str, rows: list[dict[str,
     return None
 
 
-def _parse_decimal(value: object) -> Optional[float]:
+def _parse_decimal(value: object) -> float | None:
     if value is None:
         return None
     text = str(value).strip().replace("\xa0", "").replace(" ", "").replace(",", ".")
@@ -349,14 +349,49 @@ def _parse_decimal(value: object) -> Optional[float]:
         return None
 
 
-def _parse_int(value: object) -> Optional[int]:
+def _parse_int(value: object) -> int | None:
     parsed = _parse_decimal(value)
     if parsed is None:
         return None
     return int(round(parsed))
 
 
-def _parse_lenta_bbox(row: dict[str, str], width: int, height: int) -> Optional[tuple[float, float, float, float]]:
+def _parse_lenta_frame_idx(value: object, fps: float, frame_count: int) -> int | None:
+    parsed = _parse_decimal(value)
+    if parsed is None:
+        return None
+
+    as_frame = int(round(parsed))
+    if 0 <= as_frame < frame_count:
+        return as_frame
+
+    if fps > 0 and frame_count > 0:
+        candidate_from_ms = parsed / 1000.0 * fps
+        if 0 <= candidate_from_ms <= frame_count + fps * 3:
+            return min(frame_count - 1, max(0, int(round(candidate_from_ms))))
+
+    return as_frame
+
+
+def _read_frame_near(cap: cv2.VideoCapture, frame_idx: int, frame_count: int, search_radius: int = 30):
+    candidates = [frame_idx]
+    for delta in range(1, search_radius + 1):
+        candidates.append(frame_idx - delta)
+        candidates.append(frame_idx + delta)
+
+    for candidate in candidates:
+        if candidate < 0:
+            continue
+        if frame_count > 0 and candidate >= frame_count:
+            continue
+        cap.set(cv2.CAP_PROP_POS_FRAMES, candidate)
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return frame
+    return None
+
+
+def _parse_lenta_bbox(row: dict[str, str], width: int, height: int) -> tuple[float, float, float, float] | None:
     values = [_parse_decimal(row.get(k)) for k in ("x_min", "y_min", "x_max", "y_max")]
     if any(v is None for v in values):
         return None
@@ -377,7 +412,7 @@ def _parse_lenta_bbox(row: dict[str, str], width: int, height: int) -> Optional[
 def coco_to_yolo(
     raw_dir: Path,
     processed_dir: Path,
-    coco_json: Optional[Path] = None,
+    coco_json: Path | None = None,
 ) -> tuple[list[FrameRecord], list[str]]:
     """Convert a COCO-format annotations file into YOLO-format files under processed/.
 
@@ -449,7 +484,7 @@ def coco_to_yolo(
     return records, classes
 
 
-def _parse_coco_filename(fname: str) -> tuple[Optional[str], Optional[int]]:
+def _parse_coco_filename(fname: str) -> tuple[str | None, int | None]:
     stem = Path(fname).stem
     # 'store_07_aisle_03/000123'
     if "/" in fname:
@@ -473,7 +508,7 @@ def _locate_coco_source_image(
     fname: str,
     video_id: str,
     frame_idx: int,
-) -> Optional[Path]:
+) -> Path | None:
     candidates = [
         raw_dir / "frames" / fname,
         raw_dir / "frames" / video_id / f"{frame_idx:06d}.jpg",
@@ -493,10 +528,11 @@ def _locate_coco_source_image(
 def write_dataset_yaml(
     processed_dir: Path,
     classes: list[str],
-    fold: Optional[dict[str, list[str]]] = None,
+    fold: dict[str, list[str]] | None = None,
     fold_id: int = 0,
 ) -> Path:
     """Emit dataset.yaml. `fold`, if provided, defines `train`/`val` video_id lists."""
+    _ensure_ultralytics_images_alias(processed_dir)
     yaml_path = processed_dir / "dataset.yaml"
     lines = [
         f"path: {processed_dir.resolve().as_posix()}",
@@ -516,10 +552,27 @@ def write_dataset_yaml(
 
 
 def _emit_split_list(processed_dir: Path, fname: str, video_ids: list[str]) -> None:
-    frames_root = processed_dir / "frames"
+    frames_root = processed_dir / "images"
+    if not frames_root.exists():
+        frames_root = processed_dir / "frames"
     out = processed_dir / fname
     lines: list[str] = []
     for vid in video_ids:
         for img in sorted((frames_root / vid).glob("*.jpg")):
-            lines.append(img.resolve().as_posix())
+            lines.append(img.absolute().as_posix())
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _ensure_ultralytics_images_alias(processed_dir: Path) -> None:
+    """Ultralytics maps `.../images/...` paths to `.../labels/...` labels."""
+    frames_root = processed_dir / "frames"
+    images_root = processed_dir / "images"
+    if images_root.exists() or images_root.is_symlink() or not frames_root.exists():
+        return
+    try:
+        images_root.symlink_to("frames", target_is_directory=True)
+    except OSError:
+        LOGGER.warning(
+            "Could not create %s -> frames symlink; Ultralytics training may not find labels",
+            images_root,
+        )
