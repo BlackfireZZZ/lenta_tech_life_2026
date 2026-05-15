@@ -6,7 +6,7 @@ The pipeline reads everything from this directory. **Once the dataset arrives, d
 data/
 ├── raw/                          # untouched dataset from organizers
 │   ├── videos/                   #   put .mp4 / .avi / .mov files here, one per scene
-│   └── annotations/              #   YOLO labels (.txt) + classes.txt, OR COCO json
+│   └── annotations/              #   Lenta CSV, YOLO labels (.txt) + classes.txt, OR COCO json
 ├── processed/                    # outputs of prepare_data.py (frames + normalized labels)
 │   ├── frames/                   #   {video_id}/{frame_idx:06d}.jpg
 │   ├── labels/                   #   {video_id}/{frame_idx:06d}.txt   (YOLO format)
@@ -20,7 +20,36 @@ data/
 
 ## Expected file shapes
 
-### Option A — YOLO format (assumed default)
+### Option A — Lenta hackathon CSV format
+
+This is the actual annotated data format used by the current dataset. Put each
+video in `data/raw/videos/` and the matching CSV in `data/raw/annotations/csv/`.
+The CSV filename stem should match the video filename stem.
+
+```
+data/raw/
+├── videos/
+│   ├── 25_12-20.mp4
+│   ├── 25_2-10.mp4
+│   └── ...
+└── annotations/
+    └── csv/
+        ├── 25_12-20.csv
+        ├── 25_2-10.csv
+        └── ...
+```
+
+Expected CSV columns include:
+
+```
+filename,product_name,price_default,price_card,...,frame_timestamp,x_min,y_min,x_max,y_max,...
+```
+
+`prepare_data.py` reads `frame_timestamp` as a video frame index, extracts only
+annotated frames, converts bbox columns into YOLO labels, and writes full row
+ground truth to `data/processed/gt_e2e/{video_id}.jsonl`.
+
+### Option B — YOLO format
 
 ```
 data/raw/
@@ -41,7 +70,7 @@ data/raw/
 price_tag
 ```
 
-### Option B — COCO format (auto-detected by extension `.json`)
+### Option C — COCO format (auto-detected by extension `.json`)
 
 ```
 data/raw/
@@ -53,7 +82,7 @@ data/raw/
 
 `prepare_data.py` auto-detects the format from the file structure.
 
-### Option C — per-frame images already extracted
+### Option D — per-frame images already extracted
 
 If the organizers ship frames instead of videos, drop them under `data/raw/frames/{video_id}/{frame_idx:06d}.jpg` and `prepare_data.py` will skip the frame extraction step.
 

@@ -219,6 +219,7 @@ __marimo__/
 
 # Project data — large files, never commit
 data/raw/videos/*
+data/raw/unlabeled_videos/*
 data/raw/annotations/*
 data/raw/frames/*
 data/raw/metadata.csv

@@ -2,7 +2,7 @@
 """Stage raw data into a normalized, validated, train-ready format.
 
 Steps:
-1. Detect annotation format (YOLO / COCO).
+1. Detect annotation format (YOLO / COCO / Lenta CSV).
 2. Extract frames from videos if needed.
 3. Mirror labels into processed/labels/{video_id}/.
 4. Run integrity checks, abort on failure unless --allow-bad.
@@ -30,8 +30,9 @@ if str(SRC) not in sys.path:
 
 from price_tag_pipeline.data.loaders import (  # noqa: E402
     detect_format,
-    ingest_yolo,
     coco_to_yolo,
+    ingest_lenta_csv,
+    ingest_yolo,
     write_dataset_yaml,
 )
 from price_tag_pipeline.data.validate import validate_dataset  # noqa: E402
@@ -61,7 +62,8 @@ def main() -> int:
     if fmt == "empty":
         logging.error(
             "No annotations found under %s. Drop YOLO labels (annotations/labels/<video>/*.txt) "
-            "or a COCO json (annotations/*.json) and re-run.",
+            "or a COCO json (annotations/*.json), or Lenta CSV files "
+            "(annotations/csv/<video>.csv) and re-run.",
             raw,
         )
         return 1
@@ -70,6 +72,8 @@ def main() -> int:
         _, classes = ingest_yolo(raw, processed, extract_videos=not args.no_extract)
     elif fmt == "coco":
         _, classes = coco_to_yolo(raw, processed)
+    elif fmt == "lenta_csv":
+        _, classes = ingest_lenta_csv(raw, processed, extract_videos=not args.no_extract)
     elif fmt == "frames_only":
         logging.error("Frames found but no annotations. Drop labels under raw/annotations/labels/ first.")
         return 1

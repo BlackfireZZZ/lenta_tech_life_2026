@@ -1,4 +1,4 @@
-"""Format adapters: YOLO ↔ unified internal representation, with a COCO converter.
+"""Format adapters: YOLO ↔ unified internal representation, with converters.
 
 Unified internal representation is YOLO normalized (cx, cy, w, h) per-image txt
 under data/processed/labels/{video_id}/{frame_idx:06d}.txt and JPEG frames under
@@ -7,6 +7,7 @@ data/processed/frames/{video_id}/{frame_idx:06d}.jpg.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import shutil
@@ -28,10 +29,14 @@ class FrameRecord:
 
 
 def detect_format(raw_dir: Path) -> str:
-    """Return one of: 'yolo', 'coco', 'frames_only', 'empty'."""
+    """Return one of: 'yolo', 'coco', 'lenta_csv', 'frames_only', 'empty'."""
     coco = list((raw_dir / "annotations").glob("*.json"))
     if coco:
         return "coco"
+    csv_dir = raw_dir / "annotations" / "csv"
+    csv_files = list(csv_dir.glob("*.csv")) if csv_dir.exists() else list((raw_dir / "annotations").glob("*.csv"))
+    if csv_files:
+        return "lenta_csv"
     if (raw_dir / "annotations" / "labels").exists():
         return "yolo"
     if (raw_dir / "frames").exists():
@@ -184,6 +189,185 @@ def _find_video_file(videos_dir: Path, video_id: str) -> Optional[Path]:
         if p.exists():
             return p
     return None
+
+
+# ---------------------------------------------------------------------------
+# Lenta CSV -> processed YOLO + E2E ground truth
+# ---------------------------------------------------------------------------
+
+def ingest_lenta_csv(
+    raw_dir: Path,
+    processed_dir: Path,
+    extract_videos: bool = True,
+) -> tuple[list[FrameRecord], list[str]]:
+    """Convert the hackathon CSV annotation format into processed YOLO files.
+
+    Expected raw layout:
+        raw_dir/videos/{video_id}.mp4
+        raw_dir/annotations/csv/{video_id}.csv
+
+    The CSV stores one price-tag row per object, with bbox columns
+    `x_min,y_min,x_max,y_max` and the source frame in `frame_timestamp`.
+    We extract only the annotated frames, aggregate all boxes that share a
+    frame, and write one YOLO label file per frame.
+    """
+    if not extract_videos:
+        raise ValueError("lenta_csv ingestion needs video frame extraction; remove --no-extract")
+
+    classes = ["price_tag"]
+    csv_root = raw_dir / "annotations" / "csv"
+    csv_files = sorted(csv_root.glob("*.csv")) if csv_root.exists() else sorted((raw_dir / "annotations").glob("*.csv"))
+    csv_files = [p for p in csv_files if p.name.lower() != "sample.csv"]
+
+    videos_dir = raw_dir / "videos"
+    out_frames_dir = processed_dir / "frames"
+    out_labels_dir = processed_dir / "labels"
+    gt_dir = processed_dir / "gt_e2e"
+    out_frames_dir.mkdir(parents=True, exist_ok=True)
+    out_labels_dir.mkdir(parents=True, exist_ok=True)
+    gt_dir.mkdir(parents=True, exist_ok=True)
+
+    records: list[FrameRecord] = []
+    for csv_path in csv_files:
+        video_id = csv_path.stem
+        rows = _read_lenta_csv(csv_path)
+        if not rows:
+            LOGGER.warning("Skipping empty CSV: %s", csv_path)
+            continue
+
+        video_path = _find_lenta_video_file(videos_dir, video_id, rows)
+        if video_path is None:
+            LOGGER.warning("No video found for %s under %s", csv_path.name, videos_dir)
+            continue
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            LOGGER.warning("Could not open %s", video_path)
+            continue
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        if width <= 0 or height <= 0:
+            cap.release()
+            LOGGER.warning("Could not read video dimensions for %s", video_path)
+            continue
+
+        labels_by_frame: dict[int, list[str]] = {}
+        gt_rows: list[dict[str, object]] = []
+        for row_no, row in enumerate(rows, start=2):
+            frame_idx = _parse_int(row.get("frame_timestamp"))
+            box = _parse_lenta_bbox(row, width, height)
+            if frame_idx is None or box is None:
+                LOGGER.warning("Skipping bad row %s:%d", csv_path, row_no)
+                continue
+
+            x_min, y_min, x_max, y_max = box
+            cx = ((x_min + x_max) / 2) / width
+            cy = ((y_min + y_max) / 2) / height
+            bw = (x_max - x_min) / width
+            bh = (y_max - y_min) / height
+            labels_by_frame.setdefault(frame_idx, []).append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+
+            gt = dict(row)
+            gt["video_id"] = video_id
+            gt["frame_idx"] = frame_idx
+            gt["bbox"] = [round(x_min, 2), round(y_min, 2), round(x_max, 2), round(y_max, 2)]
+            gt_rows.append(gt)
+
+        out_frame_dir = out_frames_dir / video_id
+        out_label_dir = out_labels_dir / video_id
+        out_frame_dir.mkdir(parents=True, exist_ok=True)
+        out_label_dir.mkdir(parents=True, exist_ok=True)
+
+        for frame_idx, lines in sorted(labels_by_frame.items()):
+            dst_img = out_frame_dir / f"{frame_idx:06d}.jpg"
+            dst_label = out_label_dir / f"{frame_idx:06d}.txt"
+            if not dst_img.exists():
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    LOGGER.warning("Could not extract frame %d from %s", frame_idx, video_path)
+                    continue
+                cv2.imwrite(str(dst_img), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            dst_label.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            records.append(
+                FrameRecord(video_id=video_id, frame_idx=frame_idx, image_path=dst_img, label_path=dst_label)
+            )
+
+        cap.release()
+        gt_path = gt_dir / f"{video_id}.jsonl"
+        with gt_path.open("w", encoding="utf-8") as f:
+            for row in gt_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        LOGGER.info(
+            "Converted %s: %d rows, %d labeled frames, gt=%s",
+            csv_path.name,
+            len(gt_rows),
+            len(labels_by_frame),
+            gt_path,
+        )
+
+    LOGGER.info("Converted %d labeled frames from %d Lenta CSV files", len(records), len(csv_files))
+    return records, classes
+
+
+def _read_lenta_csv(csv_path: Path) -> list[dict[str, str]]:
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def _find_lenta_video_file(videos_dir: Path, video_id: str, rows: list[dict[str, str]]) -> Optional[Path]:
+    direct = _find_video_file(videos_dir, video_id)
+    if direct is not None:
+        return direct
+
+    candidates = [video_id]
+    for row in rows[:10]:
+        filename = (row.get("filename") or "").strip()
+        if not filename:
+            continue
+        candidates.append(Path(filename).stem)
+        candidates.append(Path(filename).parent.name)
+
+    for candidate in candidates:
+        if not candidate or candidate == ".":
+            continue
+        found = _find_video_file(videos_dir, candidate)
+        if found is not None:
+            return found
+    return None
+
+
+def _parse_decimal(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip().replace("\xa0", "").replace(" ", "").replace(",", ".")
+    if not text or text.lower() == "нет":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_int(value: object) -> Optional[int]:
+    parsed = _parse_decimal(value)
+    if parsed is None:
+        return None
+    return int(round(parsed))
+
+
+def _parse_lenta_bbox(row: dict[str, str], width: int, height: int) -> Optional[tuple[float, float, float, float]]:
+    values = [_parse_decimal(row.get(k)) for k in ("x_min", "y_min", "x_max", "y_max")]
+    if any(v is None for v in values):
+        return None
+    x_min, y_min, x_max, y_max = (float(v) for v in values if v is not None)
+    x_min = max(0.0, min(float(width), x_min))
+    x_max = max(0.0, min(float(width), x_max))
+    y_min = max(0.0, min(float(height), y_min))
+    y_max = max(0.0, min(float(height), y_max))
+    if x_max <= x_min or y_max <= y_min:
+        return None
+    return x_min, y_min, x_max, y_max
 
 
 # ---------------------------------------------------------------------------

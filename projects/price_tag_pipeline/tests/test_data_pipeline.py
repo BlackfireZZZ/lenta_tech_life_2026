@@ -19,7 +19,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from price_tag_pipeline.data.loaders import ingest_yolo, write_dataset_yaml  # noqa: E402
+from price_tag_pipeline.data.loaders import ingest_lenta_csv, ingest_yolo, write_dataset_yaml  # noqa: E402
 from price_tag_pipeline.data.splits import build_video_level_folds  # noqa: E402
 from price_tag_pipeline.data.validate import validate_dataset  # noqa: E402
 
@@ -65,3 +65,52 @@ def test_ingest_validate_split(tmp_path: Path) -> None:
     assert yaml_path.exists()
     assert (processed / "train_images.txt").exists()
     assert (processed / "val_images.txt").exists()
+
+
+def test_ingest_lenta_csv(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    processed = tmp_path / "processed"
+    videos = raw / "videos"
+    csv_dir = raw / "annotations" / "csv"
+    videos.mkdir(parents=True)
+    csv_dir.mkdir(parents=True)
+
+    video_path = videos / "sample_video.mp4"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        10.0,
+        (320, 240),
+    )
+    assert writer.isOpened()
+    for i in range(6):
+        img = np.full((240, 320, 3), 40 + i, dtype=np.uint8)
+        cv2.rectangle(img, (50, 60), (120, 140), (255, 255, 255), -1)
+        writer.write(img)
+    writer.release()
+
+    (csv_dir / "sample_video.csv").write_text(
+        "\n".join(
+            [
+                "filename,product_name,frame_timestamp,x_min,y_min,x_max,y_max,price_default",
+                "sample_video.mp4,Milk,2,\"50,0\",\"60,0\",\"120,0\",\"140,0\",\"129,99\"",
+                "sample_video.mp4,Bread,2,150,70,210,130,59.99",
+                "sample_video.mp4,Tea,5,10,20,70,80,199.99",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records, classes = ingest_lenta_csv(raw, processed)
+    assert classes == ["price_tag"]
+    assert len(records) == 2
+
+    report = validate_dataset(processed, classes, read_images=True)
+    assert report.is_ok, report.summary()
+    assert report.n_images == 2
+    assert report.n_boxes == 3
+
+    frame_two_label = processed / "labels" / "sample_video" / "000002.txt"
+    assert len(frame_two_label.read_text(encoding="utf-8").splitlines()) == 2
+    assert (processed / "gt_e2e" / "sample_video.jsonl").exists()
