@@ -282,3 +282,12 @@ data/friends_crops/gallery.html
 # but DO keep the small, hand-verified scoreboard + manifest:
 !data/friends_crops/reference.jsonl
 !data/friends_crops/manifest.jsonl
+
+# CVAT annotation — derived artifacts (regenerable via scripts/cvat_*.py)
+cvat_seeds/
+cvat_staging/
+cvat_label_spec.json
+
+# Photo-annotation roots (same policy as data/raw, data/processed)
+data/raw_photos/
+data/processed_photos/
