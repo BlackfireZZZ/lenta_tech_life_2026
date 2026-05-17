@@ -16,11 +16,29 @@ hook (called from the training script when --use-albu is passed).
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _accepts(cls: Any, name: str) -> bool:
+    """True if ``cls.__init__`` accepts a keyword called ``name``.
+
+    Albumentations renamed several constructor args between the 1.x and 2.x
+    lines (var_limit→std_range, max_holes→num_holes_range, num_shadows_lower→
+    num_shadows_limit, num_flare_circles_lower→num_flare_circles_range,
+    fill_value→fill). The repo code was written for the 1.x names while
+    requirements/train.txt pins only ``albumentations>=1.4`` (resolves to 2.x),
+    so heavy aug crashed at runtime. Introspecting the signature keeps this
+    working across the drift instead of hard-pinning an old release.
+    """
+    try:
+        return name in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -58,6 +76,46 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
             "albumentations is not installed. Install: pip install albumentations"
         ) from e
 
+    # --- Gaussian noise: var_limit (1.x) vs std_range fraction-of-255 (2.x).
+    if _accepts(A.GaussNoise, "std_range"):
+        # var 10..60 -> std sqrt(10)..sqrt(60) -> /255 fraction (mild, matches intent).
+        gauss_noise = A.GaussNoise(std_range=(0.012, 0.031), mean_range=(0.0, 0.0), p=1.0)
+    else:
+        gauss_noise = A.GaussNoise(var_limit=(10.0, 60.0), p=1.0)
+
+    # --- RandomShadow: num_shadows_lower/upper (1.x) vs num_shadows_limit (2.x).
+    if _accepts(A.RandomShadow, "num_shadows_limit"):
+        random_shadow = A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_limit=(1, 2),
+                                       p=cfg.shadow_prob)
+    else:
+        random_shadow = A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_lower=1,
+                                       num_shadows_upper=2, p=cfg.shadow_prob)
+
+    # --- RandomSunFlare: num_flare_circles_lower/upper (1.x) vs _range (2.x).
+    if _accepts(A.RandomSunFlare, "num_flare_circles_range"):
+        # 2.x validation requires all values >= 1 (1.x allowed a 0 lower bound).
+        sun_flare = A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5),
+                                     num_flare_circles_range=(1, 3),
+                                     src_radius=120, p=cfg.sun_flare_prob)
+    else:
+        sun_flare = A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5), num_flare_circles_lower=0,
+                                     num_flare_circles_upper=3, src_radius=120,
+                                     p=cfg.sun_flare_prob)
+
+    # --- CoarseDropout: max_holes/min_holes/fill_value (1.x) vs *_range/fill (2.x).
+    if _accepts(A.CoarseDropout, "num_holes_range"):
+        coarse_dropout = A.CoarseDropout(
+            num_holes_range=(1, cfg.coarse_dropout_max_holes),
+            hole_height_range=(4, 24), hole_width_range=(4, 24),
+            fill=0, p=cfg.coarse_dropout_prob,
+        )
+    else:
+        coarse_dropout = A.CoarseDropout(
+            max_holes=cfg.coarse_dropout_max_holes, max_height=24, max_width=24,
+            min_holes=1, min_height=4, min_width=4,
+            fill_value=0, p=cfg.coarse_dropout_prob,
+        )
+
     transform = A.Compose([
         # --- Blur family (the robot moves fast) ---
         A.OneOf([
@@ -69,15 +127,14 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
         # --- Noise (low-light store interiors) ---
         A.OneOf([
             A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=1.0),
-            A.GaussNoise(var_limit=(10.0, 60.0), p=1.0),
+            gauss_noise,
         ], p=cfg.noise_prob),
 
         # --- Lighting (aisle-to-aisle variation) ---
         A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=cfg.brightness_prob),
         A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=cfg.clahe_prob),
-        A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_lower=1, num_shadows_upper=2, p=cfg.shadow_prob),
-        A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5), num_flare_circles_lower=0,
-                         num_flare_circles_upper=3, src_radius=120, p=cfg.sun_flare_prob),
+        random_shadow,
+        sun_flare,
 
         # --- Hue (gently — preserve yellow/red promo signal) ---
         A.HueSaturationValue(hue_shift_limit=8, sat_shift_limit=15, val_shift_limit=10, p=cfg.hue_prob),
@@ -87,12 +144,7 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
         A.HorizontalFlip(p=cfg.hflip_prob),
 
         # --- Partial occlusion (other shelf items, shopping carts, hands) ---
-        A.CoarseDropout(
-            max_holes=cfg.coarse_dropout_max_holes,
-            max_height=24, max_width=24,
-            min_holes=1, min_height=4, min_width=4,
-            fill_value=0, p=cfg.coarse_dropout_prob,
-        ),
+        coarse_dropout,
     ], bbox_params=A.BboxParams(
         format="pascal_voc",
         label_fields=["class_labels"],
@@ -124,10 +176,15 @@ def attach_to_ultralytics(model, cfg: HeavyAugConfig = HeavyAugConfig()) -> bool
     transform = build_albu_transform(cfg)
 
     class _HeavyAlbumentations(_UltraAlbu):
-        def __init__(self, p: float = 1.0):
-            super().__init__(p=p)
+        # Newer Ultralytics (8.4.x) constructs this as
+        # ``Albumentations(p=1.0, transforms=...)``. Accept whatever the
+        # current version passes, defer to the real __init__, then swap in
+        # our heavy domain pipeline. *args/**kwargs keeps this robust to
+        # further Ultralytics signature drift.
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
             self.transform = transform
-            self.p = p
+            self.p = kwargs.get("p", args[0] if args else 1.0)
             self.contains_spatial = True
 
     # Patch the class used by Ultralytics' DataLoader pipeline.
