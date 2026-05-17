@@ -89,25 +89,15 @@ _ALL_ATTRS: list[str] = list(_SELECT_ATTRS) + _TEXT_ATTRS
 # ---------------------------------------------------------------------------
 
 def build_label_spec() -> list[dict]:
-    """The CVAT label spec: one ``price_tag`` rectangle with our attributes."""
-    attributes: list[dict] = []
-    for name, values in _SELECT_ATTRS.items():
-        attributes.append({
-            "name": name,
-            "input_type": "select",
-            "mutable": True,
-            "values": values,
-            "default_value": values[0],
-        })
-    for name in _TEXT_ATTRS:
-        attributes.append({
-            "name": name,
-            "input_type": "text",
-            "mutable": True,
-            "values": [],
-            "default_value": "",
-        })
-    return [{"name": LABEL_NAME, "type": "rectangle", "attributes": attributes}]
+    """The CVAT label spec: a **bare** ``price_tag`` rectangle, no attributes.
+
+    The workflow is detector-first — only boxes are drawn, no OCR fields are
+    annotated (now or planned). Attributes are deliberately omitted so CVAT
+    shows no per-object "details" panel. The 29-column tag path still works
+    if a future XML *does* carry ``<attribute>`` elements (the parser reads
+    them regardless), but the label itself stays clean.
+    """
+    return [{"name": LABEL_NAME, "type": "rectangle", "attributes": []}]
 
 
 def label_spec_json() -> str:
@@ -358,6 +348,286 @@ def cvat_video_to_lenta_rows(
         row["track_id"] = str(tr.track_id)
         rows.append(row)
     return rows
+
+
+@dataclass
+class ImageBoxes:
+    name: str
+    width: int
+    height: int
+    boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+
+
+# In merged_final, these `source` values mean a YOLO detection backed the
+# box (alone or overlapping a colour blob). The remaining
+# `classic_color_cv` source is the low-trust colour heuristic the friend's
+# notebook itself flags as weak — dropping it removes ~⅔ of the noise.
+MODEL_BACKED_SOURCES = {
+    "openfoodfacts_yolo",
+    "merged_yolo_color_overlap",
+    "merged_color_yolo_overlap",
+}
+
+
+def candidates_csv_to_image_boxes(
+    rows: list[dict[str, str]],
+    *,
+    candidate_types: set[str] | None = None,
+    min_conf: float = 0.0,
+    sources: set[str] | None = None,
+) -> dict[str, ImageBoxes]:
+    """Parse a detector ``all_candidates.csv`` into per-image pixel boxes.
+
+    Keeps only ``candidate_type`` in ``candidate_types`` (default
+    ``{"merged_final"}`` — the curated merge, i.e. the friend's actual
+    labelling, not the raw YOLO/colour candidates) and, if ``sources`` is
+    given, only rows whose ``source`` is in it (e.g.
+    ``MODEL_BACKED_SOURCES`` to drop the noisy ``classic_color_cv``).
+    Prefers absolute ``x_min..y_max``; falls back to the ``yolo_*`` columns.
+    """
+    types = candidate_types or {"merged_final"}
+    out: dict[str, ImageBoxes] = {}
+    for r in rows:
+        if r.get("candidate_type") not in types:
+            continue
+        if sources is not None and r.get("source") not in sources:
+            continue
+        conf = r.get("confidence") or ""
+        if min_conf > 0 and conf:
+            try:
+                if float(conf) < min_conf:
+                    continue
+            except ValueError:
+                pass
+        name = (r.get("image_key") or "").strip()
+        if not name:
+            continue
+        w = int(float(r.get("image_width") or 0))
+        h = int(float(r.get("image_height") or 0))
+        box = _csv_row_box(r, w, h)
+        if box is None:
+            continue
+        rec = out.setdefault(name, ImageBoxes(name=name, width=w, height=h))
+        if rec.width <= 0:
+            rec.width, rec.height = w, h
+        rec.boxes.append(box)
+    return out
+
+
+def _csv_row_box(
+    r: dict[str, str], w: int, h: int
+) -> tuple[float, float, float, float] | None:
+    vals = [_parse_decimal(r.get(k)) for k in ("x_min", "y_min", "x_max", "y_max")]
+    if all(v is not None for v in vals):
+        x0, y0, x1, y1 = (float(v) for v in vals)  # type: ignore[arg-type]
+    else:  # fall back to YOLO-normalized centre/size
+        cx = _parse_decimal(r.get("yolo_x_center"))
+        cy = _parse_decimal(r.get("yolo_y_center"))
+        bw = _parse_decimal(r.get("yolo_width"))
+        bh = _parse_decimal(r.get("yolo_height"))
+        if None in (cx, cy, bw, bh) or w <= 0 or h <= 0:
+            return None
+        x0 = (cx - bw / 2) * w  # type: ignore[operator]
+        x1 = (cx + bw / 2) * w  # type: ignore[operator]
+        y0 = (cy - bh / 2) * h  # type: ignore[operator]
+        y1 = (cy + bh / 2) * h  # type: ignore[operator]
+    if w > 0:
+        x0, x1 = max(0.0, min(float(w), x0)), max(0.0, min(float(w), x1))
+    if h > 0:
+        y0, y1 = max(0.0, min(float(h), y0)), max(0.0, min(float(h), y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def image_boxes_to_cvat_images_xml(
+    images: list[ImageBoxes], *, task_name: str
+) -> str:
+    """Render per-image pixel boxes as *CVAT for images 1.1* XML.
+
+    One ``<image>`` per entry, ``price_tag`` ``<box>`` per box, with the
+    project label schema embedded so import maps cleanly and the
+    round-trip importer (``cvat_images_to_yolo``) reads it back. Mixed
+    portrait/landscape sizes are fine — each image carries its own w/h.
+    """
+    root = ET.Element("annotations")
+    ET.SubElement(root, "version").text = "1.1"
+    meta = ET.SubElement(root, "meta")
+    task = ET.SubElement(meta, "task")
+    ET.SubElement(task, "id").text = "0"
+    ET.SubElement(task, "name").text = task_name
+    ET.SubElement(task, "size").text = str(len(images))
+    ET.SubElement(task, "mode").text = "annotation"
+    ET.SubElement(task, "overlap").text = "0"
+    _xml_attr_block(task)
+
+    for idx, im in enumerate(images):
+        iel = ET.SubElement(root, "image", {
+            "id": str(idx),
+            "name": im.name,
+            "width": str(im.width),
+            "height": str(im.height),
+        })
+        for x0, y0, x1, y1 in im.boxes:
+            ET.SubElement(iel, "box", {
+                "label": LABEL_NAME,
+                "source": "auto",
+                "xtl": f"{x0:.2f}", "ytl": f"{y0:.2f}",
+                "xbr": f"{x1:.2f}", "ybr": f"{y1:.2f}",
+                "occluded": "0", "z_order": "0",
+            })
+    raw = ET.tostring(root, encoding="utf-8")
+    return minidom.parseString(raw).toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
+
+
+def yolo_txt_to_image_boxes(
+    images_dir: Path, labels_dir: Path | None = None
+) -> dict[str, ImageBoxes]:
+    """Classic YOLO (one ``<stem>.txt`` of ``cls cx cy w h`` per image).
+
+    Provided for the case the external dataset really is YOLO-txt; needs
+    image sizes, read lazily via OpenCV only for images that have a label.
+    """
+    from ..cv_io import imread  # local: keep module import cv2-free
+
+    labels_dir = labels_dir or images_dir
+    out: dict[str, ImageBoxes] = {}
+    exts = (".jpg", ".jpeg", ".png", ".bmp")
+    for img in sorted(images_dir.iterdir()):
+        if img.suffix.lower() not in exts:
+            continue
+        txt = labels_dir / f"{img.stem}.txt"
+        if not txt.exists():
+            continue
+        arr = imread(img)
+        if arr is None:
+            continue
+        h, w = arr.shape[:2]
+        rec = ImageBoxes(name=img.name, width=w, height=h)
+        for line in txt.read_text(encoding="utf-8").splitlines():
+            p = line.split()
+            if len(p) < 5:
+                continue
+            cx, cy, bw, bh = (float(p[1]) * w, float(p[2]) * h,
+                              float(p[3]) * w, float(p[4]) * h)
+            x0, y0, x1, y1 = cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2
+            if x1 > x0 and y1 > y0:
+                rec.boxes.append((max(0.0, x0), max(0.0, y0),
+                                  min(float(w), x1), min(float(h), y1)))
+        if rec.boxes:
+            out[img.name] = rec
+    return out
+
+
+def has_substantive_annotations(doc: CvatDoc) -> bool:
+    """True if *any* track/image box carries a non-empty substantive field.
+
+    Boxes-only labelling (just geometry, no `color`/text attributes) returns
+    False — the caller then routes to the detector path instead of the
+    29-column OCR path.
+    """
+    boxes: list[CvatBox] = []
+    for tr in doc.tracks:
+        boxes.extend(tr.boxes)
+    for im in doc.images:
+        boxes.extend(im.boxes)
+    for b in boxes:
+        if any((b.attrs.get(c) or "").strip() for c in _ALL_ATTRS):
+            return True
+    return False
+
+
+def interpolate_track_boxes(
+    track: CvatTrack,
+) -> list[tuple[int, float, float, float, float]]:
+    """Every frame a track is visible, with boxes linearly interpolated.
+
+    CVAT *for video 1.1* stores only keyframes; the frames between two
+    keyframes are interpolated by the consumer. We do that here so two
+    keyframes per tag (first + last) yield a labelled box on **every**
+    frame in between — the whole point of tracking for cheap detector data.
+    `outside` ends a visible run; a single keyframe yields just its frame
+    (no extrapolation — matches the seed's single-frame tracks).
+    """
+    boxes = sorted(track.boxes, key=lambda b: b.frame)
+    out: list[tuple[int, float, float, float, float]] = []
+    n = len(boxes)
+    for i, cur in enumerate(boxes):
+        if cur.outside:
+            continue
+        if i + 1 < n:
+            nxt = boxes[i + 1]
+            span = nxt.frame - cur.frame
+            if span <= 0:
+                continue
+            for f in range(cur.frame, nxt.frame):
+                t = (f - cur.frame) / span
+                out.append((
+                    f,
+                    cur.xtl + (nxt.xtl - cur.xtl) * t,
+                    cur.ytl + (nxt.ytl - cur.ytl) * t,
+                    cur.xbr + (nxt.xbr - cur.xbr) * t,
+                    cur.ybr + (nxt.ybr - cur.ybr) * t,
+                ))
+        else:
+            out.append((cur.frame, cur.xtl, cur.ytl, cur.xbr, cur.ybr))
+    return out
+
+
+def cvat_video_to_yolo(
+    doc: CvatDoc, *, width: int, height: int
+) -> dict[int, list[str]]:
+    """frame_idx → YOLO ``0 cx cy w h`` lines, dense over interpolated boxes.
+
+    Aggregates every track (seed + hand-drawn) so the missing tags the
+    annotator adds — and the released ones — all become detector labels.
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError("Need positive width/height to normalize YOLO boxes")
+    labels: dict[int, list[str]] = {}
+    for tr in doc.tracks:
+        for f, x0, y0, x1, y1 in interpolate_track_boxes(tr):
+            x0 = max(0.0, min(float(width), x0))
+            x1 = max(0.0, min(float(width), x1))
+            y0 = max(0.0, min(float(height), y0))
+            y1 = max(0.0, min(float(height), y1))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            cx = ((x0 + x1) / 2) / width
+            cy = ((y0 + y1) / 2) / height
+            bw = (x1 - x0) / width
+            bh = (y1 - y0) / height
+            labels.setdefault(f, []).append(
+                f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
+            )
+    return labels
+
+
+def cvat_images_to_yolo(
+    doc: CvatDoc,
+) -> dict[str, tuple[int, int, list[str]]]:
+    """image name → (width, height, YOLO lines) for photo (image) exports."""
+    out: dict[str, tuple[int, int, list[str]]] = {}
+    for im in doc.images:
+        w = im.width or doc.width
+        h = im.height or doc.height
+        lines: list[str] = []
+        if w > 0 and h > 0:
+            for b in im.boxes:
+                if b.outside:
+                    continue
+                x0 = max(0.0, min(float(w), b.xtl))
+                x1 = max(0.0, min(float(w), b.xbr))
+                y0 = max(0.0, min(float(h), b.ytl))
+                y1 = max(0.0, min(float(h), b.ybr))
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                lines.append(
+                    f"0 {((x0 + x1) / 2) / w:.6f} {((y0 + y1) / 2) / h:.6f} "
+                    f"{(x1 - x0) / w:.6f} {(y1 - y0) / h:.6f}"
+                )
+        out[im.name] = (w, h, lines)
+    return out
 
 
 def lenta_rows_to_csv_text(rows: Iterable[dict[str, str]]) -> str:

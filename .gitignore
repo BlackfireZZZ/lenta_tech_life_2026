@@ -268,6 +268,12 @@ cvat_seeds/
 cvat_staging/
 cvat_label_spec.json
 
-# Photo-annotation roots (same policy as data/raw, data/processed)
+# CVAT import roots (same policy as data/raw, data/processed)
 data/raw_photos/
 data/processed_photos/
+data/raw_det/
+data/processed_det/
+
+# External / friend-provided raw datasets + their CVAT seeds (heavy, like real_data/)
+friends_labels/
+cvat_seeds_friends/
