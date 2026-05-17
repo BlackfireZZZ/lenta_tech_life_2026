@@ -86,17 +86,17 @@ python projects/price_tag_pipeline/scripts/make_splits.py \
 # 5. Train the detector on fold 0.
 python projects/price_tag_pipeline/scripts/train_detector_yolo.py \
     --dataset data/processed/dataset.yaml \
-    --model   yolo26l.pt \
+    --model   hf://openfoodfacts/price-tag-detection/weights/best.pt \
     --epochs  200 \
     --imgsz   1280 \
     --batch   8 \
     --device  0 \
-    --name    yolo26l_fold0 \
+    --name    openfoodfacts_lenta_fold0 \
     --wandb
 
 # 6. Evaluate the best checkpoint.
 python projects/price_tag_pipeline/scripts/eval_detector.py \
-    --weights runs/lenta/yolo26l_fold0/weights/best.pt \
+    --weights runs/lenta/openfoodfacts_lenta_fold0/weights/best.pt \
     --dataset data/processed/dataset.yaml
 
 # 7. Inference on a held-out video.
@@ -134,13 +134,14 @@ python projects/price_tag_pipeline/scripts/gradio_app.py \
 
 ## Profiles
 
-- `fast.yaml`   — small model, classical PaddleOCR, low TTL. Use for quick smoke runs.
-- `balanced.yaml` — production default; classical PaddleOCR + BoT-SORT.
-- `hq.yaml`     — larger detector + PaddleOCR-VL 1.5 VLM. Best quality, slowest.
+- `fast.yaml`   — OpenFoodFacts detector, classical PaddleOCR, low TTL. Use for quick smoke runs.
+- `balanced.yaml` — production default; OpenFoodFacts detector + BoT-SORT + PaddleOCR.
+- `hq.yaml`     — OpenFoodFacts detector + PaddleOCR-VL 1.5 VLM. Best quality, slowest.
 - `zeroshot_nolabel.yaml` — no training/labels required (YOLO-World + OCR baseline).
 
-All three point at `data/checkpoints/detector/best.pt` by default. Override
-`detector.model_path` in the YAML or drop your checkpoint there.
+Production profiles use OpenFoodFacts'
+`hf://openfoodfacts/price-tag-detection/weights/best.pt` by default. Override
+`detector.model_path` in the YAML to use a local fine-tuned checkpoint.
 
 ## Backends
 

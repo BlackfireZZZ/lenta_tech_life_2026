@@ -19,7 +19,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Optional
 
-import cv2
 import numpy as np
 
 from .config import DetectorConfig
@@ -28,10 +27,23 @@ from .types import Detection
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_FPS_FALLBACK = 30.0
+HF_MODEL_PREFIX = "hf://"
+
+
+def _require_cv2():
+    try:
+        import cv2  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "OpenCV is required for video detector runtime. Install "
+            "projects/price_tag_pipeline/requirements/base.txt in the project venv."
+        ) from exc
+    return cv2
 
 
 def read_video_fps(video_path: str) -> float:
     """Read FPS from the container. Falls back to 30 fps with a loud warning."""
+    cv2 = _require_cv2()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         LOGGER.warning("Could not open %s to read FPS; falling back to %.1f", video_path, DEFAULT_FPS_FALLBACK)
@@ -52,6 +64,7 @@ def read_video_frame_count(video_path: str) -> int:
     in that case we return 0 and progress degrades to phase-only updates
     (an indeterminate bar) — never an exception, never a wrong total.
     """
+    cv2 = _require_cv2()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         LOGGER.warning("Could not open %s to read frame count.", video_path)
@@ -89,18 +102,19 @@ class YOLOTrackerDetector(BaseDetector):
 
     def __init__(self, cfg: DetectorConfig):
         self.cfg = cfg
-        if not Path(cfg.model_path).exists() and not cfg.model_path.endswith(".pt"):
+        model_path = resolve_detector_model_path(cfg.model_path)
+        if not Path(model_path).exists() and "/" in model_path:
             LOGGER.warning(
                 "Detector checkpoint '%s' does not exist locally. Ultralytics may "
                 "attempt to download it.",
-                cfg.model_path,
+                model_path,
             )
         # Lazy import so the package is importable without ultralytics installed
         # (useful for tests of parser/aggregator on a CI box without GPU deps).
         from ultralytics import YOLO  # type: ignore
 
         self._YOLO = YOLO
-        self.model = YOLO(self.cfg.model_path)
+        self.model = YOLO(model_path)
         if self.cfg.open_vocab_labels:
             if hasattr(self.model, "set_classes"):
                 self.model.set_classes(list(self.cfg.open_vocab_labels))
@@ -191,6 +205,7 @@ class YOLOTrackerDetector(BaseDetector):
         video_path: str,
         fps: float,
     ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
+        cv2 = _require_cv2()
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
@@ -302,6 +317,44 @@ def _assign_iou_track_ids(
             out.append(tid)
     tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
     return out, tracks, next_tid
+
+
+def resolve_detector_model_path(model_path: str) -> str:
+    """Resolve a detector model path understood by runtime configs.
+
+    Supported forms:
+    - local path or Ultralytics model name, passed through unchanged;
+    - ``hf://owner/repo/path/in/repo.pt``, downloaded through Hugging Face Hub.
+
+    The default production configs use OpenFoodFacts'
+    ``hf://openfoodfacts/price-tag-detection/weights/best.pt`` model so a fresh
+    checkout has a real detector before we fine-tune our own checkpoint.
+    """
+    raw = str(model_path).strip()
+    if not raw.startswith(HF_MODEL_PREFIX):
+        return raw
+
+    spec = raw[len(HF_MODEL_PREFIX):].strip("/")
+    parts = spec.split("/", 2)
+    if len(parts) != 3 or not all(parts):
+        raise ValueError(
+            "HF detector URI must look like "
+            "hf://owner/repo/path/to/file.pt, got: "
+            f"{model_path!r}"
+        )
+    repo_id = f"{parts[0]}/{parts[1]}"
+    filename = parts[2]
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "Detector model_path uses hf:// but huggingface-hub is not installed. "
+            "Install projects/price_tag_pipeline/requirements/base.txt or set "
+            "detector.model_path to a local checkpoint."
+        ) from exc
+
+    return hf_hub_download(repo_id=repo_id, filename=filename)
 
 
 # ---------------------------------------------------------------------------

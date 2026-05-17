@@ -60,6 +60,7 @@ thin pointers here — do not duplicate knowledge into them.
 | Colab — private-repo SSH clone cells | [runbooks/colab-private.md](./runbooks/colab-private.md) |
 | Where data goes when it arrives | [data/layout.md](./data/layout.md) |
 | External datasets — curated shortlist | [data/datasets.md](./data/datasets.md) |
+| External + synthetic detector training plan | [data/external-detector-training-plan.md](./data/external-detector-training-plan.md) |
 | External datasets — deep research + extensions | [data/datasets-research.md](./data/datasets-research.md) |
 | Killer feature (stretch): shelf facings/OOS | [strategy.md](./strategy.md) §12 |
 | What each git branch is for | [branches.md](./branches.md) |

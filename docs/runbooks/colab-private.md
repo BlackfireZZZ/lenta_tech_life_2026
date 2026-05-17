@@ -291,9 +291,10 @@ Because there are only five labeled videos, each fold validates on one entire
 video. This is the minimum honest setup; frame-level splits leak the same shelf
 and the same tags into train and validation.
 
-Start with `yolo11s.pt` or `yolo11m.pt`. Use `yolo11n.pt` only for speed. If
-YOLO26 weights are available in the current Ultralytics install, add a second
-suite with `--model yolo26l.pt`.
+Start with the OpenFoodFacts price-tag detector. Use `yolo11s.pt` or
+`yolo11m.pt` as ablation baselines; use `yolo11n.pt` only for speed. If YOLO26
+weights are available in the current Ultralytics install, add a second suite
+with `--model yolo26l.pt`.
 
 ```bash
 %%bash
@@ -337,8 +338,9 @@ done
 ## Cell 12 - choose and promote a checkpoint
 
 Pick the checkpoint with the best validation behavior, not just the prettiest
-loss curve. After watching visualizations, copy the chosen checkpoint into the
-default detector path used by `balanced.yaml` and `hq.yaml`.
+loss curve. Production configs now default to the OpenFoodFacts detector; after
+watching visualizations, copy the chosen local checkpoint and override
+`detector.model_path` only if it beats that baseline.
 
 ```bash
 %%bash
@@ -358,7 +360,8 @@ ls -lh data/checkpoints/detector/best.pt
 
 ## Cell 13 - run inference on unlabeled videos with trained detector
 
-Use `balanced.yaml` after `data/checkpoints/detector/best.pt` exists.
+Use `balanced.yaml` with either the default OpenFoodFacts detector or your
+validated local checkpoint path.
 
 ```bash
 %%bash

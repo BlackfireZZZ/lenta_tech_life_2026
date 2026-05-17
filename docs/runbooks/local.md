@@ -39,20 +39,27 @@ mkdir -p data/raw/videos outputs/jsonl outputs/vis submission
 cp /path/to/public/videos/*.mp4 data/raw/videos/
 ```
 
-Model weights are intentionally not committed. The zero-label baseline can use
-the open-vocabulary model configured in:
+Model weights are intentionally not committed. Production profiles download the
+OpenFoodFacts price-tag detector from Hugging Face on first use:
+
+```text
+hf://openfoodfacts/price-tag-detection/weights/best.pt
+```
+
+The zero-label baseline can still use the open-vocabulary model configured in:
 
 ```text
 projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml
 ```
 
-For trained detector runs, put the detector checkpoint at:
+For local fine-tuned detector runs, either edit `detector.model_path` in the
+YAML or put the detector checkpoint at:
 
 ```text
 data/checkpoints/detector/best.pt
 ```
 
-and use `balanced.yaml` or `hq.yaml`.
+and point `balanced.yaml` or `hq.yaml` at that file.
 
 ## 3. Batch Inference
 

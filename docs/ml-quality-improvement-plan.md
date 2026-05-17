@@ -26,8 +26,9 @@ Known data:
 - Video resolution: 3840x2160, about 20 FPS.
 - Current train-ready path exists: Lenta CSV -> extracted frames -> YOLO labels
   via `prepare_data.py`.
-- Current production configs expect `data/checkpoints/detector/best.pt`, but a
-  trained detector checkpoint is not guaranteed to be present.
+- Current production configs default to OpenFoodFacts'
+  `hf://openfoodfacts/price-tag-detection/weights/best.pt`; a later local
+  Lenta fine-tuned checkpoint should replace it only after held-out validation.
 - Current practical detector training path is **Ultralytics YOLO**. RF-DETR is
   documented but not yet implemented as a working training/inference path.
 - SAHI/TTA/WBF utilities exist, but SAHI is not yet wired into the main
@@ -488,7 +489,7 @@ crops, fix crop/zone/decoder first.
 
 | Task | Output | Metric gate |
 |---|---|---|
-| Train YOLO one-class detector | `data/checkpoints/detector/best.pt` | recall@0.5 >= 0.90 on held-out real video |
+| Fine-tune YOLO one-class detector from the OpenFoodFacts baseline | local checkpoint + config override | recall@0.5 >= 0.90 on held-out real video |
 | Add detector experiment notebook/runbook outputs | eval logs + annotated videos | every run comparable |
 | Add hard-negative loop from unlabeled videos | extra labeled frames | FP types decrease |
 | Run heavy augmentation sweeps | comparable YOLO runs | real-val recall/crop readability improve |
@@ -548,7 +549,8 @@ trained detector
 
 The next milestone is complete when:
 
-1. `balanced.yaml` uses a trained local detector, not zero-shot.
+1. `balanced.yaml` uses the OpenFoodFacts detector or a better validated local
+   fine-tuned detector, not YOLO-World zero-shot.
 2. Every experiment produces the stage metric table.
 3. Detector recall on held-out organizer video is at least 0.90 at IoU 0.5.
 4. Annotated videos show most real tags found and false-positive classes known.

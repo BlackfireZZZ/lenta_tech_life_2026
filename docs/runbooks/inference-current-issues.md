@@ -30,15 +30,22 @@ Generated local artifacts:
 
 ## Problems observed
 
-### 1. No trained detector checkpoint is present
+### 1. Detector checkpoint bootstrapping
 
-The production configs point at `data/checkpoints/detector/best.pt`, but that
-file is not available locally. The only usable path for a no-training smoke run
-is YOLO-World zero-shot.
+Older production configs pointed at `data/checkpoints/detector/best.pt`, which
+was not available locally. Current production configs now default to
+OpenFoodFacts' Hugging Face detector:
+
+```text
+hf://openfoodfacts/price-tag-detection/weights/best.pt
+```
 
 Effect:
 
-- Zero-shot detections are possible, but confidence is very low.
+- A fresh checkout has a real price-tag detector path before we fine-tune our
+  own model.
+- First run needs network access or a pre-populated Hugging Face cache.
+- Zero-shot detections are still possible, but confidence is very low.
 - The detector finds many candidate regions only after lowering confidence to
   around `0.02`.
 - Low confidence creates many false positives, especially product packages,
@@ -51,8 +58,8 @@ Possible fixes:
 - Use synthetic Lenta-style price tags as the first high-ROI augmentation path.
 - Keep one organizer video as validation and tune `conf`, `iou`, `imgsz`, and
   prompts against it.
-- Put the final detector checkpoint at `data/checkpoints/detector/best.pt` and
-  switch back to `balanced.yaml` or `hq.yaml`.
+- Override `detector.model_path` with the final local checkpoint once it beats
+  the OpenFoodFacts baseline on held-out Lenta videos.
 
 ### 2. YOLO-World sometimes returns boxes without `track_id`
 

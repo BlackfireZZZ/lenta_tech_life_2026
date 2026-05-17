@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Train a YOLO-family detector via Ultralytics.
 
-Defaults target YOLO26-l on our 1280-shortest-side input. Switch with --model.
+Defaults to fine-tuning the OpenFoodFacts price-tag detector on our
+1280-shortest-side input. Switch with --model.
 
 Usage:
     python projects/price_tag_pipeline/scripts/train_detector_yolo.py \\
         --dataset data/processed/dataset.yaml \\
-        --model yolo26l.pt \\
+        --model hf://openfoodfacts/price-tag-detection/weights/best.pt \\
         --epochs 200 \\
         --imgsz 1280 \\
         --batch 8 \\
@@ -36,12 +37,23 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from price_tag_pipeline.training.augmentation import UltralyticsAugConfig  # noqa: E402
+from price_tag_pipeline.detector import resolve_detector_model_path  # noqa: E402
+
+
+DEFAULT_DETECTOR_MODEL = "hf://openfoodfacts/price-tag-detection/weights/best.pt"
+
+
+def _default_run_name(model_arg: str, seed: int) -> str:
+    if model_arg.startswith("hf://openfoodfacts/price-tag-detection/"):
+        return f"openfoodfacts_price_tag_detection_seed{seed}"
+    return f"{Path(model_arg).stem}_seed{seed}"
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", required=True, help="Path to dataset.yaml")
-    p.add_argument("--model", default="yolo26l.pt", help="Pretrained checkpoint or model name")
+    p.add_argument("--model", default=DEFAULT_DETECTOR_MODEL,
+                   help="Pretrained checkpoint, hf:// URI, or Ultralytics model name")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--batch", type=int, default=8)
@@ -74,13 +86,14 @@ def main() -> int:
             "ultralytics is not installed. pip install ultralytics"
         ) from e
 
-    name = args.name or f"{Path(args.model).stem}_seed{args.seed}"
+    name = args.name or _default_run_name(args.model, args.seed)
     aug = UltralyticsAugConfig()
+    model_path = resolve_detector_model_path(args.model)
 
     logging.info("Starting training: model=%s data=%s epochs=%d imgsz=%d batch=%d",
                  args.model, args.dataset, args.epochs, args.imgsz, args.batch)
 
-    model = YOLO(args.model)
+    model = YOLO(model_path)
     train_kwargs = dict(
         data=args.dataset,
         epochs=args.epochs,
