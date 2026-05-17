@@ -17,8 +17,9 @@ thin pointers here — do not duplicate knowledge into them.
 > `projects/price_tag_pipeline/`; the product around it —
 > `backend/` (API gateway), `frontend/` (SPA), `ml/` (deployable service
 > wrapping the pipeline) + `docker-compose.yaml` — is described in
-> **[architecture.md](./architecture.md)**. Those services are currently a
-> reviewable skeleton (mocked, no business logic yet) by design.
+> **[architecture.md](./architecture.md)**. `backend`/`ml` are a reviewable
+> skeleton (mocked, real logic not written yet) by design; the `frontend`
+> is the built upload→poll→review→CSV SPA wired against that mock.
 
 ## Read in this order
 
@@ -51,6 +52,7 @@ thin pointers here — do not duplicate knowledge into them.
 | Which model / why / training plan | [strategy.md](./strategy.md) |
 | **Concrete ML quality improvement plan** | [ml-quality-improvement-plan.md](./ml-quality-improvement-plan.md) |
 | Run inference / CSV / UI / CLI flags | [pipeline-reference.md](./pipeline-reference.md) |
+| **`import cv2` fails / new worktree env setup** | [runbooks/venv-setup.md](./runbooks/venv-setup.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
 | Current inference issues + fix plan | [runbooks/inference-current-issues.md](./runbooks/inference-current-issues.md) |
 | Colab — zero-shot GPU baseline | [runbooks/colab-baseline.md](./runbooks/colab-baseline.md) |

@@ -7,3 +7,4 @@ Pillow>=10.0
 PyYAML>=6.0
 scikit-learn>=1.4         # video-level GroupKFold / StratifiedKFold
 ultralytics>=8.3          # YOLO11/12/26, ByteTrack, BoT-SORT
+tqdm>=4.66                # inference progress bar (import-guarded — soft dep)

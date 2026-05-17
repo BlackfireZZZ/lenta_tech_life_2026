@@ -40,7 +40,7 @@ above. See [`docs/hackathon/source-materials.md`](./docs/hackathon/source-materi
 ```
 docs/                          single source of truth (start at index.md)
 backend/                       FastAPI gateway — only public service (mocked)
-frontend/                      React + Vite SPA (placeholder)
+frontend/                      React + Vite SPA (built, on the mocked API)
 ml/                            deployable ML service wrapping the pipeline (mocked)
 docker-compose.yaml            whole product, one command
 projects/price_tag_pipeline/   THE MODEL: training, experiments, research
@@ -52,10 +52,11 @@ data/                          raw/processed/splits/checkpoints (mostly gitignor
 real_data/                     untouched local source of truth — never committed
 ```
 
-`backend`/`frontend`/`ml` are a **reviewable skeleton**: structure and
-contracts are in place; business logic is deliberately not written yet
-(backend `MOCK_MODE`, ml fake CSV, frontend placeholder). Architecture and
-build order: [`docs/architecture.md`](./docs/architecture.md).
+`backend`/`ml` are a **reviewable skeleton** (backend `MOCK_MODE`, ml fake
+CSV — real detection/OCR and persistence deliberately not written yet); the
+`frontend` is the **built** upload→poll→review→CSV SPA wired against that
+mock. Architecture and build order:
+[`docs/architecture.md`](./docs/architecture.md).
 
 Branch: **`main` is canonical** and supersedes `feature/full-autonomous-demo`.
 See [`docs/branches.md`](./docs/branches.md).
@@ -64,7 +65,9 @@ See [`docs/branches.md`](./docs/branches.md).
 
 - **No cloud APIs / external online services at inference.** The shipped
   pipeline must run fully local. Heavy training off-box is allowed; document it.
-- **No global pip.** Use a `uv`-managed `.venv`. See project memory.
+- **No global pip.** Use a `uv`-managed `.venv` on Python 3.12 (the global
+  Python is 3.14 — too new; `cv2` won't import there). Each worktree needs its
+  own. Setup: [`docs/runbooks/venv-setup.md`](./docs/runbooks/venv-setup.md).
 - **`frame_timestamp` is milliseconds** from video start, never a frame index.
 - **Non-ASCII paths must work.** Route still-image I/O through
   `price_tag_pipeline.cv_io`; never call `cv2.imread/imwrite` directly.

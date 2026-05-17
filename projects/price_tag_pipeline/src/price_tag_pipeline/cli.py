@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import load_config
 from .pipeline import PriceTagPipeline
+from .progress import TqdmProgress
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -16,6 +17,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", required=True, help="Path to YAML config")
     p.add_argument("--output", default=None,
                    help="Optional output path. .json => JSON array, anything else => JSONL.")
+    p.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True,
+                   help="Show a terminal progress bar (degrades to log lines without tqdm).")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p
 
@@ -33,7 +36,11 @@ def main() -> None:
 
     cfg = load_config(args.config)
     pipe = PriceTagPipeline(cfg)
-    tags = pipe.run(video_path=str(video_path), output_path=args.output)
+    tags = pipe.run(
+        video_path=str(video_path),
+        output_path=args.output,
+        progress=TqdmProgress() if args.progress else None,
+    )
     logging.getLogger(__name__).info("Done. Final tags: %d", len(tags))
 
 

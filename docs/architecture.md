@@ -1,16 +1,22 @@
 # Application architecture — monorepo (backend + frontend + ML)
 
 How the **product** around the price-tag model is structured: a public API
-gateway, a placeholder SPA, and the model packaged as an internal service.
+gateway, the SPA (built, on the mocked API), and the model packaged as an
+internal service.
 This is the single source of truth for the web/service architecture — the
 per-service `README.md` files are thin pointers here.
 
-> **Current status: scaffolded skeleton.** The structure, the service
-> boundaries and every contract are in place and reviewable. Business logic
-> is deliberately **not written yet** — `backend` runs in `MOCK_MODE`, `ml`
-> returns a fake CSV, `frontend` renders one placeholder page. Each section
-> below states what is *as-built* vs. the *target* so the doc never lies
-> about the code. Build the real layers against this doc.
+> **Current status: the product spine is wired end to end; the ML
+> inference layer is real.** Every service boundary and contract is in
+> place. `frontend` is the real upload→poll→review→CSV SPA. `backend` is a
+> self-contained deterministic mock (`MOCK_MODE`: in-memory jobs, seeded
+> mock tags, no DB and it does **not** call ML yet — §3.4/§5). `ml` is
+> **real**: it runs `PriceTagPipeline` and streams live progress, with a
+> guarded mock fallback so the monorepo still boots without GPU/weights
+> (§5). The unifying contract between all three is the graded 29-column
+> CSV + per-tag field semantics (§5.6). Remaining real work: backend
+> persistence and the backend→ML wiring (§9). Each section states
+> *as-built* vs. *target* so the doc never lies about the code.
 
 ---
 
@@ -25,8 +31,9 @@ per-service `README.md` files are thin pointers here.
   `routes → schemas → models`, async SQLAlchemy + Postgres, Redis cache,
   thin `app/ml/` client. Target auth: JWT + refresh + CSRF (documented,
   not yet implemented).
-- **Frontend** = React 19 + Vite + TypeScript SPA, axios client, DTO types
-  generated from the backend's OpenAPI. Currently a placeholder.
+- **Frontend** = React 19 + Vite + TypeScript SPA (Tailwind v4 +
+  shadcn-style), axios client, DTO types from the backend's OpenAPI. Built:
+  upload → poll → review (video + bbox + crop + fields) → CSV.
 - **ML** = a *deployable wrapper* (`ml/`) that imports the
   `price_tag_pipeline` package and exposes `/process` + `/health`. The
   model, training and experiments stay in `projects/price_tag_pipeline/`.
@@ -51,10 +58,10 @@ lenta_tech_life_2026/
 │   │   └── main.py           FastAPI assembly
 │   ├── scripts/init.sh       entrypoint: migrate → serve
 │   ├── pyproject.toml · .env.example · Dockerfile · README.md
-├── frontend/                 React + Vite SPA (placeholder)
+├── frontend/                 React + Vite SPA (built, on the mocked API)
 │   ├── src/
 │   │   ├── api/              axios client + one module per resource
-│   │   ├── pages/            pages by feature (Home = placeholder)
+│   │   ├── pages/            pages by feature (UploadPage, JobPage)
 │   │   ├── App.tsx · main.tsx · index.css
 │   ├── package.json · vite.config.ts · openapi-ts.config.ts
 │   ├── Dockerfile.dev · .env.example · README.md
@@ -163,11 +170,19 @@ A *job* = one uploaded shelf video → one 29-column result CSV.
 Schema: `schemas/job.py` (`JobResponse`, `JobStatus`
 queued→running→succeeded/failed). CSV schema itself:
 [`hackathon/task.md`](./hackathon/task.md) (29 columns) — the gateway
-serves it **verbatim** and must never reshape graded columns.
+serves it **verbatim** and must never reshape graded columns. That
+29-column CSV is the contract that ties the gateway, the SPA and the real
+pipeline together; its three owners and lock-step are §5.6.
 
-**As-built:** `routes/jobs.py` fakes progress on each poll from an in-memory
-dict and returns a stub CSV header. Target: persist jobs in Postgres, run
-the ML call out-of-band (§5.3), frontend polls `GET /jobs/{id}`.
+**As-built:** `routes/jobs.py` keeps jobs in an in-memory dict and fakes
+progress on each poll. The uploaded clip is stored on a temp path and
+streamed back (range-enabled) by `GET /jobs/{id}/video`; the result is a
+deterministic mock tag set (`app/jobs_mock.py`, seeded by job id) exposed
+both as the verbatim 29-column `GET /jobs/{id}/result.csv` and as a
+non-graded review payload `GET /jobs/{id}/predictions` (per-tag normalized
+bbox + `frame_timestamp` + the value/`"нет"`/empty states, task.md §3.3).
+No DB and no real ML call yet. Target: persist jobs in Postgres, run the ML
+call out-of-band (§5.3), frontend polls `GET /jobs/{id}`.
 
 ### 3.8 Authentication *(target — documented, not implemented)*
 
@@ -212,8 +227,14 @@ DTO types are **generated** from the backend's OpenAPI, never hand-written
 (they are stubbed only until the backend is real). Pages grouped by feature
 under `src/pages/`. Route access gated by layout components.
 
-**As-built:** one placeholder page (`pages/Home.tsx`) + a sketched `api/`
-seam (`client.ts`, `jobs.ts`). Everything below is the target.
+**As-built:** the real SPA — Tailwind v4 + design tokens + shadcn-style
+primitives (`components/ui/`), React Router with lazy pages, `api/client.ts`
++ `api/jobs.ts`. `UploadPage` (drag&drop → `POST /jobs`) and `JobPage`
+(poll → review: source video with bbox overlay, canvas crop at the tag's
+timestamp, grouped recognized fields, summary, tags table, CSV download).
+Anonymous (no auth, §3.8). DTO types are hand-kept mirrors of the backend
+schema until `npm run generate:types` is run against a live `/openapi.json`
+(§4.4); the auth axios client (§4.2) is intentionally not added.
 
 ### 4.2 axios client — `src/api/client.ts` (copy 1:1 when auth lands)
 
@@ -274,30 +295,84 @@ Tailwind v4 (`@tailwindcss/vite`), shadcn-style components in
 ### 5.2 Contract
 
 ```
-POST {ML_BASE_URL}/process   {video_path, job_id}  → 200 {csv, rows, meta?}
-GET  {ML_BASE_URL}/health                          → 200 {"status":"ok"}
+POST {ML_BASE_URL}/process            {video_path, job_id} → 200 {csv, rows, meta?}
+GET  {ML_BASE_URL}/health                                  → 200 {"status":"ok","mode":…}
+GET  {ML_BASE_URL}/progress/{job_id}                        → 200 {fraction,phase,…}   (ADDITIVE)
 ```
 
 `csv` is the full 29-column submission text
 ([`hackathon/task.md`](./hackathon/task.md)); the backend persists and
-serves it unchanged.
+serves it unchanged. **The graded contract is `/process` + `/health`
+only** — `ProcessRequest`/`ProcessResponse` and their
+`backend/app/ml/schemas.py` mirror (§5.1 rule 3) are **unchanged**.
+`/progress/{job_id}` is **additive and optional**: the gateway MAY poll it
+to fill its own `JobResponse.progress`, but is not required to, and the
+two-mirror lock-step does not cover it.
 
 ### 5.3 Sync vs. async
 
 Video processing is **minutes-long**, so the honest target is the async
 pattern: backend creates a job, runs the ML call out-of-band, frontend
 polls `GET /api/v1/jobs/{id}`. The contract in §5.2 stays identical — only
-*who waits* changes. The skeleton mocks it synchronously (instant fake CSV)
-so the flow is reviewable; introduce a worker/queue only when the real
-pipeline forces it.
+*who waits* changes. **As-built:** the ML side now runs the real pipeline
+and emits live progress (§5.5); `/process` is a *sync def* (FastAPI
+threadpool) so `/progress` stays answerable during a run, **without** a
+worker/queue (defer that — §8 — until the gateway side forces it). The
+*backend* still mocks its job flow (in-memory, instant) — that half is
+unchanged and still a skeleton.
 
 ### 5.4 Files
 
 `backend/app/ml/{schemas,client}.py` — contract + the single httpx seam
-(mocked: returns a fake CSV; real body present as a comment).
-`ml/app/{contract,runner,main}.py` — contract mirror + the
-pipeline bridge (`runner.py`, mocked; real `PriceTagPipeline().run(...)`
-call present as a comment) + the FastAPI app.
+(still mocked: returns a fake CSV; real body present as a comment —
+backend is out of this change's scope).
+`ml/app/{contract,runner,main}.py` — contract mirror + the **real**
+pipeline bridge: `runner.py` calls
+`PriceTagPipeline(cfg).run(video, progress=…)` →
+`submission.final_tags_to_csv`, with a guarded mock fallback
+(`ML_MOCK=1`, or pipeline import fails → fake CSV so the monorepo still
+boots without GPU/weights). `progress_registry.py` is the in-process
+`job_id → progress` store behind `GET /progress/{job_id}`. Env:
+`ML_MOCK`, `ML_PIPELINE_CONFIG` (default `configs/balanced.yaml`).
+
+### 5.5 Progress side-channel (additive)
+
+The pipeline's single progress signal
+([`pipeline-reference.md`](./pipeline-reference.md) "Progress reporting")
+is recorded per `job_id` and served by `GET /progress/{job_id}`
+(`{fraction 0..1, phase, frames_done/total, tags_finalized, message}`).
+This is the concrete source the async target (§5.3) and the backend's
+existing `JobResponse.progress` (§3.4) will consume — built **without**
+touching the locked `/process` contract. In-process by design (one ML
+container); if ML is scaled out, swap `progress_registry.py` for Redis and
+nothing else changes.
+
+### 5.6 The unifying contract — the 29-column CSV (read this)
+
+What makes frontend + backend + inference **one product** is not the HTTP
+call (the backend doesn't even call ML yet) — it is the graded
+**29-column CSV + per-tag field semantics**. It has *three owners* that
+must stay in lock-step, exactly like the §5.1-rule-3 Pydantic mirrors
+(backend and `ml/` are separate deployables — only `ml/` may import the
+pipeline package — so the schema is necessarily mirrored, not shared):
+
+| Owner | Where | Role |
+|---|---|---|
+| **Producer** | `price_tag_pipeline.submission` — `HACK_CSV_COLUMNS`, `final_tags_to_csv`, `hack_row_from_tag_dict` | the real CSV, used by the ML service & Gradio |
+| **Gateway** | `backend/app/api/v1/schemas/job.py:CSV_COLUMNS` (+ `SUBSTANTIVE_FIELDS`/`TECHNICAL_FIELDS`) + `app/jobs_mock.py:build_csv` | served *verbatim* as the graded artifact; today a deterministic mock |
+| **Consumer** | frontend `JobPredictions`/`TagPrediction` (`columns` + `fields`) | renders the review screen |
+
+All three agree on: the 29 column names **and order**; the byte format
+(UTF-8, `,` separator, `.` decimal, `\n` line terminator,
+`QUOTE_MINIMAL`); and the three field states — a value, `"нет"` (absent
+on the tag), or `""` (present but unrecognized) — which are scored
+(task.md §3.3/§5.3). When the backend swaps its mock for the real ML call
+(§9 step 4) the gateway parses the producer's CSV straight into
+`TagPrediction.fields`, derives the normalized bbox from the pixel columns,
+and the review UI is unchanged — that is the seam working. The lock-step
+is enforced on the producer side by `tests/test_submission.py` (column
+count/order + `\n`/`QUOTE_MINIMAL` parity with `build_csv`); change one
+owner ⇒ change all three.
 
 ---
 
@@ -339,10 +414,13 @@ separate service behind a thin client.
 2. Backend persistence: implement `db/`, the `Job` model, swap the
    in-memory store in `routes/jobs.py` for Postgres; Alembic init + first
    migration; flip `MOCK_MODE` for the DB path.
-3. ML service: enable the real `PriceTagPipeline` call in `ml/app/runner.py`,
-   add the pipeline path-dependency, switch the `ml` image to the GPU base.
+3. ML service: **done** — `ml/app/runner.py` runs the real
+   `PriceTagPipeline` with a guarded mock fallback and streams progress via
+   `GET /progress/{job_id}` (§5.4/§5.5). Remaining: install the pipeline
+   runtime deps / switch the `ml` image to the GPU base for production.
 4. Wire the real `backend/app/ml/client.py` httpx call; choose §5.3
-   sync/async; add a worker if async.
+   sync/async; add a worker if async; poll `/progress/{job_id}` into
+   `JobResponse.progress`.
 5. Cache: implement `app/cache/`, cache the status/list reads.
 6. Frontend: real axios client (§4.2), `generate:types`, build the
    upload→poll→download page, then layouts/auth if §1 said auth is in.
@@ -353,5 +431,7 @@ separate service behind a thin client.
 
 **Summary:** the skeleton is the proven shape — layered gateway, typed SPA,
 ML as a separate service behind a thin client, the model kept in
-`projects/price_tag_pipeline/`. Nothing here is implemented yet by design;
-fill it in along §9, keeping this doc honest as you go.
+`projects/price_tag_pipeline/`. The **ML layer is now real** (pipeline +
+live progress, guarded mock fallback); backend and frontend remain
+skeleton by design. Fill the rest in along §9, keeping this doc honest as
+you go.

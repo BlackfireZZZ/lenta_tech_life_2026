@@ -187,6 +187,34 @@ Then use `configs/hq_vllm.yaml`. Ready-to-go per-backend configs:
 - ByteTrack (`bytetrack.yaml`) — fast profile.
 - BoT-SORT (`botsort.yaml`) — balanced/hq, with camera motion compensation.
 
+## Progress reporting
+
+A robot video is minutes long; the task spec mandates a UI progress bar
+([`hackathon/task.md`](./hackathon/task.md) §13) and the product needs a
+poll-able job status ([`architecture.md`](./architecture.md) §3.4/§5.3).
+Both consume one signal emitted from one place — the inference loop.
+
+- **API.** `PriceTagPipeline.run(video, output_path=None, progress=None)`.
+  `progress` is optional and backwards compatible: `None` is a silent
+  no-op (existing callers are unaffected); pass a `ProgressReporter` **or**
+  a bare `callable(ProgressEvent)`.
+- **Module.** `price_tag_pipeline.progress`: `ProgressEvent`
+  (`phase`, `fraction` 0..1 monotonic, `frames_done/total`,
+  `tags_finalized`, `message`), phases `detect → finalize → dedup → done`,
+  and reporters `NullProgress` / `CallbackProgress` / `TqdmProgress`
+  (+ `as_reporter()` coercion). A failing reporter is disabled, never
+  fatal; detection owns 0..0.97 of the bar, the finalize+dedup tail the
+  rest. `tqdm` is a soft dependency (`requirements/base.txt`) — absent, the
+  bar degrades to log lines.
+- **CLI.** `run_inference.py` / `run_batch_inference.py` show a terminal
+  bar by default; disable with `--no-progress`.
+- **Gradio.** `gradio_app.py` streams it into a live `gr.Progress` bar
+  (pipeline 0–85 %, CSV 85–92 %, annotated render 92–100 %) — this is the
+  mandated upload→progress→download UI.
+- **ML service.** Recorded into an in-process registry keyed by `job_id`
+  and exposed by the additive `GET /progress/{job_id}`
+  ([`architecture.md`](./architecture.md) §5).
+
 ## Tests
 
 ```bash
@@ -228,6 +256,28 @@ Per tag (one line of `outputs/*.jsonl`):
 }
 ```
 
-`export_hack_csv.py` maps JSONL to the exact 29-column hackathon CSV. Fields
-that are not recognized stay empty; if OCR/VLM explicitly returns `нет`, the
-CSV keeps `нет`.
+### Graded 29-column CSV
+
+Within the pipeline the graded schema lives in **one** place:
+`price_tag_pipeline.submission`.
+
+- `final_tags_to_csv(tags, filename) -> str` — the canonical renderer.
+  `list[FinalTag] → final_tags_to_csv` is what the ML service calls
+  ([`architecture.md`](./architecture.md) §5); also used in-process by
+  `gradio_app.py`.
+- `HACK_CSV_COLUMNS` / `hack_row_from_tag_dict()` — the 29-column order and
+  the per-tag mapping. `export_hack_csv.py` is now a thin JSONL-replay CLI
+  that **delegates** to these (no duplicated schema).
+
+This is the **producer** of the project-wide unifying contract: the same
+29 columns, order and byte format (UTF-8, `,` separator, `.` decimal,
+`\n` line terminator, `QUOTE_MINIMAL`) are mirrored by the gateway
+(`backend/.../schemas/job.py:CSV_COLUMNS` + `jobs_mock.py:build_csv`) and
+consumed by the SPA review screen. The three owners must stay in lock-step
+— see [`architecture.md`](./architecture.md) §5.6;
+`tests/test_submission.py` enforces the column + `\n`/`QUOTE_MINIMAL`
+parity on this side.
+
+Fields not recognized stay empty; if OCR/VLM explicitly returns `нет`, the
+CSV keeps `нет` (the renderer passes values through — the `нет`-vs-empty
+decision is made upstream in the parser/aggregator, never here).

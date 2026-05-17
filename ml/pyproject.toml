@@ -1,15 +1,19 @@
 [project]
 name = "lenta-ml-service"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deployable HTTP wrapper around the price_tag_pipeline package."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic>=2",
-    # The actual model code. Path dependency — research/training lives there,
-    # this service just imports its public entry point (see app/runner.py).
-    # Enable when serving for real:
+    # The model package is imported at runtime via sys.path
+    # (../projects/price_tag_pipeline/src) — see app/runner.py — so this
+    # service boots and mocks even without it. To run the pipeline for
+    # real, install its runtime deps into this env:
+    #   uv pip install -r ../projects/price_tag_pipeline/requirements/base.txt
+    #   uv pip install -r ../projects/price_tag_pipeline/requirements/ocr.txt
+    # (or add the path dependency once it ships a wheel):
     # "price-tag-pipeline @ file:../projects/price_tag_pipeline",
 ]
 

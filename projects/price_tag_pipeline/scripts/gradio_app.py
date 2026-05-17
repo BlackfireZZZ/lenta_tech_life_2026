@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Gradio demo: upload robot video -> annotated video + hackathon CSV."""
+"""Gradio demo: upload robot video -> annotated video + hackathon CSV.
+
+This is the mandated upload-video -> download-CSV UI (task.md §9) and it
+satisfies the §13 "progress bar (videos take a while)" requirement: the
+pipeline's per-frame/phase progress is streamed live into a Gradio bar.
+
+Bar budget: the pipeline run owns 0..85 %, CSV export 85..92 %, the
+annotated-video render 92..100 % — so the bar reflects *total* work, not
+just detection.
+"""
 
 from __future__ import annotations
 
@@ -17,12 +26,22 @@ REPO_ROOT = THIS.parents[2]
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+try:  # keep `--help` working when gradio isn't installed (it's a demo-only dep)
+    import gradio as gr
+except ImportError:
+    gr = None  # type: ignore
+
 
 def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, cwd=str(REPO_ROOT))
 
 
-def process_video(video_path: str, config_path: str, output_dir: str) -> tuple[str, str, str]:
+def process_video(
+    video_path: str,
+    config_path: str,
+    output_dir: str,
+    progress=gr.Progress() if gr is not None else None,
+) -> tuple[str, str, str]:
     if not video_path:
         raise ValueError("Upload a video first.")
     out_root = Path(output_dir or "outputs/demo").expanduser().resolve()
@@ -47,21 +66,28 @@ def process_video(video_path: str, config_path: str, output_dir: str) -> tuple[s
 
     from price_tag_pipeline.config import load_config
     from price_tag_pipeline.pipeline import PriceTagPipeline
+    from price_tag_pipeline.progress import ProgressEvent
+    from price_tag_pipeline.submission import final_tags_to_csv
+
+    def _on_progress(ev: ProgressEvent) -> None:
+        if progress is None:
+            return
+        label = f"{ev.phase} — {ev.message}" if ev.message else ev.phase
+        # Pipeline owns the first 85 % of the bar (see module docstring).
+        progress(0.85 * ev.fraction, desc=label)
 
     cfg = load_config(tmp_cfg)
     pipe = PriceTagPipeline(cfg)
-    tags = pipe.run(video_path=str(work_video), output_path=str(jsonl))
+    tags = pipe.run(video_path=str(work_video), output_path=str(jsonl), progress=_on_progress)
 
-    _run([
-        sys.executable,
-        "projects/price_tag_pipeline/scripts/export_hack_csv.py",
-        "--inputs",
-        str(out_root),
-        "--out-csv",
-        str(csv_path),
-        "--video-ext",
-        work_video.suffix,
-    ])
+    if progress is not None:
+        progress(0.88, desc="Building hackathon CSV")
+    # In-process, single-source 29-column renderer (no subprocess).
+    csv_text = final_tags_to_csv(tags, filename=work_video.name)
+    csv_path.write_text(csv_text, encoding="utf-8", newline="")
+
+    if progress is not None:
+        progress(0.92, desc="Rendering annotated video")
     vis_cmd = [
         sys.executable,
         "projects/price_tag_pipeline/scripts/visualize_predictions.py",
@@ -75,6 +101,9 @@ def process_video(video_path: str, config_path: str, output_dir: str) -> tuple[s
     if audit.exists():
         vis_cmd.extend(["--audit", str(audit)])
     _run(vis_cmd)
+
+    if progress is not None:
+        progress(1.0, desc="Done")
     summary = f"Detected {len(tags)} final unique price tags. CSV: {csv_path.name}"
     return str(annotated), str(csv_path), summary
 
@@ -87,10 +116,8 @@ def main() -> int:
     p.add_argument("--port", type=int, default=7860)
     args = p.parse_args()
 
-    try:
-        import gradio as gr
-    except ImportError as e:
-        raise SystemExit("Install Gradio first: pip install gradio>=4.0") from e
+    if gr is None:
+        raise SystemExit("Install Gradio first: pip install gradio>=4.0")
 
     with gr.Blocks(title="Lenta price-tag recognition") as demo:
         gr.Markdown("# Lenta price-tag recognition\nUpload a robot video, then download annotated MP4 and CSV.")
