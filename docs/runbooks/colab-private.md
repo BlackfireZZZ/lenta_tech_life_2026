@@ -1,17 +1,46 @@
-# Google Colab: private SSH clone and full run
+# Google Colab: private SSH clone, detector training, and full run
 
 This runbook is written as copy-paste Colab cells for the private repository
 `BlackfireZZZ/lenta_tech_life_2026`.
+
+Primary goal: improve **price-tag detection** first. OCR quality is evaluated
+only after the detector reliably finds the correct price tags and stops firing
+on packages, bottles, shelf edges, and other objects.
 
 Use a GPU runtime first:
 
 `Runtime -> Change runtime type -> GPU`
 
-Recommended path for a private repo is an ephemeral read-only SSH deploy key:
-generate it inside Colab, add the printed public key to GitHub, clone, install,
-copy videos, run inference, export CSV, package results.
+Recommended runtime:
 
-## Cell 1 — generate SSH key in Colab
+- **T4/L4**: smoke runs, YOLO11n/s training, quick visualization.
+- **A100**: serious high-resolution YOLO training and later VLM/OCR work.
+
+Expected Google Drive data layout from the current dataset screenshot:
+
+```text
+/content/drive/MyDrive/Fucking_нас/Данные/
+├── 25_2-10/
+│   ├── 25_2-10.mp4
+│   └── 25_2-10.csv
+├── 25_12-20/
+├── 26_12-20/
+├── 43_15/
+├── 49_5/
+├── Unlabeled/
+│   ├── 25_12-20.mp4
+│   ├── 26_12-20.mp4
+│   └── 26_2-10.mp4
+└── sample.csv
+```
+
+The current labeled set is tiny: **5 videos, about 63 annotated frames, 274
+price-tag boxes**. Treat every experiment as data-centric: watch predictions,
+fix/expand labels, then retrain.
+
+## Cell 1 - generate SSH key in Colab
+
+Use a temporary read-only deploy key. Regenerate it for each notebook/runtime.
 
 ```bash
 %%bash
@@ -47,7 +76,7 @@ Now add the printed public key to GitHub:
 If you cannot access repo settings, add the key to your GitHub account instead:
 `https://github.com/settings/keys`.
 
-## Cell 2 — test SSH access
+## Cell 2 - test SSH access
 
 GitHub usually exits with status `1` for `ssh -T` even when auth is successful,
 so this cell intentionally allows that command to finish without failing the
@@ -65,7 +94,7 @@ Expected successful text contains:
 You've successfully authenticated
 ```
 
-## Cell 3 — clone private repo and switch branch
+## Cell 3 - clone private repo and switch branch
 
 ```bash
 %%bash
@@ -84,7 +113,7 @@ git pull --ff-only
 git status --short --branch
 ```
 
-## Cell 4 — install system packages and Python dependencies
+## Cell 4 - install system packages and Python dependencies
 
 ```bash
 %%bash
@@ -103,7 +132,10 @@ python -m pip install -r projects/price_tag_pipeline/requirements/demo.txt
 python -m pip install -r projects/price_tag_pipeline/requirements/train.txt
 ```
 
-## Cell 5 — smoke-check imports and CLI entry points
+If Colab has dependency conflicts after repeated installs, restart the runtime
+and rerun Cells 2-4.
+
+## Cell 5 - smoke-check imports and CLI entry points
 
 ```bash
 %%bash
@@ -111,25 +143,25 @@ set -euo pipefail
 
 cd /content/lenta_tech_life_2026
 
+python projects/price_tag_pipeline/scripts/prepare_data.py --help
+python projects/price_tag_pipeline/scripts/make_splits.py --help
+python projects/price_tag_pipeline/scripts/train_detector_yolo.py --help
+python projects/price_tag_pipeline/scripts/eval_detector.py --help
 python projects/price_tag_pipeline/scripts/run_batch_inference.py --help
-python projects/price_tag_pipeline/scripts/export_hack_csv.py --help
-python projects/price_tag_pipeline/scripts/gradio_app.py --help
+python projects/price_tag_pipeline/scripts/visualize_predictions.py --help
 ```
 
-## Cell 6 — mount Google Drive
-
-Use this if the input videos are stored on Google Drive.
+## Cell 6 - mount Google Drive
 
 ```python
 from google.colab import drive
 drive.mount("/content/drive")
 ```
 
-## Cell 7 — copy annotated CSV + videos into repo layout
+## Cell 7 - copy annotated CSV + videos into repo layout
 
-Change `DATA_SRC` to the folder where the downloaded `Данные` directory is
-located. This keeps labeled videos separate from `Unlabeled`, because some file
-names can overlap.
+Change `DATA_SRC` only if the Drive folder differs. This keeps labeled videos
+separate from `Unlabeled`, because some file names can overlap.
 
 ```bash
 %%bash
@@ -137,7 +169,7 @@ set -euo pipefail
 
 cd /content/lenta_tech_life_2026
 
-DATA_SRC="/content/drive/MyDrive/Данные"
+DATA_SRC="/content/drive/MyDrive/Fucking_нас/Данные"
 
 mkdir -p data/raw/videos data/raw/annotations/csv data/raw/unlabeled_videos
 
@@ -164,9 +196,36 @@ echo "Unlabeled videos:"
 find data/raw/unlabeled_videos -maxdepth 1 -type f | sort
 ```
 
-## Cell 8 — prepare train-ready detector dataset from CSV
+## Cell 8 - inspect raw annotation volume
 
-The CSV format contains `frame_timestamp` and bbox columns
+This is a quick reality check before training. Expect around 274 rows across
+five CSV files. If counts are much lower, the Drive path or copy step is wrong.
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+
+python - <<'PY'
+from pathlib import Path
+import csv
+
+root = Path("data/raw/annotations/csv")
+total = 0
+for csv_path in sorted(root.glob("*.csv")):
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    total += len(rows)
+    stamps = sorted({r.get("frame_timestamp", "") for r in rows})
+    print(f"{csv_path.name}: rows={len(rows)} unique_timestamps={len(stamps)}")
+print(f"total_rows={total}")
+PY
+```
+
+## Cell 9 - prepare train-ready detector dataset from CSV
+
+The CSV format contains `frame_timestamp` in **milliseconds** and bbox columns
 `x_min,y_min,x_max,y_max`. This command extracts only annotated frames and
 creates YOLO labels under `data/processed/`.
 
@@ -188,10 +247,10 @@ python projects/price_tag_pipeline/scripts/make_splits.py \
   --emit-dataset-yaml-fold 0
 ```
 
-## Cell 9 — optional detector training
+## Cell 10 - train one fast detector smoke run
 
-Use this if you want to train on the provided CSV boxes. For a quick Colab smoke
-run, lower `--epochs`; for a real run, increase it.
+Use this to validate that training works end-to-end. This is not the final
+model.
 
 ```bash
 %%bash
@@ -206,24 +265,100 @@ python projects/price_tag_pipeline/scripts/train_detector_yolo.py \
   --batch 4 \
   --epochs 20 \
   --device 0 \
-  --name lenta_csv_smoke
+  --workers 2 \
+  --name det_yolo11n_fold0_smoke
 ```
 
-After training, copy the best checkpoint into the default config path:
+Evaluate the smoke checkpoint:
 
 ```bash
 %%bash
 set -euo pipefail
 
 cd /content/lenta_tech_life_2026
-mkdir -p data/checkpoints/detector
-cp runs/lenta/lenta_csv_smoke/weights/best.pt data/checkpoints/detector/best.pt
+
+python projects/price_tag_pipeline/scripts/eval_detector.py \
+  --weights runs/lenta/det_yolo11n_fold0_smoke/weights/best.pt \
+  --dataset data/processed/dataset.yaml \
+  --imgsz 1280 \
+  --batch 4 \
+  --device 0
 ```
 
-## Cell 10 — run inference on unlabeled videos
+## Cell 11 - train the real 5-fold detector suite
 
-For a no-training baseline, keep `zeroshot_nolabel.yaml`. If you trained and
-copied `best.pt`, use `balanced.yaml`.
+Because there are only five labeled videos, each fold validates on one entire
+video. This is the minimum honest setup; frame-level splits leak the same shelf
+and the same tags into train and validation.
+
+Start with `yolo11s.pt` or `yolo11m.pt`. Use `yolo11n.pt` only for speed. If
+YOLO26 weights are available in the current Ultralytics install, add a second
+suite with `--model yolo26l.pt`.
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+
+MODEL="yolo11s.pt"
+IMGSZ=1280
+BATCH=4
+EPOCHS=160
+
+for FOLD in 0 1 2 3 4; do
+  python projects/price_tag_pipeline/scripts/make_splits.py \
+    --processed data/processed \
+    --out data/splits \
+    --n_splits 5 \
+    --emit-dataset-yaml-fold "${FOLD}"
+
+  python projects/price_tag_pipeline/scripts/train_detector_yolo.py \
+    --dataset data/processed/dataset.yaml \
+    --model "${MODEL}" \
+    --imgsz "${IMGSZ}" \
+    --batch "${BATCH}" \
+    --epochs "${EPOCHS}" \
+    --device 0 \
+    --workers 2 \
+    --patience 40 \
+    --use-albu \
+    --name "det_${MODEL%.pt}_fold${FOLD}_img${IMGSZ}"
+
+  python projects/price_tag_pipeline/scripts/eval_detector.py \
+    --weights "runs/lenta/det_${MODEL%.pt}_fold${FOLD}_img${IMGSZ}/weights/best.pt" \
+    --dataset data/processed/dataset.yaml \
+    --imgsz "${IMGSZ}" \
+    --batch "${BATCH}" \
+    --device 0 | tee "runs/lenta/det_${MODEL%.pt}_fold${FOLD}_img${IMGSZ}_eval.txt"
+done
+```
+
+## Cell 12 - choose and promote a checkpoint
+
+Pick the checkpoint with the best validation behavior, not just the prettiest
+loss curve. After watching visualizations, copy the chosen checkpoint into the
+default detector path used by `balanced.yaml` and `hq.yaml`.
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+
+find runs/lenta -path "*/weights/best.pt" -print
+
+# Change this after comparing eval logs and prediction videos.
+BEST_RUN="runs/lenta/det_yolo11s_fold0_img1280/weights/best.pt"
+
+mkdir -p data/checkpoints/detector
+cp "${BEST_RUN}" data/checkpoints/detector/best.pt
+ls -lh data/checkpoints/detector/best.pt
+```
+
+## Cell 13 - run inference on unlabeled videos with trained detector
+
+Use `balanced.yaml` after `data/checkpoints/detector/best.pt` exists.
 
 ```bash
 %%bash
@@ -233,7 +368,7 @@ cd /content/lenta_tech_life_2026
 mkdir -p outputs/jsonl outputs/vis submission
 
 VIDEOS_DIR="data/raw/unlabeled_videos"
-CONFIG="projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml"
+CONFIG="projects/price_tag_pipeline/configs/balanced.yaml"
 
 python projects/price_tag_pipeline/scripts/run_batch_inference.py \
   --videos-dir "${VIDEOS_DIR}" \
@@ -243,7 +378,14 @@ python projects/price_tag_pipeline/scripts/run_batch_inference.py \
   --log-level INFO
 ```
 
-## Cell 11 — render annotated videos
+## Cell 14 - render annotated videos for detector QA
+
+Watch these videos first. Detector QA questions:
+
+- Are true price tags missed?
+- Are packages, bottles, boxes, shelf rails, or QR-like graphics detected?
+- Are boxes tight enough to crop the whole tag for OCR?
+- Are repeated detections merged by tracking, or do we double-count tags?
 
 ```bash
 %%bash
@@ -265,7 +407,7 @@ for v in "${VIDEOS_DIR}"/*.mp4; do
 done
 ```
 
-## Cell 12 — export hackathon CSV
+## Cell 15 - export hackathon CSV
 
 ```bash
 %%bash
@@ -281,20 +423,86 @@ python projects/price_tag_pipeline/scripts/export_hack_csv.py \
 head -5 submission/hack_submission.csv
 ```
 
-## Cell 13 — package outputs for download
+## Cell 16 - package outputs for download
 
 ```bash
 %%bash
 set -euo pipefail
 
 cd /content/lenta_tech_life_2026
-zip -r /content/lenta_results.zip submission outputs/jsonl outputs/vis
+zip -r /content/lenta_results.zip submission outputs/jsonl outputs/vis runs/lenta data/splits
 ls -lh /content/lenta_results.zip
 ```
 
 Download `/content/lenta_results.zip` from the Colab file browser.
 
-## Optional cell — run Gradio UI in Colab
+## Optional - run zero-shot baseline for comparison
+
+This is useful only as a comparison point. It is expected to produce false
+positives on packaging and other shelf objects.
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+mkdir -p outputs/jsonl_zeroshot
+
+python projects/price_tag_pipeline/scripts/run_batch_inference.py \
+  --videos-dir data/raw/unlabeled_videos \
+  --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
+  --outputs-dir outputs/jsonl_zeroshot \
+  --pattern "*.mp4" \
+  --log-level INFO
+```
+
+## Optional - fetch external detector datasets
+
+External data should be train-only. Keep one real Lenta video as the validation
+signal, otherwise external-domain quality will look better than the real task.
+
+Show the available plan:
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+python projects/price_tag_pipeline/scripts/fetch_external_datasets.py
+```
+
+Download SKU-110K for dense retail-shelf pretraining:
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+python projects/price_tag_pipeline/scripts/fetch_external_datasets.py --download sku110k
+```
+
+Roboflow price-tag datasets require an API key:
+
+```bash
+%%bash
+set -euo pipefail
+
+cd /content/lenta_tech_life_2026
+
+export ROBOFLOW_API_KEY="PASTE_KEY_HERE"
+python projects/price_tag_pipeline/scripts/fetch_external_datasets.py \
+  --download roboflow \
+  --rf-workspace cuhk-00cw9 \
+  --rf-project price-tag-mpq14 \
+  --rf-version 1
+```
+
+After adding external datasets, normalize their classes to a single
+`price_tag` class unless they explicitly separate useful price-tag subclasses.
+Do not train product/package classes into the detector that feeds OCR; the OCR
+pipeline needs price-tag crops, not product boxes.
+
+## Optional - run Gradio UI in Colab
 
 ```bash
 %%bash
@@ -303,13 +511,13 @@ set -euo pipefail
 cd /content/lenta_tech_life_2026
 
 python projects/price_tag_pipeline/scripts/gradio_app.py \
-  --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
+  --config projects/price_tag_pipeline/configs/balanced.yaml \
   --outputs-dir outputs/demo \
   --host 0.0.0.0 \
   --port 7860
 ```
 
-## Optional cell — pull latest changes later
+## Optional - pull latest changes later
 
 Use this when the notebook is already cloned and you only need to update it.
 
@@ -324,7 +532,7 @@ git pull --ff-only
 git log --oneline -5
 ```
 
-## Optional cell — push from Colab
+## Optional - push from Colab
 
 Only use this if the key has write access or was added to your GitHub account.
 Do not commit input videos, checkpoints, or generated result archives.
@@ -343,3 +551,16 @@ git status --short
 # git commit -m "Update Colab run output"
 # git push origin HEAD:feature/full-autonomous-demo
 ```
+
+## Detector experiment policy
+
+For each detector run, save:
+
+- model name and input size;
+- fold id and validation video;
+- `eval_detector.py` metrics;
+- annotated videos from Cell 14;
+- short notes: misses, false positives, bad crop tightness, duplicate tracks.
+
+Promote a model only if it improves real-video visual QA. With the current tiny
+dataset, mAP alone can lie.

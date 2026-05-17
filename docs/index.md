@@ -49,6 +49,7 @@ thin pointers here — do not duplicate knowledge into them.
 | **Where each field sits on the tag (OCR)** | [hackathon/price-tag-guide.md](./hackathon/price-tag-guide.md) |
 | Raw organizer decks (heavy — don't open) | [hackathon/source-materials.md](./hackathon/source-materials.md) |
 | Which model / why / training plan | [strategy.md](./strategy.md) |
+| **Concrete ML quality improvement plan** | [ml-quality-improvement-plan.md](./ml-quality-improvement-plan.md) |
 | Run inference / CSV / UI / CLI flags | [pipeline-reference.md](./pipeline-reference.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
 | Current inference issues + fix plan | [runbooks/inference-current-issues.md](./runbooks/inference-current-issues.md) |
