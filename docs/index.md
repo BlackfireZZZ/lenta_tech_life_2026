@@ -17,8 +17,9 @@ thin pointers here — do not duplicate knowledge into them.
 > `projects/price_tag_pipeline/`; the product around it —
 > `backend/` (API gateway), `frontend/` (SPA), `ml/` (deployable service
 > wrapping the pipeline) + `docker-compose.yaml` — is described in
-> **[architecture.md](./architecture.md)**. Those services are currently a
-> reviewable skeleton (mocked, no business logic yet) by design.
+> **[architecture.md](./architecture.md)**. `backend`/`ml` are a reviewable
+> skeleton (mocked, real logic not written yet) by design; the `frontend`
+> is the built upload→poll→review→CSV SPA wired against that mock.
 
 ## Read in this order
 

@@ -1,16 +1,58 @@
-// PLACEHOLDER — one API module per backend resource (docs/architecture.md §4.3).
-// DTO types come from src/api/generated/ (npm run generate:types against the
-// backend's /openapi.json); hand-written here only until the backend is real.
-import { apiClient } from "./client";
+// One API module per backend resource (docs/architecture.md §4.3).
+//
+// These DTOs mirror backend/app/api/v1/schemas/job.py 1:1. The architecture
+// (§4.4) wants them *generated* from the gateway's /openapi.json via
+// `npm run generate:types` (config: openapi-ts.config.ts) — that needs the
+// backend running to fetch the schema. Until that step is run in your env
+// they are hand-kept here; swapping to `./generated` is then a one-line
+// import change because the shapes are identical.
+import { apiClient, apiUrl } from "./client";
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
 export interface Job {
   id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
-  progress: number;
+  status: JobStatus;
+  progress: number; // 0..1
   filename: string;
   rows: number | null;
+  error: string | null;
   result_csv_url: string | null;
+  predictions_url: string | null;
+  video_url: string | null;
+  created_at: string;
+  updated_at: string;
 }
+
+export interface BBoxNorm {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface TagPrediction {
+  index: number;
+  color: string; // white | yellow | green | red
+  frame_timestamp: number; // ms — the value written to the CSV
+  t_frac: number; // 0..1 — where to seek the uploaded clip for the crop
+  bbox: BBoxNorm; // normalized [0,1] for overlaying on the <video>
+  fields: Record<string, string>; // 29 columns -> value | "нет" | "" (unrec.)
+}
+
+export interface JobPredictions {
+  job_id: string;
+  filename: string;
+  columns: string[]; // canonical 29-column order
+  substantive_fields: string[]; // metric-scored subset
+  video_url: string;
+  csv_url: string;
+  frame_width: number;
+  frame_height: number;
+  tags: TagPrediction[];
+}
+
+export const ABSENT = "нет"; // field not present on the tag (task.md §3.3)
 
 export const jobsApi = {
   create: async (video: File): Promise<Job> => {
@@ -18,6 +60,13 @@ export const jobsApi = {
     form.append("video", video);
     return (await apiClient.post<Job>("/api/v1/jobs", form)).data;
   },
+
   get: async (id: string): Promise<Job> =>
     (await apiClient.get<Job>(`/api/v1/jobs/${id}`)).data,
+
+  getPredictions: async (id: string): Promise<JobPredictions> =>
+    (await apiClient.get<JobPredictions>(`/api/v1/jobs/${id}/predictions`)).data,
+
+  videoUrl: (id: string): string => apiUrl(`/api/v1/jobs/${id}/video`),
+  csvUrl: (id: string): string => apiUrl(`/api/v1/jobs/${id}/result.csv`),
 };

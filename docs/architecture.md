@@ -1,14 +1,18 @@
 # Application architecture — monorepo (backend + frontend + ML)
 
 How the **product** around the price-tag model is structured: a public API
-gateway, a placeholder SPA, and the model packaged as an internal service.
+gateway, the SPA (built, on the mocked API), and the model packaged as an
+internal service.
 This is the single source of truth for the web/service architecture — the
 per-service `README.md` files are thin pointers here.
 
 > **Current status: scaffolded skeleton.** The structure, the service
-> boundaries and every contract are in place and reviewable. Business logic
-> is deliberately **not written yet** — `backend` runs in `MOCK_MODE`, `ml`
-> returns a fake CSV, `frontend` renders one placeholder page. Each section
+> boundaries and every contract are in place and reviewable. The product
+> spine is **wired end to end on mocks**: `backend` runs in `MOCK_MODE`
+> (in-memory jobs, deterministic mock tags, no DB/real ML), `ml` returns a
+> fake CSV, and `frontend` is the real upload→poll→review SPA against that
+> mock. Real detection/OCR and persistence are deliberately not written
+> yet. Each section
 > below states what is *as-built* vs. the *target* so the doc never lies
 > about the code. Build the real layers against this doc.
 
@@ -25,8 +29,9 @@ per-service `README.md` files are thin pointers here.
   `routes → schemas → models`, async SQLAlchemy + Postgres, Redis cache,
   thin `app/ml/` client. Target auth: JWT + refresh + CSRF (documented,
   not yet implemented).
-- **Frontend** = React 19 + Vite + TypeScript SPA, axios client, DTO types
-  generated from the backend's OpenAPI. Currently a placeholder.
+- **Frontend** = React 19 + Vite + TypeScript SPA (Tailwind v4 +
+  shadcn-style), axios client, DTO types from the backend's OpenAPI. Built:
+  upload → poll → review (video + bbox + crop + fields) → CSV.
 - **ML** = a *deployable wrapper* (`ml/`) that imports the
   `price_tag_pipeline` package and exposes `/process` + `/health`. The
   model, training and experiments stay in `projects/price_tag_pipeline/`.
@@ -51,10 +56,10 @@ lenta_tech_life_2026/
 │   │   └── main.py           FastAPI assembly
 │   ├── scripts/init.sh       entrypoint: migrate → serve
 │   ├── pyproject.toml · .env.example · Dockerfile · README.md
-├── frontend/                 React + Vite SPA (placeholder)
+├── frontend/                 React + Vite SPA (built, on the mocked API)
 │   ├── src/
 │   │   ├── api/              axios client + one module per resource
-│   │   ├── pages/            pages by feature (Home = placeholder)
+│   │   ├── pages/            pages by feature (UploadPage, JobPage)
 │   │   ├── App.tsx · main.tsx · index.css
 │   ├── package.json · vite.config.ts · openapi-ts.config.ts
 │   ├── Dockerfile.dev · .env.example · README.md
@@ -165,9 +170,15 @@ queued→running→succeeded/failed). CSV schema itself:
 [`hackathon/task.md`](./hackathon/task.md) (29 columns) — the gateway
 serves it **verbatim** and must never reshape graded columns.
 
-**As-built:** `routes/jobs.py` fakes progress on each poll from an in-memory
-dict and returns a stub CSV header. Target: persist jobs in Postgres, run
-the ML call out-of-band (§5.3), frontend polls `GET /jobs/{id}`.
+**As-built:** `routes/jobs.py` keeps jobs in an in-memory dict and fakes
+progress on each poll. The uploaded clip is stored on a temp path and
+streamed back (range-enabled) by `GET /jobs/{id}/video`; the result is a
+deterministic mock tag set (`app/jobs_mock.py`, seeded by job id) exposed
+both as the verbatim 29-column `GET /jobs/{id}/result.csv` and as a
+non-graded review payload `GET /jobs/{id}/predictions` (per-tag normalized
+bbox + `frame_timestamp` + the value/`"нет"`/empty states, task.md §3.3).
+No DB and no real ML call yet. Target: persist jobs in Postgres, run the ML
+call out-of-band (§5.3), frontend polls `GET /jobs/{id}`.
 
 ### 3.8 Authentication *(target — documented, not implemented)*
 
@@ -212,8 +223,14 @@ DTO types are **generated** from the backend's OpenAPI, never hand-written
 (they are stubbed only until the backend is real). Pages grouped by feature
 under `src/pages/`. Route access gated by layout components.
 
-**As-built:** one placeholder page (`pages/Home.tsx`) + a sketched `api/`
-seam (`client.ts`, `jobs.ts`). Everything below is the target.
+**As-built:** the real SPA — Tailwind v4 + design tokens + shadcn-style
+primitives (`components/ui/`), React Router with lazy pages, `api/client.ts`
++ `api/jobs.ts`. `UploadPage` (drag&drop → `POST /jobs`) and `JobPage`
+(poll → review: source video with bbox overlay, canvas crop at the tag's
+timestamp, grouped recognized fields, summary, tags table, CSV download).
+Anonymous (no auth, §3.8). DTO types are hand-kept mirrors of the backend
+schema until `npm run generate:types` is run against a live `/openapi.json`
+(§4.4); the auth axios client (§4.2) is intentionally not added.
 
 ### 4.2 axios client — `src/api/client.ts` (copy 1:1 when auth lands)
 

@@ -28,10 +28,10 @@ All knowledge lives in **[`docs/`](./docs/index.md)** — start at
 Monorepo: the **model** (training/experiments/research) lives in
 `projects/price_tag_pipeline/`; the **product** around it is
 `backend/` (API gateway) · `frontend/` (SPA) · `ml/` (deployable service
-wrapping the pipeline) + `docker-compose.yaml`. The service stack is
-currently a **reviewable skeleton** — structure and contracts in place,
-business logic intentionally not written yet. See
-[`docs/architecture.md`](./docs/architecture.md).
+wrapping the pipeline) + `docker-compose.yaml`. `backend`/`ml` are a
+**reviewable skeleton** (structure + contracts in place, real logic not
+written yet); the `frontend` is the **built** upload→review→CSV SPA wired
+against that mock. See [`docs/architecture.md`](./docs/architecture.md).
 
 ## Quick start
 
