@@ -161,6 +161,8 @@ venv.bak/
 node_modules/
 frontend/.env
 frontend/openapi.json
+frontend/dist/
+*.tsbuildinfo
 backend/.env
 
 # Spyder project settings
