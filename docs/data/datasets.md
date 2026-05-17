@@ -55,7 +55,7 @@ Licenses vary per dataset (mostly CC BY 4.0); check each project page.
 | Resource | Why | Access |
 |---|---|---|
 | [Kaggle: OCR receipts text detection](https://www.kaggle.com/datasets/trainingdatapro/ocr-receipts-text-detection) | Printed RU/EN prices & digits — weak for tag layout, useful for price/number CER. | `kaggle` CLI + `kaggle.json` |
-| **BarBeR** (Barcode Benchmark Repository) | Our CSV has `qr_code_barcode` + `price{1..4}_qr`; harden QR/1D decoding (pairs with `src/price_tag_pipeline/qr.py`). | search "BarBeR barcode benchmark" |
+| **BarBeR** (Barcode Benchmark Repository) | Our CSV has `qr_code_barcode` + `price{1..4}_qr`; harden QR/1D decoding (pairs with `src/price_tag_pipeline/recognition/` — `qr.py` / `barcode.py`). | search "BarBeR barcode benchmark" |
 | [FutureBee product-label / price-tag OCR](https://www.futurebeeai.com/dataset/product-label-ocr-image-data-sets) | Largest RU product-front/price-tag OCR corpus found. | Commercial, request-based (note: likely paid) |
 
 ## Recommended order of work

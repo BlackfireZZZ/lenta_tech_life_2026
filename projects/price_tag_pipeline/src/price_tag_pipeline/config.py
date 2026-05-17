@@ -84,6 +84,21 @@ class OCRConfig:
 
 
 @dataclass(frozen=True)
+class RecognitionConfig:
+    """Crop-decoder chain wiring.
+
+    Defaults keep the full ``QR → barcode → smart OCR`` chain on, so profiles
+    without a ``recognition:`` block behave exactly as before. ``merge_policy``
+    is documentation/intent today (field reconciliation is the aggregator's
+    weighted voting); it exists so a future policy switch is config-only.
+    """
+    enable_qr: bool = True
+    enable_barcode: bool = True
+    enable_ocr: bool = True
+    merge_policy: str = "qr_first_fill_gaps"
+
+
+@dataclass(frozen=True)
 class ParserConfig:
     min_price: float
     max_price: float
@@ -123,6 +138,7 @@ class PipelineConfig:
     ocr: OCRConfig
     parser: ParserConfig
     aggregation: AggregationConfig
+    recognition: RecognitionConfig = field(default_factory=RecognitionConfig)
     training: Optional[TrainingConfig] = None
 
 
@@ -205,6 +221,17 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
     )
 
 
+def _as_recognition(node: Optional[dict[str, Any]]) -> RecognitionConfig:
+    if not node:
+        return RecognitionConfig()
+    return RecognitionConfig(
+        enable_qr=bool(_opt(node, "enable_qr", True)),
+        enable_barcode=bool(_opt(node, "enable_barcode", True)),
+        enable_ocr=bool(_opt(node, "enable_ocr", True)),
+        merge_policy=str(_opt(node, "merge_policy", "qr_first_fill_gaps")),
+    )
+
+
 def _as_parser(node: dict[str, Any]) -> ParserConfig:
     return ParserConfig(
         min_price=float(node["min_price"]),
@@ -253,5 +280,6 @@ def load_config(path: str | Path) -> PipelineConfig:
         ocr=_as_ocr(data["ocr"]),
         parser=_as_parser(data["parser"]),
         aggregation=_as_aggregation(data["aggregation"]),
+        recognition=_as_recognition(data.get("recognition")),
         training=_as_training(data.get("training")),
     )

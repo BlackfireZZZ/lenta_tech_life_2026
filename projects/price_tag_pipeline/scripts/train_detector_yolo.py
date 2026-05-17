@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Train a YOLO-family detector via Ultralytics.
 
-Defaults to fine-tuning the OpenFoodFacts price-tag detector on our
-1280-shortest-side input. Switch with --model.
+Defaults to fine-tuning the OpenFoodFacts price-tag detector — the fixed
+base of our solution — on our 1280-shortest-side input. We tune THIS
+architecture from THESE weights; override only to compare (--model).
+The canonical knobs/promotion gate live in
+``projects/price_tag_pipeline/experiments/finetune_openfoodfacts.yaml``.
 
-Usage:
+Usage (--model defaults to the OFF base; --name is auto-derived):
     python projects/price_tag_pipeline/scripts/train_detector_yolo.py \\
         --dataset data/processed/dataset.yaml \\
-        --model hf://openfoodfacts/price-tag-detection/weights/best.pt \\
         --epochs 200 \\
         --imgsz 1280 \\
         --batch 8 \\
-        --device 0 \\
-        --name yolo26l_fold0
+        --device 0
 
 For a different fold, first re-emit dataset.yaml:
     python projects/price_tag_pipeline/scripts/make_splits.py --emit-dataset-yaml-fold 1

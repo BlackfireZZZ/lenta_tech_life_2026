@@ -54,8 +54,10 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .config import OCRConfig
-from .types import OCRResult
+from ..config import OCRConfig, ParserConfig
+from ..parser import TagParser
+from ..types import OCRResult
+from .base import CropDecoder, RecognitionResult, parsed_is_empty
 
 LOGGER = logging.getLogger(__name__)
 
@@ -942,3 +944,57 @@ def build_ocr_engine(cfg: OCRConfig) -> BaseOCREngine:
             engines.append(build_ocr_engine(sub_cfg))
         return EnsembleOCREngine(engines)
     raise ValueError(f"Backend resolved to unknown key: {key}")
+
+
+# ---------------------------------------------------------------------------
+# CropDecoder adapter — the "smart OCR" fallback link of the chain
+# ---------------------------------------------------------------------------
+
+class OCRDecoder(CropDecoder):
+    """Last link of the recognition chain: OCR/VLM the crop and parse it.
+
+    One crop can yield several results (an ensemble engine returns one per
+    sub-engine); each becomes its own :class:`RecognitionResult`. A failing
+    engine degrades to ``[]`` — it never aborts the video. Per-field merge
+    with QR/barcode is delegated to the aggregator's weighted voting, not
+    re-implemented here (see ``docs/recognition-pipeline.md``).
+    """
+
+    name = "ocr"
+
+    def __init__(self, engine: "BaseOCREngine", parser: TagParser) -> None:
+        self._engine = engine
+        self._parser = parser
+
+    @classmethod
+    def from_config(cls, ocr_cfg: OCRConfig, parser_cfg: ParserConfig) -> "OCRDecoder":
+        return cls(build_ocr_engine(ocr_cfg), TagParser(parser_cfg))
+
+    def decode(self, crop_bgr: np.ndarray) -> list[RecognitionResult]:
+        try:
+            results = self._engine.recognize_all(crop_bgr)
+        except Exception as exc:  # one bad crop must not kill the whole video
+            LOGGER.warning("OCR failed on a crop: %s", exc)
+            return []
+        out: list[RecognitionResult] = []
+        for res in results:
+            if not res.text:
+                continue
+            if self._engine.structured or res.text.lstrip().startswith("{"):
+                parsed = self._parser.parse_vlm_json(
+                    res.text, vlm_confidence=res.confidence, backend=res.backend
+                )
+            else:
+                parsed = self._parser.parse_text(
+                    res.text, ocr_confidence=res.confidence, backend=res.backend
+                )
+            out.append(
+                RecognitionResult(
+                    parsed=parsed,
+                    decoder=res.backend,
+                    confidence=res.confidence,
+                    text=res.text,
+                    found=not parsed_is_empty(parsed),
+                )
+            )
+        return out

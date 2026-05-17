@@ -5,7 +5,8 @@ Per-frame loop:
     (no immediate OCR — we OCR the best crops per track at finalization)
 
 On track expiry / video end:
-    pick top-K-sharpest crops per track -> OCR/VLM each -> parse -> add observations
+    pick top-K-sharpest crops per track -> run the recognition chain on each
+    (QR -> barcode -> smart OCR) -> add every reading as an observation
     -> aggregator runs per-field voting -> emits FinalTag
 
 Cross-track deduplication runs once at the end on the full list of FinalTags.
@@ -25,12 +26,10 @@ from typing import Optional
 from .aggregator import TrackAggregator, dedup_final_tags
 from .config import PipelineConfig
 from .detector import build_detector, read_video_frame_count
-from .ocr import BaseOCREngine, build_ocr_engine
-from .parser import TagParser
 from .progress import Phase, ProgressEvent, ProgressLike, ProgressReporter, as_reporter
-from .qr import QRCodeExtractor
+from .recognition import RecognitionChain, build_recognition_chain, parsed_is_empty
 from .rectifier import build_rectifier
-from .types import CropCandidate, FinalTag, ParsedTag, TagObservation
+from .types import CropCandidate, FinalTag, TagObservation
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,9 +47,9 @@ class PriceTagPipeline:
         self.cfg = cfg
         self.detector = build_detector(cfg.detector)
         self.rectifier = build_rectifier(cfg.rectifier)
-        self.ocr: BaseOCREngine = build_ocr_engine(cfg.ocr)
-        self.qr = QRCodeExtractor()
-        self.parser = TagParser(cfg.parser)
+        # QR -> barcode -> smart OCR, behind one stable seam. Parser/OCR/QR
+        # wiring now lives in price_tag_pipeline.recognition, not here.
+        self.recognition: RecognitionChain = build_recognition_chain(cfg)
         self.aggregator = TrackAggregator(cfg.aggregation)
         self._sr = None
         if cfg.rectifier.super_resolution:
@@ -145,7 +144,7 @@ class PriceTagPipeline:
             # Tracks whose last_seen is older than TTL get finalized now.
             expiring = self._find_expiring_track_ids(frame_idx)
             for tid in expiring:
-                self._run_ocr_for_track(tid)
+                self._recognize_track(tid)
 
             new_finals = self.aggregator.flush_expired(frame_idx)
             if new_finals:
@@ -180,7 +179,7 @@ class PriceTagPipeline:
             tags_finalized=len(finalized), message="finalizing tracks",
         ))
         for tid in list(self.aggregator._tracks.keys()):
-            self._run_ocr_for_track(tid)
+            self._recognize_track(tid)
         finalized.extend(self.aggregator.flush_all())
 
         # Cross-track deduplication on the full list.
@@ -213,11 +212,13 @@ class PriceTagPipeline:
             and frame_idx - state.last_seen_frame > ttl
         ]
 
-    def _run_ocr_for_track(self, track_id: int) -> None:
-        """OCR the top-K-sharpest crops in the buffer and turn them into observations.
+    def _recognize_track(self, track_id: int) -> None:
+        """Run the recognition chain on the top-K-sharpest crops of a track.
 
-        Supports ensemble engines: one crop may produce multiple OCRResults,
-        each becoming a separate observation that the aggregator votes on.
+        Each crop goes through ``QR -> barcode -> smart OCR``; every non-empty
+        reading becomes one observation the aggregator votes on (an ensemble
+        OCR engine yields several per crop). Per-field reconciliation between
+        QR/barcode/OCR is the aggregator's weighted voting, not done here.
         """
         k = self.cfg.ocr.top_k_crops_per_track
         crops = self.aggregator.best_crops(track_id, k)
@@ -225,64 +226,42 @@ class PriceTagPipeline:
             return
 
         for entry in crops:
-            qr_parsed = self.qr.extract(entry.crop.image)
-            if not self._parsed_is_empty(qr_parsed):
-                self._audit(track_id, entry.crop.frame_idx, _PseudoOCRResult(qr_parsed), qr_parsed)
+            for result in self.recognition.decode(entry.crop.image):
+                self._audit(track_id, entry.crop.frame_idx, result)
+                if parsed_is_empty(result.parsed):
+                    continue
                 self.aggregator.add_observation(
                     TagObservation(
                         frame_idx=entry.crop.frame_idx,
                         timestamp_s=entry.crop.timestamp_s,
                         track_id=track_id,
                         bbox_xyxy=entry.crop.bbox_xyxy,
-                        parsed=qr_parsed,
+                        parsed=result.parsed,
                         detection_confidence=entry.crop.detection_confidence,
                         sharpness=entry.crop.sharpness,
                     )
                 )
-            try:
-                results = self.ocr.recognize_all(entry.crop.image)
-            except Exception as exc:  # do not abort the whole video on a single OCR fail
-                LOGGER.warning("OCR failed on track=%d frame=%d: %s", track_id, entry.crop.frame_idx, exc)
-                continue
-            for res in results:
-                if not res.text:
-                    continue
-                if self.ocr.structured or res.text.lstrip().startswith("{"):
-                    parsed = self.parser.parse_vlm_json(
-                        res.text, vlm_confidence=res.confidence, backend=res.backend
-                    )
-                else:
-                    parsed = self.parser.parse_text(
-                        res.text, ocr_confidence=res.confidence, backend=res.backend
-                    )
-                self._audit(track_id, entry.crop.frame_idx, res, parsed)
-                if self._parsed_is_empty(parsed):
-                    continue
-                obs = TagObservation(
-                    frame_idx=entry.crop.frame_idx,
-                    timestamp_s=entry.crop.timestamp_s,
-                    track_id=track_id,
-                    bbox_xyxy=entry.crop.bbox_xyxy,
-                    parsed=parsed,
-                    detection_confidence=entry.crop.detection_confidence,
-                    sharpness=entry.crop.sharpness,
-                )
-                self.aggregator.add_observation(obs)
 
         # Drop the buffer once we have committed observations.
         self.aggregator.clear_crops(track_id)
 
-    def _audit(self, track_id: int, frame_idx: int, res, parsed: ParsedTag) -> None:
-        """Append one JSONL line describing this OCR call. No-op when disabled."""
+    def _audit(self, track_id: int, frame_idx: int, result) -> None:
+        """Append one JSONL line describing this decoder call. No-op when disabled.
+
+        ``result`` is a ``recognition.RecognitionResult``. Audit keys
+        (``backend``/``ocr_confidence``/``raw_text``) are kept stable for
+        existing log tooling; ``backend`` now also covers ``qr``/``barcode``.
+        """
         if self._audit_path is None:
             return
+        parsed = result.parsed
         try:
             row = {
                 "track_id": int(track_id),
                 "frame_idx": int(frame_idx),
-                "backend": res.backend,
-                "ocr_confidence": float(res.confidence),
-                "raw_text": res.text,
+                "backend": result.decoder,
+                "ocr_confidence": float(result.confidence),
+                "raw_text": result.text,
                 "parsed": {
                     "regular_price": parsed.regular_price,
                     "loyalty_price": parsed.loyalty_price,
@@ -321,17 +300,6 @@ class PriceTagPipeline:
             timestamp_s=crop.timestamp_s,
         )
 
-    @staticmethod
-    def _parsed_is_empty(parsed: ParsedTag) -> bool:
-        return (
-            parsed.regular_price is None
-            and parsed.loyalty_price is None
-            and parsed.product_name is None
-            and parsed.weight_value is None
-            and parsed.price_per_unit_value is None
-            and not parsed.extra_fields
-        )
-
     # -----------------------------------------------------------------
     # Output
     # -----------------------------------------------------------------
@@ -356,13 +324,3 @@ class PriceTagPipeline:
             with path.open("w", encoding="utf-8") as f:
                 for r in rows:
                     f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
-
-
-class _PseudoOCRResult:
-    """Tiny adapter so QR observations land in the same audit trail as OCR."""
-
-    backend = "qr"
-    confidence = 0.97
-
-    def __init__(self, parsed: ParsedTag):
-        self.text = parsed.raw_text or ""

@@ -9,7 +9,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from price_tag_pipeline.qr import parse_qr_payload  # noqa: E402
+from price_tag_pipeline.recognition.qr import parse_qr_payload  # noqa: E402
 
 
 def test_parse_qr_url_query_aliases():

@@ -31,6 +31,12 @@ ocr:
   min_detection_confidence: 0.40
   top_k_crops_per_track: 3
 
+recognition:                # crop -> fields chain: QR -> barcode -> smart OCR
+  enable_qr: true
+  enable_barcode: true      # 1D-barcode reader is a stub today (separate branch)
+  enable_ocr: true
+  merge_policy: qr_first_fill_gaps   # QR wins where it speaks; OCR fills gaps
+
 parser:
   min_price: 0.01
   max_price: 999999.99

@@ -38,6 +38,9 @@ thin pointers here — do not duplicate knowledge into them.
    to the now-known ground truth.
 5. **[pipeline-reference.md](./pipeline-reference.md)** — current code: CLI
    entry points, runtime profiles, OCR/detector backends, output schema.
+5b. **[recognition-pipeline.md](./recognition-pipeline.md)** — the crop→fields
+   chain (QR→barcode→smart OCR), the `CropDecoder` seam, and the contract the
+   separate QR/barcode branch plugs into. Read before touching recognition.
 6. **[analysis.md](./analysis.md)** — *historical* cold critique of the
    pre-rewrite scaffold; failure-mode catalogue and rationale.
 
@@ -52,6 +55,8 @@ thin pointers here — do not duplicate knowledge into them.
 | Which model / why / training plan | [strategy.md](./strategy.md) |
 | **Concrete ML quality improvement plan** | [ml-quality-improvement-plan.md](./ml-quality-improvement-plan.md) |
 | Run inference / CSV / UI / CLI flags | [pipeline-reference.md](./pipeline-reference.md) |
+| **Crop→fields chain + QR/barcode seam contract** | [recognition-pipeline.md](./recognition-pipeline.md) |
+| Detector experiments (fine-tune OFF base) | [`../projects/price_tag_pipeline/experiments/`](../projects/price_tag_pipeline/experiments/README.md) |
 | **`import cv2` fails / new worktree env setup** | [runbooks/venv-setup.md](./runbooks/venv-setup.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
 | Current inference issues + fix plan | [runbooks/inference-current-issues.md](./runbooks/inference-current-issues.md) |

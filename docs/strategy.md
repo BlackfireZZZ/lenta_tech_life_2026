@@ -325,6 +325,17 @@ For RF-DETR + VLM LoRA: rent **1× A100 80GB** for ~24h. Otherwise local 4070 Ti
 | `configs/` | Split into `runtime/` (fast/balanced/hq), `training/` (per detector backbone), `eval/`. |
 | `tests/` | Add smoke tests: parser end-to-end, aggregator multi-field, rectifier no-crash on edge boxes, detector dummy stream, eval runs on synthetic data. |
 
+> **Update (2026-05-17) — recognition restructure.** The §9 plan above is
+> historical. Recognition has since been consolidated into a
+> `src/price_tag_pipeline/recognition/` package: an ordered
+> **QR → barcode → smart OCR** chain behind one `CropDecoder` seam, merged
+> field-wise by the aggregator's existing voting (policy
+> `qr_first_fill_gaps`). The 1D **barcode reader is a stub owned by a
+> separate branch** (`recognition/barcode.py`); the detector base is **fixed
+> as the fine-tuned OpenFoodFacts YOLO11x** (we tune this architecture, not
+> train from scratch — see `projects/price_tag_pipeline/experiments/`).
+> Canonical spec + plug-in contract: **`docs/recognition-pipeline.md`**.
+
 ---
 
 ## 10. Assumptions — RESOLVED against the official task (2026-05-17)

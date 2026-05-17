@@ -1,10 +1,18 @@
-"""QR/barcode extraction for Lenta price-tag crops.
+"""QR extraction for Lenta price-tag crops.
 
 This module is deliberately dependency-light:
 - OpenCV QRCodeDetector is always attempted.
-- pyzbar is used when available for 1D barcodes and extra QR robustness.
+- pyzbar is used when available for extra QR robustness.
 
 The output is a ParsedTag carrying hackathon CSV fields in `extra_fields`.
+
+.. note:: **Baseline, not the final reader.** The "ultimate" QR reader
+   (rotation/perspective-robust localization, multi-scale retry) is being
+   built on a *separate branch* and will be dropped in here behind the
+   :class:`~price_tag_pipeline.recognition.base.CropDecoder` interface.
+   Keep ``QRDecoder.decode`` returning ``list[RecognitionResult]`` and do
+   **not** change the chain merge policy. See ``docs/recognition-pipeline.md``.
+   1D barcodes now live in :mod:`price_tag_pipeline.recognition.barcode`.
 """
 
 from __future__ import annotations
@@ -18,7 +26,8 @@ from urllib.parse import parse_qsl, urlparse
 
 import numpy as np
 
-from .types import ParsedTag
+from ..types import ParsedTag
+from .base import CropDecoder, RecognitionResult, parsed_is_empty
 
 LOGGER = logging.getLogger(__name__)
 
@@ -195,3 +204,35 @@ def _normalize_value(field: str, value: object) -> object:
         except ValueError:
             return s
     return s
+
+
+# ---------------------------------------------------------------------------
+# CropDecoder adapter — the stable seam used by RecognitionChain
+# ---------------------------------------------------------------------------
+
+class QRDecoder(CropDecoder):
+    """First link of the recognition chain: decode QR payloads on a crop.
+
+    Returns at most one :class:`RecognitionResult`. ``found`` is True only
+    when the QR payload produced at least one usable field; an unreadable /
+    absent QR yields ``[]`` (the chain then relies on barcode + OCR).
+    """
+
+    name = "qr"
+
+    def __init__(self) -> None:
+        self._extractor = QRCodeExtractor()
+
+    def decode(self, crop_bgr: np.ndarray) -> list[RecognitionResult]:
+        parsed = self._extractor.extract(crop_bgr)
+        if parsed_is_empty(parsed):
+            return []
+        return [
+            RecognitionResult(
+                parsed=parsed,
+                decoder=self.name,
+                confidence=self._extractor.confidence,
+                text=parsed.raw_text or "",
+                found=True,
+            )
+        ]

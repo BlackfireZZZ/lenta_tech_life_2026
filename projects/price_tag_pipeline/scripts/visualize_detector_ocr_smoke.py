@@ -23,7 +23,7 @@ SRC = THIS.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from price_tag_pipeline.ocr import PaddleOCREngine  # noqa: E402
+from price_tag_pipeline.recognition.ocr import PaddleOCREngine  # noqa: E402
 
 
 DEFAULT_LABELS = (

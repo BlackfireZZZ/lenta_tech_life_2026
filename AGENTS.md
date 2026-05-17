@@ -28,6 +28,9 @@ Priority reads:
    §10 reconciles old assumptions with ground truth.
 5. [`docs/pipeline-reference.md`](./docs/pipeline-reference.md) — current CLI,
    profiles, backends, output schema.
+5b. [`docs/recognition-pipeline.md`](./docs/recognition-pipeline.md) — the
+   crop→fields chain + the `CropDecoder` seam contract. **Mandatory before
+   touching QR/barcode/OCR or the recognition package.**
 6. [`docs/architecture.md`](./docs/architecture.md) — the product around the
    model: monorepo layout, backend/frontend/ML contracts, build order.
 
@@ -44,9 +47,11 @@ frontend/                      React + Vite SPA (built, on the mocked API)
 ml/                            deployable ML service wrapping the pipeline (mocked)
 docker-compose.yaml            whole product, one command
 projects/price_tag_pipeline/   THE MODEL: training, experiments, research
-  src/price_tag_pipeline/      detector→rectifier→ocr→qr→parser→aggregator
+  src/price_tag_pipeline/      detector→rectifier→recognition→parser→aggregator
+    recognition/               QR→barcode→smart OCR chain behind CropDecoder seam
   scripts/                     CLI entry points (prepare/train/infer/export/UI)
   configs/                     runtime profiles (fast/balanced/hq/zeroshot/…)
+  experiments/                 detector fine-tune manifests (OFF base, pinned)
   tests/                       parser, aggregator, metrics, data, smoke
 data/                          raw/processed/splits/checkpoints (mostly gitignored)
 real_data/                     untouched local source of truth — never committed

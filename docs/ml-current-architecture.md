@@ -25,10 +25,10 @@ recognition:
 
 ```text
 video
-  -> detector/tracker
+  -> detector/tracker            (fine-tuned OpenFoodFacts YOLO11x base)
   -> padded or perspective crop rectifier
-  -> optional QR decode
-  -> OCR or VLM extraction
+  -> recognition chain: QR -> barcode -> smart OCR/VLM
+     (one CropDecoder seam; barcode is a stub owned by a separate branch)
   -> parser into structured fields
   -> per-track crop buffering and per-field voting
   -> cross-track deduplication
@@ -72,6 +72,15 @@ After syncing from git, `lenta/main` has been merged into
 including the real ML service bridge, progress reporting, and the external data
 preparation work from the feature branch.
 
+**Recognition restructure (2026-05-17).** `qr.py` and `ocr.py` were moved into
+a new `recognition/` package: an ordered `QR → barcode → smart OCR` chain
+behind one `CropDecoder` seam (`recognition/base.py`,
+`recognition/chain.py`). `pipeline.py` no longer wires QR/OCR by hand. The 1D
+**barcode reader is a deliberate stub** — its ultimate implementation is owned
+by a separate branch and plugs into `recognition/barcode.py`. Contract:
+`docs/recognition-pipeline.md`. The detector base is fixed as the
+fine-tuned OpenFoodFacts YOLO11x (`projects/price_tag_pipeline/experiments/`).
+
 ## 4. Runtime Pipeline
 
 Main entry point: `price_tag_pipeline.pipeline.PriceTagPipeline`.
@@ -80,9 +89,8 @@ Constructor dependencies are built from `PipelineConfig`:
 
 - `build_detector(cfg.detector)`
 - `build_rectifier(cfg.rectifier)`
-- `build_ocr_engine(cfg.ocr)`
-- `QRCodeExtractor()`
-- `TagParser(cfg.parser)`
+- `build_recognition_chain(cfg)` — the `QR → barcode → smart OCR`
+  `CropDecoder` chain (internally builds the OCR engine + parser)
 - `TrackAggregator(cfg.aggregation)`
 - optional `SuperResolution(scale=2)`
 
@@ -266,9 +274,24 @@ Optional super-resolution:
 - if Real-ESRGAN is unavailable, it falls back to bicubic upsampling;
 - enabled by `rectifier.super_resolution`.
 
-## 9. OCR, VLM, and QR Extraction
+## 9. Recognition chain (QR, barcode, OCR/VLM)
 
-Implemented file: `src/price_tag_pipeline/ocr.py`.
+Package: `src/price_tag_pipeline/recognition/`. One rectified crop is decoded
+by an ordered chain of `CropDecoder`s (`recognition/base.py`):
+
+1. `recognition/qr.py::QRDecoder` — QR payload → fields (baseline; the
+   ultimate QR reader is owned by a separate branch behind this seam).
+2. `recognition/barcode.py::BarcodeDecoder` — 1D / `ШК:`-text GTIN.
+   **STUB: returns `[]`**; ultimate reader owned by a separate branch.
+3. `recognition/ocr.py::OCRDecoder` — wraps a `BaseOCREngine` + `TagParser`.
+
+`recognition/chain.py::build_recognition_chain` assembles the chain from the
+optional `recognition:` config block (all links on by default → existing
+profiles unchanged). QR is not a short-circuit; per-field reconciliation is
+the aggregator's weighted voting (policy `qr_first_fill_gaps`). Seam contract:
+`docs/recognition-pipeline.md`.
+
+Implemented file: `src/price_tag_pipeline/recognition/ocr.py`.
 
 All OCR/VLM backends implement `BaseOCREngine`.
 
@@ -305,9 +328,10 @@ Other:
 The default VLM prompt requests a single JSON object with visible price-tag
 fields and QR fields. A JSON schema for guided decoding exists in code.
 
-QR extraction:
+QR extraction (`src/price_tag_pipeline/recognition/qr.py`, baseline behind
+`QRDecoder`; ultimate reader owned by a separate branch):
 
-- `src/price_tag_pipeline/qr.py` tries OpenCV `QRCodeDetector`.
+- tries OpenCV `QRCodeDetector`.
 - It also tries `pyzbar` when installed.
 - It parses JSON, URL query strings, and simple key/value payloads.
 - It normalizes common aliases like `b`, `p1`, `wL1C`, `aP`, `aC` into the
@@ -627,7 +651,9 @@ Implemented:
 - FPS reading from video metadata;
 - crop rectification, perspective fallback, quality scoring;
 - optional super-resolution wrapper;
-- QR extraction and payload parsing;
+- recognition chain (`QR → barcode → smart OCR` behind the `CropDecoder`
+  seam; `chain.py` + `build_recognition_chain` + `recognition:` config);
+- QR extraction and payload parsing (baseline behind `QRDecoder`);
 - classical OCR engines;
 - multiple VLM engine wrappers;
 - vLLM/OpenAI-compatible OCR server client;
@@ -646,6 +672,9 @@ Implemented:
 
 Stubbed or mocked:
 
+- **`BarcodeDecoder` (1D barcode / `ШК:`-text reader)** — `recognition/
+  barcode.py` returns `[]`; ultimate reader owned by a separate branch and
+  plugs in behind `CropDecoder` (`docs/recognition-pipeline.md`).
 - RF-DETR detector runtime.
 - RF-DETR training script body.
 - VLM LoRA training script body.

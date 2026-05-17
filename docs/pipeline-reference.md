@@ -25,6 +25,9 @@ projects/price_tag_pipeline/
 │   ├── train.txt                  #   adds torch + wandb + albumentations
 │   ├── demo.txt                   #   adds Gradio + optional barcode decoder
 │   └── dev.txt                    #   adds pytest + ruff + black
+├── experiments/                   # detector fine-tune manifests (pinned)
+│   ├── README.md                  #   the fine-tune loop + promotion gate
+│   └── finetune_openfoodfacts.yaml#   OFF base = fixed base of the solution
 ├── scripts/                       # CLI entry points
 │   ├── prepare_data.py            #   raw -> processed (idempotent)
 │   ├── make_splits.py             #   video-level GroupKFold manifests
@@ -44,10 +47,14 @@ projects/price_tag_pipeline/
 │   ├── cli.py
 │   ├── config.py
 │   ├── detector.py                # YOLO backend (RF-DETR stub)
-│   ├── ocr.py                     # PaddleOCR-VL / PaddleOCR / Tesseract / NoOp
+│   ├── recognition/               # crop->fields chain behind CropDecoder seam
+│   │   ├── base.py                #   CropDecoder / RecognitionResult (frozen)
+│   │   ├── qr.py                  #   QR decode (baseline; separate branch owns final)
+│   │   ├── barcode.py             #   1D barcode — STUB/TODO (separate branch)
+│   │   ├── ocr.py                 #   PaddleOCR-VL / PaddleOCR / Tesseract / NoOp
+│   │   └── chain.py               #   QR→barcode→OCR orchestrator + builder
 │   ├── parser.py                  # raw text -> structured ParsedTag
 │   ├── pipeline.py                # main inference loop
-│   ├── qr.py                      # QR/barcode payload extraction
 │   ├── quality.py                 # sharpness metric
 │   ├── rectifier.py               # padded crop + CLAHE on luminance (keeps color)
 │   ├── types.py                   # domain types (ParsedTag, FinalTag, ...)
@@ -59,6 +66,7 @@ projects/price_tag_pipeline/
     ├── test_price_parser.py
     ├── test_metrics.py
     ├── test_data_pipeline.py
+    ├── test_recognition_chain.py  # chain order + seam contract
     └── test_pipeline_smoke.py
 ```
 
@@ -149,6 +157,20 @@ Production profiles use OpenFoodFacts'
 - `backend: yolo` — Ultralytics (YOLO11 / YOLO12 / YOLO26). Default.
 - `backend: rfdetr` — Roboflow RF-DETR (ICLR 2026, current COCO SOTA). Stub;
   lands once we install `rfdetr` and convert data to COCO.
+
+The detector base is **fixed**: the OpenFoodFacts price-tag YOLO11x, which we
+fine-tune (we tune this architecture, not train from scratch). Manifest +
+promotion gate: [`../projects/price_tag_pipeline/experiments/`](../projects/price_tag_pipeline/experiments/README.md).
+
+### Recognition chain (crop → fields)
+
+Each best crop runs an ordered `CropDecoder` chain **QR → barcode → smart
+OCR**; every non-empty reading is one observation the aggregator votes on.
+QR is not a short-circuit (policy `qr_first_fill_gaps`: QR's high confidence
+wins where it speaks, OCR fills the gaps — reconciliation is the aggregator's
+voting, not the chain's). Barcode is a **stub/TODO owned by a separate
+branch**. Toggle links via the optional `recognition:` config block. Seam
+contract and the plug-in checklist: **[recognition-pipeline.md](./recognition-pipeline.md)**.
 
 ### OCR / structured extraction (May 2026 SOTA matrix)
 

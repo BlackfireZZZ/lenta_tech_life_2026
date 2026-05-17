@@ -1,0 +1,52 @@
+# Canonical detector experiment: fine-tune the OpenFoodFacts price-tag
+# detector on our Lenta split. This is THE base of the solution — we tune
+# this architecture, we do not train a detector from scratch.
+#
+# This file is a DECLARATIVE MANIFEST, not a runner. It pins the knobs and
+# documents the exact command; execution is `scripts/train_detector_yolo.py`
+# (which already defaults to this base checkpoint). Inference then points
+# `detector.model_path` at the promoted run — see "promote" below.
+#
+# Rationale + what worked: docs/detector-finetuning-report.md and
+# docs/data/external-detector-training-plan.md.
+
+experiment: finetune_openfoodfacts
+
+base:
+  # A friend pushed this as the default detector; it is a YOLO11x trained on
+  # Open Prices price-tag images. We fine-tune from these weights.
+  model: hf://openfoodfacts/price-tag-detection/weights/best.pt
+  architecture: yolo11x          # do not swap — we tune THIS architecture
+  license: AGPL-3.0              # validate before final submission (see risks)
+
+data:
+  dataset_yaml: data/processed/dataset.yaml   # re-emit per fold via make_splits.py
+  default_fold: 0
+
+train:                           # mirror of train_detector_yolo.py defaults
+  epochs: 200
+  imgsz: 1280
+  batch: 8
+  lr0: 0.001
+  optimizer: auto
+  patience: 30
+  seed: 42
+  augmentation: ultralytics-default   # --use-albu for heavy motion-blur aug
+
+run:
+  project: runs/lenta
+  # train_detector_yolo.py derives this name automatically for the OFF base:
+  name_convention: openfoodfacts_price_tag_detection_seed{seed}
+
+# Exact command (copy-paste):
+#   python projects/price_tag_pipeline/scripts/train_detector_yolo.py \
+#       --dataset data/processed/dataset.yaml \
+#       --epochs 200 --imgsz 1280 --batch 8 --device 0 --wandb
+#   (--model defaults to the base above; pass --model to override.)
+
+promote:
+  # When a fine-tuned checkpoint beats the OFF baseline on held-out Lenta
+  # videos (scripts/eval_detector.py), point inference at it by setting
+  # detector.model_path in configs/balanced.yaml (and fast/hq) to:
+  to: runs/lenta/openfoodfacts_price_tag_detection_seed42/weights/best.pt
+  gate: must beat the OFF baseline mAP on a held-out fold before promotion
