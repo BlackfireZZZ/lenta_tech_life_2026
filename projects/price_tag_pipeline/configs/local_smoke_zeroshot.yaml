@@ -1,0 +1,59 @@
+runtime:
+  profile_name: local_smoke_zeroshot
+  output_path: null
+  log_every_n_frames: 25
+  seed: 42
+  fps_override: null
+  audit_path: outputs/hackathon_smoke/43_15_audit.jsonl
+
+detector:
+  backend: yolo_world
+  model_path: data/checkpoints/detector/yolov8s-worldv2.pt
+  conf: 0.02
+  iou: 0.50
+  device: null
+  classes: null
+  open_vocab_labels:
+    - "price tag"
+    - "shelf price label"
+    - "barcode price label"
+    - "retail shelf label"
+    - "yellow price tag"
+    - "product label"
+    - "paper label"
+    - "text sign"
+    - "qr code"
+  tracker_yaml: botsort.yaml
+  image_size: 1920
+
+rectifier:
+  padding_ratio: 0.08
+  clahe_clip_limit: 3.0
+  clahe_tile_grid_size: 8
+  rotate_vertical_tags: true
+  keep_color: true
+  perspective: true
+  super_resolution: false
+  sr_min_area_px: 8000
+
+ocr:
+  backend: paddle
+  paddleocr_lang: ru
+  min_frames_between_ocr_per_track: 3
+  min_sharpness: 15.0
+  min_crop_area_px: 500
+  min_detection_confidence: 0.02
+  top_k_crops_per_track: 1
+
+parser:
+  min_price: 0.01
+  max_price: 999999.99
+
+aggregation:
+  min_observations_per_track: 1
+  min_final_confidence: 0.10
+  track_ttl_frames: 60
+  price_fuzzy_tolerance: 0.5
+  name_fuzzy_ratio: 0.82
+  dedup_iou_threshold: 0.35
+  dedup_time_window_frames: 180

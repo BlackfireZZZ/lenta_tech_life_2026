@@ -118,6 +118,8 @@ class YOLOTrackerDetector(BaseDetector):
 
         try:
             results = self.model.track(**track_kwargs)
+            next_tid = 1
+            fallback_tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
             for frame_idx, result in enumerate(results):
                 frame = result.orig_img  # do not copy — downstream rectifier copies its slice
                 boxes = getattr(result, "boxes", None)
@@ -131,13 +133,21 @@ class YOLOTrackerDetector(BaseDetector):
                 xyxy = boxes.xyxy
                 confs = boxes.conf
                 classes = boxes.cls
+                fallback_ids: list[int] | None = None
+                if ids is None:
+                    fallback_ids, fallback_tracks, next_tid = _assign_iou_track_ids(
+                        boxes_xyxy=[tuple(int(round(float(v))) for v in row.tolist()) for row in xyxy],
+                        tracks=fallback_tracks,
+                        next_tid=next_tid,
+                        frame_idx=frame_idx,
+                    )
 
                 detections: list[Detection] = []
                 for i in range(len(boxes)):
                     x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
                     conf = float(confs[i].item()) if confs is not None else 1.0
                     cls_id = int(classes[i].item()) if classes is not None else 0
-                    track_id = int(ids[i].item()) if ids is not None else None
+                    track_id = int(ids[i].item()) if ids is not None else fallback_ids[i]
                     detections.append(
                         Detection(
                             frame_idx=frame_idx,
@@ -239,6 +249,42 @@ class YOLOTrackerDetector(BaseDetector):
             yield frame, detections
 
         cap.release()
+
+
+def _assign_iou_track_ids(
+    boxes_xyxy: list[tuple[int, int, int, int]],
+    tracks: list[tuple[int, tuple[int, int, int, int], int]],
+    next_tid: int,
+    frame_idx: int,
+    max_age: int = 15,
+    iou_gate: float = 0.3,
+) -> tuple[list[int], list[tuple[int, tuple[int, int, int, int], int]], int]:
+    """Assign stable-enough IDs when Ultralytics returns boxes without tracker IDs."""
+    out: list[int] = []
+    assigned: set[int] = set()
+    for bbox in boxes_xyxy:
+        best_j = -1
+        best_iou = 0.0
+        for j, (tid, tb, last_seen) in enumerate(tracks):
+            if frame_idx - last_seen > max_age or j in assigned:
+                continue
+            iou = _bbox_iou(bbox, tb)
+            if iou > best_iou:
+                best_iou = iou
+                best_j = j
+        if best_j >= 0 and best_iou >= iou_gate:
+            tid, _, _ = tracks[best_j]
+            tracks[best_j] = (tid, bbox, frame_idx)
+            assigned.add(best_j)
+            out.append(tid)
+        else:
+            tid = next_tid
+            next_tid += 1
+            tracks.append((tid, bbox, frame_idx))
+            assigned.add(len(tracks) - 1)
+            out.append(tid)
+    tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
+    return out, tracks, next_tid
 
 
 # ---------------------------------------------------------------------------

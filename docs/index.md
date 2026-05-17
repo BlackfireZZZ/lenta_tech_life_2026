@@ -51,6 +51,7 @@ thin pointers here — do not duplicate knowledge into them.
 | Which model / why / training plan | [strategy.md](./strategy.md) |
 | Run inference / CSV / UI / CLI flags | [pipeline-reference.md](./pipeline-reference.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
+| Current inference issues + fix plan | [runbooks/inference-current-issues.md](./runbooks/inference-current-issues.md) |
 | Colab — zero-shot GPU baseline | [runbooks/colab-baseline.md](./runbooks/colab-baseline.md) |
 | Colab — full pipeline on real videos | [runbooks/colab-real-data.md](./runbooks/colab-real-data.md) |
 | Colab — private-repo SSH clone cells | [runbooks/colab-private.md](./runbooks/colab-private.md) |
