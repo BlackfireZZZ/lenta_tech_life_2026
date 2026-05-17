@@ -44,6 +44,23 @@ def read_video_fps(video_path: str) -> float:
     return fps
 
 
+def read_video_frame_count(video_path: str) -> int:
+    """Total frame count from the container, or 0 if unknown.
+
+    Used only to turn the per-frame loop into a 0..1 progress fraction.
+    Some containers report 0 / a bogus value for ``CAP_PROP_FRAME_COUNT``;
+    in that case we return 0 and progress degrades to phase-only updates
+    (an indeterminate bar) — never an exception, never a wrong total.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        LOGGER.warning("Could not open %s to read frame count.", video_path)
+        return 0
+    count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    cap.release()
+    return count if count > 0 else 0
+
+
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------

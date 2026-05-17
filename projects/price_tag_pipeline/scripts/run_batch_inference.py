@@ -35,6 +35,8 @@ def main() -> int:
     p.add_argument("--outputs-dir", required=True, help="Where per-video JSONL files are written")
     p.add_argument("--pattern", default="*.mp4", help="Glob for input videos")
     p.add_argument("--limit", type=int, default=0, help="Optional limit for debugging")
+    p.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True,
+                   help="Per-video terminal progress bar (degrades to log lines without tqdm).")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
 
@@ -57,6 +59,7 @@ def main() -> int:
 
     # Import late so `--help` works even when heavy runtime deps are missing.
     from price_tag_pipeline.pipeline import PriceTagPipeline  # noqa: E402
+    from price_tag_pipeline.progress import TqdmProgress  # noqa: E402
 
     cfg = load_config(args.config)
     pipe = PriceTagPipeline(cfg)
@@ -65,7 +68,12 @@ def main() -> int:
     for idx, video in enumerate(videos, start=1):
         out_path = outputs_dir / f"{video.stem}.jsonl"
         logging.info("[%d/%d] %s -> %s", idx, len(videos), video.name, out_path.name)
-        tags = pipe.run(video_path=str(video), output_path=str(out_path))
+        # A fresh bar per video; the pipeline closes it in its own finally.
+        tags = pipe.run(
+            video_path=str(video),
+            output_path=str(out_path),
+            progress=TqdmProgress() if args.progress else None,
+        )
         logging.info("[%d/%d] done: %s tags=%d", idx, len(videos), video.name, len(tags))
 
     logging.info("Batch inference finished. Outputs at: %s", outputs_dir)

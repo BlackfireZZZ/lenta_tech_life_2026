@@ -22,18 +22,25 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from typing import Optional
-
 from .aggregator import TrackAggregator, dedup_final_tags
 from .config import PipelineConfig
-from .detector import build_detector
+from .detector import build_detector, read_video_frame_count
 from .ocr import BaseOCREngine, build_ocr_engine
 from .parser import TagParser
+from .progress import Phase, ProgressEvent, ProgressLike, ProgressReporter, as_reporter
 from .qr import QRCodeExtractor
 from .rectifier import build_rectifier
 from .types import CropCandidate, FinalTag, ParsedTag, TagObservation
 
 LOGGER = logging.getLogger(__name__)
+
+# Progress fraction budget per phase. Detection (the per-frame loop, which
+# also runs OCR on expiring tracks inline) is by far the bulk of the
+# wall-clock time, so it owns almost the whole bar; the end-of-video
+# finalize + cross-track dedup tail is at most a few seconds.
+_DETECT_CEIL = 0.97
+_FINALIZE_FRAC = 0.97
+_DEDUP_FRAC = 0.99
 
 
 class PriceTagPipeline:
@@ -59,10 +66,60 @@ class PriceTagPipeline:
     # Public API
     # -----------------------------------------------------------------
 
-    def run(self, video_path: str, output_path: Optional[str] = None) -> list[FinalTag]:
+    def run(
+        self,
+        video_path: str,
+        output_path: Optional[str] = None,
+        progress: ProgressLike = None,
+    ) -> list[FinalTag]:
+        """Run the full pipeline on one video.
+
+        ``progress`` is optional and backwards compatible: ``None`` (default)
+        is a silent no-op, or pass a :class:`~price_tag_pipeline.progress.
+        ProgressReporter` or a bare ``callable(ProgressEvent)``. It is the
+        single signal the CLI bar, the Gradio UI and the ML-service poll
+        endpoint all consume. See docs/pipeline-reference.md "Progress".
+        """
+        reporter = as_reporter(progress)
         resolved_out = self._resolve_output(output_path)
         finalized: list[FinalTag] = []
 
+        frames_total = read_video_frame_count(video_path)
+        # Report at most once every `report_step` frames to keep the bar
+        # cheap over a websocket; phase changes always report.
+        report_step = self.cfg.runtime.log_every_n_frames
+        if report_step <= 0:
+            report_step = 30
+        reporter.publish(ProgressEvent(
+            phase=Phase.DETECT, fraction=0.0,
+            frames_done=0, frames_total=frames_total,
+            message="starting",
+        ))
+
+        try:
+            self._run(
+                video_path, frames_total, report_step, finalized, reporter,
+            )
+            deduped = self._finalize(finalized, frames_total, reporter)
+            if resolved_out:
+                self._write_output(resolved_out, deduped)
+            reporter.publish(ProgressEvent(
+                phase=Phase.DONE, fraction=1.0,
+                frames_done=frames_total, frames_total=frames_total,
+                tags_finalized=len(deduped), message="complete",
+            ))
+            return deduped
+        finally:
+            reporter.close()
+
+    def _run(
+        self,
+        video_path: str,
+        frames_total: int,
+        report_step: int,
+        finalized: list[FinalTag],
+        reporter: ProgressReporter,
+    ) -> None:
         for frame_idx, (frame, detections) in enumerate(
             self.detector.stream_video(video_path, fps_override=self.cfg.runtime.fps_override)
         ):
@@ -94,11 +151,7 @@ class PriceTagPipeline:
             if new_finals:
                 finalized.extend(new_finals)
 
-            if (
-                frame_idx > 0
-                and self.cfg.runtime.log_every_n_frames > 0
-                and frame_idx % self.cfg.runtime.log_every_n_frames == 0
-            ):
+            if frame_idx > 0 and frame_idx % report_step == 0:
                 LOGGER.info(
                     "profile=%s frame=%d detections=%d finalized=%d",
                     self.cfg.runtime.profile_name,
@@ -106,13 +159,36 @@ class PriceTagPipeline:
                     len(detections),
                     len(finalized),
                 )
+                done = frame_idx + 1
+                frac = (done / frames_total) * _DETECT_CEIL if frames_total else 0.0
+                reporter.publish(ProgressEvent(
+                    phase=Phase.DETECT, fraction=frac,
+                    frames_done=done, frames_total=frames_total,
+                    tags_finalized=len(finalized),
+                ))
 
-        # Flush any tracks still live at end of video.
+    def _finalize(
+        self,
+        finalized: list[FinalTag],
+        frames_total: int,
+        reporter: ProgressReporter,
+    ) -> list[FinalTag]:
+        # Flush any tracks still live at end of video (OCR their best crops).
+        reporter.publish(ProgressEvent(
+            phase=Phase.FINALIZE, fraction=_FINALIZE_FRAC,
+            frames_done=frames_total, frames_total=frames_total,
+            tags_finalized=len(finalized), message="finalizing tracks",
+        ))
         for tid in list(self.aggregator._tracks.keys()):
             self._run_ocr_for_track(tid)
         finalized.extend(self.aggregator.flush_all())
 
         # Cross-track deduplication on the full list.
+        reporter.publish(ProgressEvent(
+            phase=Phase.DEDUP, fraction=_DEDUP_FRAC,
+            frames_done=frames_total, frames_total=frames_total,
+            tags_finalized=len(finalized), message="deduplicating",
+        ))
         deduped = dedup_final_tags(
             finalized,
             iou_threshold=self.cfg.aggregation.dedup_iou_threshold,
@@ -122,10 +198,6 @@ class PriceTagPipeline:
             "Finalized %d -> %d after dedup (saved %d duplicates).",
             len(finalized), len(deduped), len(finalized) - len(deduped),
         )
-
-        if resolved_out:
-            self._write_output(resolved_out, deduped)
-
         return deduped
 
     # -----------------------------------------------------------------

@@ -5,12 +5,14 @@ gateway, a placeholder SPA, and the model packaged as an internal service.
 This is the single source of truth for the web/service architecture — the
 per-service `README.md` files are thin pointers here.
 
-> **Current status: scaffolded skeleton.** The structure, the service
-> boundaries and every contract are in place and reviewable. Business logic
-> is deliberately **not written yet** — `backend` runs in `MOCK_MODE`, `ml`
-> returns a fake CSV, `frontend` renders one placeholder page. Each section
-> below states what is *as-built* vs. the *target* so the doc never lies
-> about the code. Build the real layers against this doc.
+> **Current status: scaffolded skeleton, with the ML inference layer now
+> real.** The structure, the service boundaries and every contract are in
+> place and reviewable. `backend` still runs in `MOCK_MODE` and `frontend`
+> renders one placeholder page (deliberately not written yet). The **`ml`
+> service is wired for real** — it runs `PriceTagPipeline` and emits live
+> progress, with a guarded mock fallback so the monorepo still boots
+> without GPU/weights (§5). Each section below states what is *as-built*
+> vs. the *target* so the doc never lies about the code.
 
 ---
 
@@ -274,30 +276,57 @@ Tailwind v4 (`@tailwindcss/vite`), shadcn-style components in
 ### 5.2 Contract
 
 ```
-POST {ML_BASE_URL}/process   {video_path, job_id}  → 200 {csv, rows, meta?}
-GET  {ML_BASE_URL}/health                          → 200 {"status":"ok"}
+POST {ML_BASE_URL}/process            {video_path, job_id} → 200 {csv, rows, meta?}
+GET  {ML_BASE_URL}/health                                  → 200 {"status":"ok","mode":…}
+GET  {ML_BASE_URL}/progress/{job_id}                        → 200 {fraction,phase,…}   (ADDITIVE)
 ```
 
 `csv` is the full 29-column submission text
 ([`hackathon/task.md`](./hackathon/task.md)); the backend persists and
-serves it unchanged.
+serves it unchanged. **The graded contract is `/process` + `/health`
+only** — `ProcessRequest`/`ProcessResponse` and their
+`backend/app/ml/schemas.py` mirror (§5.1 rule 3) are **unchanged**.
+`/progress/{job_id}` is **additive and optional**: the gateway MAY poll it
+to fill its own `JobResponse.progress`, but is not required to, and the
+two-mirror lock-step does not cover it.
 
 ### 5.3 Sync vs. async
 
 Video processing is **minutes-long**, so the honest target is the async
 pattern: backend creates a job, runs the ML call out-of-band, frontend
 polls `GET /api/v1/jobs/{id}`. The contract in §5.2 stays identical — only
-*who waits* changes. The skeleton mocks it synchronously (instant fake CSV)
-so the flow is reviewable; introduce a worker/queue only when the real
-pipeline forces it.
+*who waits* changes. **As-built:** the ML side now runs the real pipeline
+and emits live progress (§5.5); `/process` is a *sync def* (FastAPI
+threadpool) so `/progress` stays answerable during a run, **without** a
+worker/queue (defer that — §8 — until the gateway side forces it). The
+*backend* still mocks its job flow (in-memory, instant) — that half is
+unchanged and still a skeleton.
 
 ### 5.4 Files
 
 `backend/app/ml/{schemas,client}.py` — contract + the single httpx seam
-(mocked: returns a fake CSV; real body present as a comment).
-`ml/app/{contract,runner,main}.py` — contract mirror + the
-pipeline bridge (`runner.py`, mocked; real `PriceTagPipeline().run(...)`
-call present as a comment) + the FastAPI app.
+(still mocked: returns a fake CSV; real body present as a comment —
+backend is out of this change's scope).
+`ml/app/{contract,runner,main}.py` — contract mirror + the **real**
+pipeline bridge: `runner.py` calls
+`PriceTagPipeline(cfg).run(video, progress=…)` →
+`submission.final_tags_to_csv`, with a guarded mock fallback
+(`ML_MOCK=1`, or pipeline import fails → fake CSV so the monorepo still
+boots without GPU/weights). `progress_registry.py` is the in-process
+`job_id → progress` store behind `GET /progress/{job_id}`. Env:
+`ML_MOCK`, `ML_PIPELINE_CONFIG` (default `configs/balanced.yaml`).
+
+### 5.5 Progress side-channel (additive)
+
+The pipeline's single progress signal
+([`pipeline-reference.md`](./pipeline-reference.md) "Progress reporting")
+is recorded per `job_id` and served by `GET /progress/{job_id}`
+(`{fraction 0..1, phase, frames_done/total, tags_finalized, message}`).
+This is the concrete source the async target (§5.3) and the backend's
+existing `JobResponse.progress` (§3.4) will consume — built **without**
+touching the locked `/process` contract. In-process by design (one ML
+container); if ML is scaled out, swap `progress_registry.py` for Redis and
+nothing else changes.
 
 ---
 
@@ -339,10 +368,13 @@ separate service behind a thin client.
 2. Backend persistence: implement `db/`, the `Job` model, swap the
    in-memory store in `routes/jobs.py` for Postgres; Alembic init + first
    migration; flip `MOCK_MODE` for the DB path.
-3. ML service: enable the real `PriceTagPipeline` call in `ml/app/runner.py`,
-   add the pipeline path-dependency, switch the `ml` image to the GPU base.
+3. ML service: **done** — `ml/app/runner.py` runs the real
+   `PriceTagPipeline` with a guarded mock fallback and streams progress via
+   `GET /progress/{job_id}` (§5.4/§5.5). Remaining: install the pipeline
+   runtime deps / switch the `ml` image to the GPU base for production.
 4. Wire the real `backend/app/ml/client.py` httpx call; choose §5.3
-   sync/async; add a worker if async.
+   sync/async; add a worker if async; poll `/progress/{job_id}` into
+   `JobResponse.progress`.
 5. Cache: implement `app/cache/`, cache the status/list reads.
 6. Frontend: real axios client (§4.2), `generate:types`, build the
    upload→poll→download page, then layouts/auth if §1 said auth is in.
@@ -353,5 +385,7 @@ separate service behind a thin client.
 
 **Summary:** the skeleton is the proven shape — layered gateway, typed SPA,
 ML as a separate service behind a thin client, the model kept in
-`projects/price_tag_pipeline/`. Nothing here is implemented yet by design;
-fill it in along §9, keeping this doc honest as you go.
+`projects/price_tag_pipeline/`. The **ML layer is now real** (pipeline +
+live progress, guarded mock fallback); backend and frontend remain
+skeleton by design. Fill the rest in along §9, keeping this doc honest as
+you go.
