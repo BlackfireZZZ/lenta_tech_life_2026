@@ -13,7 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-import cv2
+try:  # OpenCV is only needed when read_images=True (decodes JPEGs).
+    import cv2
+except ModuleNotFoundError:  # pragma: no cover - exercised on opencv-less envs
+    cv2 = None  # type: ignore[assignment]
+
+# Unicode-safe reader — cv2.imread silently returns None on non-ASCII paths.
+from ..cv_io import imread  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +72,11 @@ class IntegrityReport:
 
 def validate_dataset(processed_dir: Path, classes: list[str], read_images: bool = True) -> IntegrityReport:
     """Walk processed_dir and validate every (image, label) pair."""
+    if read_images and cv2 is None:
+        raise ModuleNotFoundError(
+            "validate_dataset(read_images=True) needs OpenCV; install opencv-python "
+            "or call with read_images=False to skip JPEG decoding."
+        )
     report = IntegrityReport(expected_classes=len(classes))
     frames_root = processed_dir / "frames"
     labels_root = processed_dir / "labels"
@@ -94,7 +105,7 @@ def validate_dataset(processed_dir: Path, classes: list[str], read_images: bool 
                 continue
 
             if read_images:
-                im = cv2.imread(str(img_path))
+                im = imread(img_path)
                 if im is None:
                     report.unreadable_images.append(str(img_path))
                     continue

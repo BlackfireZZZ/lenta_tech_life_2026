@@ -4,19 +4,64 @@ The pipeline reads everything from this directory. **Once the dataset arrives, d
 
 ```
 data/
-├── raw/                          # untouched dataset from organizers
-│   ├── videos/                   #   put .mp4 / .avi / .mov files here, one per scene
-│   └── annotations/              #   Lenta CSV, YOLO labels (.txt) + classes.txt, OR COCO json
+├── raw/                          # staged dataset (local only — see "Git policy")
+│   ├── videos/                   #   {video_id}.mp4  (labeled scenes)
+│   ├── unlabeled_videos/         #   *.mp4  (no ground truth — inference/demo only)
+│   └── annotations/
+│       └── csv/                  #   {video_id}.csv  (+ sample.csv, submission ref)
 ├── processed/                    # outputs of prepare_data.py (frames + normalized labels)
 │   ├── frames/                   #   {video_id}/{frame_idx:06d}.jpg
 │   ├── labels/                   #   {video_id}/{frame_idx:06d}.txt   (YOLO format)
+│   ├── gt_e2e/                   #   {video_id}.jsonl  (full-row E2E ground truth)
 │   └── dataset.yaml              #   Ultralytics-compatible dataset YAML
-├── splits/                       # video-level GroupKFold manifests (versioned in git)
+├── splits/                       # video-level leave-one-out manifests (versioned in git)
 │   └── fold_{0..4}.json
 └── checkpoints/                  # trained weights (NOT in git — see .gitignore)
     ├── detector/
     └── vlm/
 ```
+
+## The real dataset (current)
+
+The organizer dataset is tiny — **5 labeled videos** + 3 unlabeled, ~600 MB:
+
+| video_id   | rows | annotated frames |
+|------------|-----:|-----------------:|
+| 25_12-20   |   57 |               10 |
+| 25_2-10    |   56 |                9 |
+| 26_12-20   |   71 |               15 |
+| 43_15      |   29 |                2 |
+| 49_5       |   61 |               27 |
+
+It ships in the organizer layout under `real_data/dataset/` (one folder per
+video: `{id}/{id}.mp4` + `{id}/{id}.csv`, plus `sample.csv` and `Unlabeled/`).
+`real_data/` is the untouched local source of truth and is **never committed**.
+Project paths are kept ASCII by convention.
+
+**Non-ASCII paths still work** as a robustness guarantee (the build machine
+itself may sit under one — e.g. a Cyrillic Windows username
+`C:\Users\<имя>\`). Still-image I/O goes through `price_tag_pipeline.cv_io`
+(`cv2.imread/imwrite` silently fail on non-ASCII paths; cv2 *video* I/O is
+fine), and the Ultralytics `processed/images` alias degrades symlink →
+Windows junction → copy. So `--dst`/`--processed` may point anywhere.
+
+Stage it into the canonical `data/raw/` layout (idempotent, non-destructive):
+
+```bash
+python projects/price_tag_pipeline/scripts/ingest_real_data.py \
+  --src real_data/dataset --dst data/raw          # add --mode hardlink to save space
+```
+
+Because the set is this small, see [`../DATASETS.md`](../DATASETS.md) for
+external price-tag / OCR datasets used to pre-train the detector.
+
+## Git policy
+
+`.gitignore` excludes all heavy data (`data/raw/videos/*`,
+`data/raw/annotations/*`, `data/processed/*`, model checkpoints). Only the
+small `data/splits/*.json` manifests and docs are versioned. After a fresh
+clone or a new worktree, re-run `ingest_real_data.py` to repopulate `data/raw`
+from your local `real_data/` — nothing fetches it for you.
 
 ## Expected file shapes
 
@@ -45,9 +90,13 @@ Expected CSV columns include:
 filename,product_name,price_default,price_card,...,frame_timestamp,x_min,y_min,x_max,y_max,...
 ```
 
-`prepare_data.py` reads `frame_timestamp` as a video frame index, extracts only
-annotated frames, converts bbox columns into YOLO labels, and writes full row
-ground truth to `data/processed/gt_e2e/{video_id}.jsonl`.
+`prepare_data.py` treats `frame_timestamp` as **milliseconds** (verified
+against every clip's container duration — it is *not* a frame index), maps it
+to a frame via the video's FPS, extracts only annotated frames, converts the
+bbox columns into YOLO labels, and writes full-row ground truth to
+`data/processed/gt_e2e/{video_id}.jsonl`. The header typo
+`wholesale_level_1_coun` (present in `26_12-20.csv` / `43_15.csv`) is
+normalized to `wholesale_level_1_count`.
 
 ### Option B — YOLO format
 
@@ -89,7 +138,8 @@ If the organizers ship frames instead of videos, drop them under `data/raw/frame
 ## How to use this directory
 
 ```bash
-# 1. Put the raw dataset under data/raw/ as described above.
+# 1. Stage the raw dataset into data/raw/ (organizer layout -> canonical layout).
+python projects/price_tag_pipeline/scripts/ingest_real_data.py --src real_data/dataset --dst data/raw
 
 # 2. Validate integrity, extract frames if needed, build the unified YOLO dataset.
 python projects/price_tag_pipeline/scripts/prepare_data.py \
@@ -117,8 +167,9 @@ python projects/price_tag_pipeline/scripts/train_detector_yolo.py \
 - Frames are JPEG-encoded at 95% quality unless `--frame-quality` is overridden.
 - `data/processed/` is rebuilt by `prepare_data.py`; safe to delete and regenerate.
 
-## Pre-data state
+## Without the dataset
 
-Until data arrives, `data/raw/` and `data/processed/` are empty (only `.gitkeep`).
-The pipeline modules will still import, all unit tests will pass, and the smoke
-tests will run against synthetic fixtures under `tests/fixtures/`.
+`data/raw/` and `data/processed/` are git-empty (only `.gitkeep`). Pure data
+parsing (CSV/labels/splits) imports and tests without OpenCV; frame extraction
+and `validate_dataset(read_images=True)` need `opencv-python`. Unit tests pass
+and smoke tests run against synthetic fixtures.

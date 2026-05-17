@@ -10,11 +10,20 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
+try:  # OpenCV is only needed for frame extraction, not pure CSV/label parsing.
+    import cv2
+except ModuleNotFoundError:  # pragma: no cover - exercised on opencv-less envs
+    cv2 = None  # type: ignore[assignment]
+
+# Unicode-safe still-image I/O — cv2.imread/imwrite silently fail on non-ASCII
+# (e.g. Cyrillic) paths. Video I/O via cv2 is fine and stays as-is.
+from ..cv_io import imread, imwrite  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +62,8 @@ def extract_frames(video_path: Path, out_dir: Path, jpeg_quality: int = 95) -> i
     Returns the number of frames written. Skips work if the directory already
     has the expected number of files (idempotent).
     """
+    if cv2 is None:
+        raise ModuleNotFoundError("Frame extraction needs OpenCV; install opencv-python.")
     out_dir.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -70,7 +81,7 @@ def extract_frames(video_path: Path, out_dir: Path, jpeg_quality: int = 95) -> i
         ok, frame = cap.read()
         if not ok:
             break
-        cv2.imwrite(str(out_dir / f"{idx:06d}.jpg"), frame, encode_params)
+        imwrite(out_dir / f"{idx:06d}.jpg", frame, encode_params)
         idx += 1
     cap.release()
     return idx
@@ -169,11 +180,11 @@ def ingest_yolo(
                     if src_img != dst_img:
                         shutil.copy2(src_img, dst_img)
                 else:
-                    img = cv2.imread(str(src_img))
+                    img = imread(src_img)
                     if img is None:
                         LOGGER.warning("Could not read %s — skipped", src_img)
                         continue
-                    cv2.imwrite(str(dst_img), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                    imwrite(dst_img, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
             if not dst_label.exists():
                 shutil.copy2(label_file, dst_label)
             records.append(FrameRecord(video_id=vid, frame_idx=frame_idx, image_path=dst_img, label_path=dst_label))
@@ -212,6 +223,8 @@ def ingest_lenta_csv(
     """
     if not extract_videos:
         raise ValueError("lenta_csv ingestion needs video frame extraction; remove --no-extract")
+    if cv2 is None:
+        raise ModuleNotFoundError("lenta_csv ingestion needs OpenCV; install opencv-python.")
 
     classes = ["price_tag"]
     csv_root = raw_dir / "annotations" / "csv"
@@ -287,7 +300,7 @@ def ingest_lenta_csv(
                 if frame is None:
                     LOGGER.warning("Could not extract frame %d from %s", frame_idx, video_path)
                     continue
-                cv2.imwrite(str(dst_img), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                imwrite(dst_img, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
             dst_label.write_text("\n".join(lines) + "\n", encoding="utf-8")
             records.append(
                 FrameRecord(video_id=video_id, frame_idx=frame_idx, image_path=dst_img, label_path=dst_label)
@@ -310,9 +323,22 @@ def ingest_lenta_csv(
     return records, classes
 
 
+# Some hackathon CSVs ship a truncated header ("wholesale_level_1_coun" in
+# 26_12-20.csv / 43_15.csv); normalize so gt_e2e is schema-consistent.
+_LENTA_HEADER_ALIASES = {
+    "wholesale_level_1_coun": "wholesale_level_1_count",
+}
+
+
 def _read_lenta_csv(csv_path: Path) -> list[dict[str, str]]:
     with csv_path.open(encoding="utf-8-sig", newline="") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    if not rows or not (_LENTA_HEADER_ALIASES.keys() & rows[0].keys()):
+        return rows
+    fixed: list[dict[str, str]] = []
+    for row in rows:
+        fixed.append({_LENTA_HEADER_ALIASES.get(k, k): v for k, v in row.items()})
+    return fixed
 
 
 def _find_lenta_video_file(videos_dir: Path, video_id: str, rows: list[dict[str, str]]) -> Path | None:
@@ -357,20 +383,25 @@ def _parse_int(value: object) -> int | None:
 
 
 def _parse_lenta_frame_idx(value: object, fps: float, frame_count: int) -> int | None:
-    parsed = _parse_decimal(value)
-    if parsed is None:
+    """Map the CSV `frame_timestamp` column to a 0-based frame index.
+
+    `frame_timestamp` is **milliseconds**, not a frame index. Verified against
+    every clip's container duration: e.g. 26_12-20 is a 89.7 s video with max
+    frame_timestamp 87976 (= 88.0 s); 25_12-20 is 42.0 s / max 41738 (= 41.7 s).
+    Interpreting it as a frame index would imply 200-2900 s clips, which is
+    impossible. Do NOT "restore" a frame-index branch — small ms values that
+    happen to be < frame_count (e.g. 49_5: 233, 400) would then extract the
+    wrong frames and silently corrupt the training labels.
+    """
+    ms = _parse_decimal(value)
+    if ms is None or ms < 0:
         return None
 
-    as_frame = int(round(parsed))
-    if 0 <= as_frame < frame_count:
-        return as_frame
-
-    if fps > 0 and frame_count > 0:
-        candidate_from_ms = parsed / 1000.0 * fps
-        if 0 <= candidate_from_ms <= frame_count + fps * 3:
-            return min(frame_count - 1, max(0, int(round(candidate_from_ms))))
-
-    return as_frame
+    effective_fps = fps if fps and fps > 0 else 30.0
+    frame = int(round(ms / 1000.0 * effective_fps))
+    if frame_count and frame_count > 0:
+        frame = min(frame_count - 1, frame)
+    return max(0, frame)
 
 
 def _read_frame_near(cap: cv2.VideoCapture, frame_idx: int, frame_count: int, search_radius: int = 30):
@@ -564,15 +595,42 @@ def _emit_split_list(processed_dir: Path, fname: str, video_ids: list[str]) -> N
 
 
 def _ensure_ultralytics_images_alias(processed_dir: Path) -> None:
-    """Ultralytics maps `.../images/...` paths to `.../labels/...` labels."""
+    """Make ``processed/images`` resolve to ``processed/frames``.
+
+    Ultralytics derives label paths by swapping ``/images/`` for ``/labels/``.
+    A plain symlink needs admin/Developer Mode on Windows, so degrade
+    gracefully: symlink -> directory junction (Windows, no privileges) ->
+    real directory copy. The last fallback always works.
+    """
     frames_root = processed_dir / "frames"
     images_root = processed_dir / "images"
     if images_root.exists() or images_root.is_symlink() or not frames_root.exists():
         return
+
     try:
         images_root.symlink_to("frames", target_is_directory=True)
+        return
     except OSError:
+        pass
+
+    if os.name == "nt":  # directory junction — no admin needed
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(images_root), str(frames_root)],
+                check=True, capture_output=True,
+            )
+            return
+        except (OSError, subprocess.CalledProcessError):
+            pass
+
+    try:  # last resort: a real copy (correct everywhere, costs disk)
+        shutil.copytree(frames_root, images_root)
         LOGGER.warning(
-            "Could not create %s -> frames symlink; Ultralytics training may not find labels",
+            "Symlink/junction unavailable — copied frames -> %s (uses extra disk)",
             images_root,
+        )
+    except OSError as exc:
+        LOGGER.warning(
+            "Could not create %s alias to frames (%s); Ultralytics training may "
+            "not find labels", images_root, exc,
         )

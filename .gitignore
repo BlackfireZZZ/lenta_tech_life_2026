@@ -218,12 +218,16 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Project data — large files, never commit
+# Untouched organizer dataset (~600 MB) — local source of truth, never committed.
+# Stage it into data/raw via scripts/ingest_real_data.py.
+real_data/
 data/raw/videos/*
 data/raw/unlabeled_videos/*
 data/raw/annotations/*
 data/raw/frames/*
 data/raw/metadata.csv
 data/processed/*
+data/external/*
 data/checkpoints/**/*.pt
 data/checkpoints/**/*.pth
 data/checkpoints/**/*.onnx

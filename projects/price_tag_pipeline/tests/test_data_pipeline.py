@@ -19,6 +19,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from price_tag_pipeline.cv_io import imwrite as cv_imwrite  # noqa: E402
 from price_tag_pipeline.data.loaders import ingest_lenta_csv, ingest_yolo, write_dataset_yaml  # noqa: E402
 from price_tag_pipeline.data.splits import build_video_level_folds  # noqa: E402
 from price_tag_pipeline.data.validate import validate_dataset  # noqa: E402
@@ -35,7 +36,7 @@ def _make_synthetic_raw(root: Path, video_ids: list[str], frames_per_video: int 
         for i in range(frames_per_video):
             img = np.full((480, 640, 3), 128, dtype=np.uint8)
             cv2.rectangle(img, (200, 200), (300, 260), (255, 255, 255), -1)
-            cv2.imwrite(str(frames_root / vid / f"{i:06d}.jpg"), img)
+            cv_imwrite(frames_root / vid / f"{i:06d}.jpg", img)
             (annot_root / vid / f"{i:06d}.txt").write_text("0 0.391 0.479 0.156 0.125\n", encoding="utf-8")
 
 
@@ -63,7 +64,10 @@ def test_ingest_validate_split(tmp_path: Path) -> None:
 
     yaml_path = write_dataset_yaml(processed, classes, fold=folds[0])
     assert yaml_path.exists()
-    assert (processed / "images").is_symlink()
+    # images may be a symlink, a Windows junction, or a copy — all valid.
+    images_alias = processed / "images"
+    assert images_alias.is_dir()
+    assert (images_alias / "vid_a" / "000000.jpg").exists()
     assert (processed / "train_images.txt").exists()
     assert (processed / "val_images.txt").exists()
     assert "/images/" in (processed / "train_images.txt").read_text(encoding="utf-8")
@@ -94,9 +98,11 @@ def test_ingest_lenta_csv(tmp_path: Path) -> None:
     (csv_dir / "sample_video.csv").write_text(
         "\n".join(
             [
+                # frame_timestamp is milliseconds; video is 10 fps / 6 frames
+                # (0..500 ms), so 200 ms -> frame 2, 500 ms -> frame 5.
                 "filename,product_name,frame_timestamp,x_min,y_min,x_max,y_max,price_default",
-                "sample_video.mp4,Milk,2,\"50,0\",\"60,0\",\"120,0\",\"140,0\",\"129,99\"",
-                "sample_video.mp4,Bread,2,150,70,210,130,59.99",
+                "sample_video.mp4,Milk,200,\"50,0\",\"60,0\",\"120,0\",\"140,0\",\"129,99\"",
+                "sample_video.mp4,Bread,200,150,70,210,130,59.99",
                 "sample_video.mp4,Tea,500,10,20,70,80,199.99",
             ]
         )
