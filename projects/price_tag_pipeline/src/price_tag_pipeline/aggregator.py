@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .config import AggregationConfig
+from .quality import tenengrad_sharpness
 from .types import (
     CropBufferEntry,
     CropCandidate,
@@ -43,6 +44,29 @@ _NUMERIC_EXTRA_FIELDS = {
     "wholesale_level_2_price",
     "action_price_qr",
 }
+
+# Tenengrad value at which the focus term reaches 0.5 (saturating, scale-free).
+# Only the *relative* order of crops matters for buffer ranking, so the exact
+# value is non-critical; a reasoned start, sweepable via scripts/eval_tracking.
+_FOCUS_HALF = 600.0
+
+
+def _border_factor(
+    bbox: tuple[int, int, int, int], frame_w: int, frame_h: int
+) -> float:
+    """1.0 for an interior box, decaying to 0.4 as it hugs a frame edge.
+
+    A box touching the frame edge is the tag entering/leaving — motion-blurred
+    and truncated, the worst frame to recognise from. Returns 1.0 when frame
+    size is unknown (back-compat: no penalty)."""
+    if frame_w <= 0 or frame_h <= 0:
+        return 1.0
+    x1, y1, x2, y2 = bbox
+    margin = min(x1, y1, frame_w - x2, frame_h - y2)
+    if margin <= 0:
+        return 0.4  # truncated at the edge
+    band = 0.06 * min(frame_w, frame_h)
+    return 0.4 + 0.6 * min(1.0, margin / band) if band > 0 else 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -76,15 +100,37 @@ class TrackAggregator:
             return True
         return frame_idx - state.last_ocr_frame >= min_gap
 
-    def push_crop(self, track_id: int, crop: CropCandidate) -> None:
-        """Add a candidate crop to a track's top-K-sharpest buffer."""
+    def push_crop(
+        self,
+        track_id: int,
+        crop: CropCandidate,
+        frame_w: int = 0,
+        frame_h: int = 0,
+    ) -> None:
+        """Add a candidate crop to a track's top-K-best buffer.
+
+        Ranking is tracker-layer only (which of a track's frames we keep as
+        "best" — strategy §4.2); it does not touch recognition. Tenengrad
+        focus dominates (motion-blur-robust, saturating so one very sharp
+        frame can't swamp the other terms); a box hugging the frame edge is
+        penalised because that is the tag entering/leaving (blurred +
+        truncated). ``frame_w/h`` are optional for back-compat.
+        """
         state = self._tracks.setdefault(track_id, _TrackState())
-        # Composite quality: sharpness dominates, area and det_conf adjust.
-        quality = (
-            0.6 * min(1.0, crop.sharpness / 200.0)
-            + 0.2 * min(1.0, crop.area_px / 20_000.0)
-            + 0.2 * crop.detection_confidence
+        img = crop.image
+        focus = (
+            tenengrad_sharpness(img)
+            if img is not None and img.size
+            else float(crop.sharpness)
         )
+        sharp_term = focus / (focus + _FOCUS_HALF)  # 0..1, scale-free
+        area_term = min(1.0, crop.area_px / 20_000.0)
+        quality = (
+            0.60 * sharp_term
+            + 0.15 * area_term
+            + 0.25 * crop.detection_confidence
+        )
+        quality *= _border_factor(crop.bbox_xyxy, frame_w, frame_h)
         entry = CropBufferEntry(crop=crop, quality_score=quality)
         state.crops.append(entry)
         # Keep only the top-K by quality.

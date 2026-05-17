@@ -9,9 +9,34 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+import numpy as np  # noqa: E402
+
 from price_tag_pipeline.aggregator import TrackAggregator, dedup_final_tags  # noqa: E402
 from price_tag_pipeline.config import AggregationConfig  # noqa: E402
-from price_tag_pipeline.types import FinalTag, ParsedTag, TagObservation, WeightUnit  # noqa: E402
+from price_tag_pipeline.types import (  # noqa: E402
+    CropCandidate,
+    FinalTag,
+    ParsedTag,
+    TagObservation,
+    WeightUnit,
+)
+
+
+def _crop(image, bbox, *, area=15_000, conf=0.8) -> CropCandidate:
+    return CropCandidate(
+        image=image,
+        sharpness=100.0,
+        area_px=area,
+        bbox_xyxy=bbox,
+        detection_confidence=conf,
+        frame_idx=0,
+        timestamp_s=0.0,
+    )
+
+
+def _sharp_img(seed=0):
+    rng = np.random.RandomState(seed)
+    return rng.randint(0, 256, size=(120, 200, 3), dtype=np.uint8)
 
 
 def _cfg(min_obs: int = 2, min_conf: float = 0.4) -> AggregationConfig:
@@ -189,6 +214,44 @@ def test_finaltag_reports_best_frame_bbox_not_last_seen():
     assert len(out) == 1
     assert out[0].bbox_xyxy == (100, 100, 300, 260)
     assert abs(out[0].timestamp_s - 5 / 30.0) < 1e-6
+
+
+# --- P1 #6: per-track best-crop ranking (tracker-layer frame selection) ---
+
+def test_best_crop_prefers_sharper_frame():
+    import cv2
+    agg = TrackAggregator(_cfg())
+    sharp = _sharp_img(1)
+    blurred = cv2.GaussianBlur(sharp, (9, 9), 0)
+    bbox = (200, 200, 400, 360)  # interior, identical for both
+    agg.push_crop(7, _crop(blurred, bbox), frame_w=1920, frame_h=1080)
+    agg.push_crop(7, _crop(sharp, bbox), frame_w=1920, frame_h=1080)
+    top = agg.best_crops(7, 1)
+    assert len(top) == 1
+    assert top[0].crop.image is sharp
+
+
+def test_best_crop_penalizes_border_box():
+    # Same image/area/conf; the box hugging the frame edge (tag leaving) must
+    # rank below the interior one.
+    agg = TrackAggregator(_cfg())
+    img = _sharp_img(2)
+    interior = _crop(img, (800, 400, 1000, 560))
+    at_edge = _crop(img, (0, 400, 200, 560))  # x1 == 0 → truncated
+    agg.push_crop(9, at_edge, frame_w=1920, frame_h=1080)
+    agg.push_crop(9, interior, frame_w=1920, frame_h=1080)
+    top = agg.best_crops(9, 2)
+    assert top[0].crop is interior
+    assert top[0].quality_score > top[1].quality_score
+
+
+def test_border_factor_noop_when_frame_size_unknown():
+    # Back-compat: no frame dims → no border penalty, still ranks by focus.
+    agg = TrackAggregator(_cfg())
+    img = _sharp_img(3)
+    agg.push_crop(11, _crop(img, (0, 0, 50, 50)))  # would be penalised if known
+    top = agg.best_crops(11, 1)
+    assert top[0].quality_score > 0.0
 
 
 def test_extra_fields_are_voted_into_final_tag():

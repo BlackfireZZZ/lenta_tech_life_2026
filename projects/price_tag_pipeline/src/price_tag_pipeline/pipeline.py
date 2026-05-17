@@ -139,7 +139,8 @@ class PriceTagPipeline:
                     continue
 
                 crop = self._maybe_upscale(crop)
-                self.aggregator.push_crop(det.track_id, crop)
+                fh, fw = frame.shape[:2]
+                self.aggregator.push_crop(det.track_id, crop, frame_w=fw, frame_h=fh)
 
             # Tracks whose last_seen is older than TTL get finalized now.
             expiring = self._find_expiring_track_ids(frame_idx)
