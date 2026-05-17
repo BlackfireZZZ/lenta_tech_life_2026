@@ -258,7 +258,7 @@ Per tag (one line of `outputs/*.jsonl`):
 
 ### Graded 29-column CSV
 
-The graded deliverable schema lives in **one** place:
+Within the pipeline the graded schema lives in **one** place:
 `price_tag_pipeline.submission`.
 
 - `final_tags_to_csv(tags, filename) -> str` — the canonical renderer.
@@ -268,6 +268,15 @@ The graded deliverable schema lives in **one** place:
 - `HACK_CSV_COLUMNS` / `hack_row_from_tag_dict()` — the 29-column order and
   the per-tag mapping. `export_hack_csv.py` is now a thin JSONL-replay CLI
   that **delegates** to these (no duplicated schema).
+
+This is the **producer** of the project-wide unifying contract: the same
+29 columns, order and byte format (UTF-8, `,` separator, `.` decimal,
+`\n` line terminator, `QUOTE_MINIMAL`) are mirrored by the gateway
+(`backend/.../schemas/job.py:CSV_COLUMNS` + `jobs_mock.py:build_csv`) and
+consumed by the SPA review screen. The three owners must stay in lock-step
+— see [`architecture.md`](./architecture.md) §5.6;
+`tests/test_submission.py` enforces the column + `\n`/`QUOTE_MINIMAL`
+parity on this side.
 
 Fields not recognized stay empty; if OCR/VLM explicitly returns `нет`, the
 CSV keeps `нет` (the renderer passes values through — the `нет`-vs-empty
