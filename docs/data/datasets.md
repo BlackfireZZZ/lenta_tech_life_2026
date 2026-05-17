@@ -1,7 +1,7 @@
 # External datasets — expanding a 5-video set
 
 The organizer dataset is **5 labeled videos / ~63 annotated frames / ~274 tag
-rows** (see `data/README.md`). That is far too small to train a detector or an
+rows** (see [`layout.md`](./layout.md)). That is far too small to train a detector or an
 OCR head from scratch. This file is the curated shortlist of external data to
 lean on, ordered by expected lift for *our* task (price-tag **detection** +
 **structured field OCR** on Russian retail tags).
@@ -9,6 +9,14 @@ lean on, ordered by expected lift for *our* task (price-tag **detection** +
 > Nothing here is auto-downloaded. `scripts/fetch_external_datasets.py` prints
 > the plan and only fetches a target you explicitly pass `--download`, with
 > your own API keys. Most sets need a license click / email — respect it.
+
+> **This is the short list.** The full landscape study (15+ datasets scored
+> for the robot-shelf domain — products, SKU, price tags, facings/counting,
+> OOS, planogram — plus a recommended modular architecture and a web-found
+> extensions appendix incl. **RusTitW**, **BarBeR**, Cyrillic-OCR synthetics)
+> is in [`datasets-research.md`](./datasets-research.md). Read that for the
+> *why* and for the **killer-feature** (facings/OOS) dataset backing; this
+> file is the actionable shortlist for the core task.
 
 ## Tier 0 — biggest lever: synthetic Lenta-style tags (no download)
 
@@ -19,7 +27,7 @@ detector mAP **73.1 → 93.9%** purely by template-based synthetic price tags +
 duplicate-and-shift augmentation. With only 5 videos this is the highest-ROI
 path: render synthetic RU tags from templates, composite onto shelf
 backgrounds, pair with the heavy Albumentations pipeline already in the repo.
-Tracked as future work in `STRATEGY.md`.
+Tracked as future work in [`../strategy.md`](../strategy.md).
 
 ## Tier 1 — detector pretraining / domain warm-up
 

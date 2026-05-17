@@ -4,7 +4,7 @@ These are surfaced as a dataclass so the same defaults are used by training
 scripts and (later) by the dataset class that overrides Ultralytics' built-ins
 with Albumentations.
 
-Rationale for non-default values is documented in STRATEGY.md §2.3.
+Rationale for non-default values is documented in docs/strategy.md §2.3.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch external pretraining datasets listed in DATASETS.md.
+"""Fetch external pretraining datasets listed in docs/data/datasets.md.
 
 Safe by default: with no flags it only PRINTS the plan. It downloads a target
 only when you pass it explicitly with --download, using your own credentials.
@@ -66,7 +66,7 @@ def fetch_roboflow(dst: Path, workspace: str, project: str, version: int) -> Non
     if not key:
         sys.exit("Set ROBOFLOW_API_KEY (https://app.roboflow.com -> settings).")
     if not (workspace and project and version):
-        sys.exit("Pass --rf-workspace --rf-project --rf-version (see DATASETS.md).")
+        sys.exit("Pass --rf-workspace --rf-project --rf-version (see docs/data/datasets.md).")
     try:
         from roboflow import Roboflow
     except ModuleNotFoundError:
@@ -113,7 +113,7 @@ def main() -> int:
         print("Plan (nothing downloaded — pass --download <target>):\n")
         for k, v in PLAN.items():
             print(f"  {k:16s} {v}")
-        print("\nSee DATASETS.md for licenses and the recommended order of work.")
+        print("\nSee docs/data/datasets.md for licenses and the recommended order of work.")
         return 0
 
     dst = _ext_root()

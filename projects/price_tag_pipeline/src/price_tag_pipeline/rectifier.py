@@ -97,7 +97,7 @@ class PerspectiveRectifier:
 
     Pure OpenCV — no model dependencies. Good for tags with a clear printed
     border. For shelves where the border is obscured, the keypoint-head
-    approach (P1 in STRATEGY.md) is the right upgrade.
+    approach (P1 in docs/strategy.md) is the right upgrade.
     """
 
     def __init__(self, cfg: RectifierConfig, min_quad_area_ratio: float = 0.35):

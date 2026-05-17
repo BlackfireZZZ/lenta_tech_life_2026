@@ -1,76 +1,37 @@
 # lenta_tech_life_2026
 
-End-to-end price-tag recognition for the Lenta Tech Life 2026 hackathon
-(Russian retail chain; price-tag detection + structured field extraction
-from robot-captured video).
+End-to-end price-tag recognition for the **Lenta Tech Life 2026** hackathon:
+a robot drives along Russian supermarket shelves; from its video we detect
+price tags and extract structured fields per tag, emitting one CSV row per
+unique tag behind an upload-video → download-CSV UI.
 
-## Documents
+## Documentation
 
-- `ANALYSIS.md` — analysis of the original scaffold (what worked, what didn't, why we rewrote).
-- `STRATEGY.md` — model-selection and pipeline strategy (RF-DETR / YOLO26 / PaddleOCR-VL / BoT-SORT).
-- `ML_BASELINE_COLAB.md` — GPU-only ML baseline runbook for Google Colab (train/infer/eval/export).
-- `BRANCHES.md` — what each hackathon branch is for.
-- `HACKATHON_RUNBOOK.md` — local runbook for annotated video + final CSV.
-- `COLAB_REAL_DATA.md` — private-repo SSH clone + real-video Colab workflow.
-- `data/README.md` — exactly where data goes when it arrives.
-- `projects/price_tag_pipeline/README.md` — pipeline usage and CLI reference.
+All knowledge lives in **[`docs/`](./docs/index.md)** — start at
+**[`docs/index.md`](./docs/index.md)**. AI agents: see
+[`AGENTS.md`](./AGENTS.md).
 
-## Pipeline at a glance
-
-```
-video.mp4
-  └─► YOLO-World / YOLO26 / RF-DETR detector (1280 input, BoT-SORT tracker)
-        └─► Per-track top-K-sharpest crop buffer
-              └─► QR/barcode decoder + PaddleOCR/PaddleOCR-VL JSON prompt
-                    └─► Per-field weighted voting (fuzzy buckets for prices)
-                          └─► Cross-track IoU + content dedup
-                                └─► outputs/{video}.jsonl + annotated MP4 + CSV
-```
+| | |
+|---|---|
+| Official task, CSV schema, metric | [docs/hackathon/task.md](./docs/hackathon/task.md) |
+| Organizer-chat intel & gotchas | [docs/hackathon/briefing.md](./docs/hackathon/briefing.md) |
+| Model & pipeline strategy | [docs/strategy.md](./docs/strategy.md) |
+| CLI / profiles / backends / output | [docs/pipeline-reference.md](./docs/pipeline-reference.md) |
+| Runbooks (local + Colab) | [docs/runbooks/](./docs/runbooks/local.md) |
+| Data layout & external datasets | [docs/data/layout.md](./docs/data/layout.md) · [docs/data/datasets.md](./docs/data/datasets.md) |
+| Branch map | [docs/branches.md](./docs/branches.md) |
+| Pre-rewrite analysis (historical) | [docs/analysis.md](./docs/analysis.md) |
 
 ## Quick start
 
 ```bash
-# 1. Install (Python 3.11 or 3.12 recommended; 3.14 is too new for some deps).
+# Install (Python 3.11/3.12; use a uv-managed .venv, not global pip).
 pip install -r projects/price_tag_pipeline/requirements.txt
 
-# 2. Drop data under data/raw/ (see data/README.md).
-
-# 3A. Zero-shot baseline (no labels, no training).
-python projects/price_tag_pipeline/scripts/run_batch_inference.py \
-    --videos-dir data/raw/videos \
-    --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
-    --outputs-dir outputs/jsonl
-python projects/price_tag_pipeline/scripts/export_hack_csv.py \
-    --inputs outputs/jsonl --out-csv submission/hack_submission.csv
-
-# 3B. Visual debug video.
-python projects/price_tag_pipeline/scripts/visualize_predictions.py \
-    --video data/raw/videos/video01.mp4 \
-    --pred outputs/jsonl/video01.jsonl \
-    --out outputs/vis/video01_annotated.mp4
-
-# 3C. Local UI.
-python projects/price_tag_pipeline/scripts/gradio_app.py \
-    --config projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml \
-    --outputs-dir outputs/demo
-
-# 3D. Trainable path (if labels are available): prepare + split + train + infer.
-python projects/price_tag_pipeline/scripts/prepare_data.py     --raw data/raw --processed data/processed
-python projects/price_tag_pipeline/scripts/make_splits.py      --processed data/processed --out data/splits --n_splits 5 --emit-dataset-yaml-fold 0
-python projects/price_tag_pipeline/scripts/train_detector_yolo.py --dataset data/processed/dataset.yaml --model yolo26l.pt --imgsz 1280 --batch 8 --epochs 200
-python projects/price_tag_pipeline/scripts/run_inference.py    --video path/to/video.mp4 --config projects/price_tag_pipeline/configs/balanced.yaml --output outputs/video01.jsonl
-```
-
-## Tests
-
-```bash
-pip install -r projects/price_tag_pipeline/requirements/dev.txt
+# Tests need no data, model, or GPU.
 pytest projects/price_tag_pipeline/tests -v
 ```
 
-## Status
-
-- Pre-data scaffold is complete. Drop data into `data/raw/` and the pipeline above is
-  copy-pasteable.
-- RF-DETR detector backend and PaddleOCR-VL LoRA fine-tuning are scaffolded as
-  stubs; both land once data is available (see STRATEGY.md §§2.1, 3.3).
+Full setup, data staging, training, inference, CSV export and the UI are in
+[`docs/pipeline-reference.md`](./docs/pipeline-reference.md) and the
+[runbooks](./docs/runbooks/local.md). `main` is the canonical branch.

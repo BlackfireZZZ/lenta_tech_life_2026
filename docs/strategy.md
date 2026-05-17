@@ -1,6 +1,18 @@
-# STRATEGY.md — Price-Tag Recognition Pipeline (Lenta Tech Life 2026)
+# Strategy — Price-Tag Recognition Pipeline (Lenta Tech Life 2026)
 
 > Plan first, code second. All model choices below are verified against May 2026 SOTA via web search; sources at the end. Where I've made assumptions, they are marked **[ASSUMPTION]** and listed in §10.
+
+> **⚠️ Update (2026-05-17). The assumptions in §10 are now resolved** against the
+> official task and the organizers' chat. Read [`hackathon/task.md`](./hackathon/task.md)
+> (formal spec) and [`hackathon/briefing.md`](./hackathon/briefing.md) (metric
+> deep-dive + strategy) **first** — they override guesses in this document.
+> The biggest deltas: (1) the output schema is **29 CSV columns / 30 fields**
+> (18 tag + 11 QR), not the 9-field schema in §3.2; (2) the metric is *"≥80% of
+> substantive fields correct on each GT-matched tag"* with **barcode as the
+> primary matching key** — not the equal-weight Levenshtein target in §0;
+> (3) **cloud APIs are banned at inference** and lightweight / `rknn int8` is
+> rewarded — so the rent-an-A100 plan applies to *training only*, inference
+> must be fully local. See the resolved §10 for the per-assumption mapping.
 
 ---
 
@@ -120,6 +132,18 @@ Frames from the same video share lighting, store layout, and many tags — frame
 ---
 
 ## 3. OCR + structured extraction
+
+> **⚠️ Prerequisite read: [`hackathon/price-tag-guide.md`](./hackathon/price-tag-guide.md).**
+> It is the field-layout bible distilled from the organizers' decks — where
+> every CSV field physically sits on each tag type/mechanic, and the rules
+> that change parsing: `discount_amount` is `-N%` when the ruble discount
+> < 100 ₽ else `-N₽` (so the same field carries both encodings); on 6×12 and
+> threshold layouts the barcode is **text** (`ШК:`/`Ш:`), not a graphical EAN;
+> А5 and МНЦ have **no QR** (write `"нет"` for all 11 QR fields); a
+> shelf-talker is part of the **same logical tag** and its scale number maps
+> to `additional_info`; `color` may come from the linked talker, not the
+> body. The §3.2 prompt and any parser must be built against that guide, not
+> the simplified 9-field sketch below.
 
 ### 3.1 Why a VLM, not classical OCR
 
@@ -303,17 +327,29 @@ For RF-DETR + VLM LoRA: rent **1× A100 80GB** for ~24h. Otherwise local 4070 Ti
 
 ---
 
-## 10. Open assumptions and decision points
+## 10. Assumptions — RESOLVED against the official task (2026-05-17)
 
-These I'm proceeding on; flag if any is wrong:
+The seven original assumptions are no longer open. Source of truth:
+[`hackathon/task.md`](./hackathon/task.md) and
+[`hackathon/briefing.md`](./hackathon/briefing.md). Mapping below; "Δ" = the
+strategic change this forces.
 
-1. **[ASSUMPTION] Annotation format = YOLO for now**, swappable to COCO if needed.
-2. **[ASSUMPTION] Required output fields**: regular_price, loyalty_price, product_name, weight_value, weight_unit, price_per_unit_value, price_per_unit_unit, currency, promo_flag. If the organizers actually want fewer/more fields, the schema is easy to trim — but the architecture is the same.
-3. **[ASSUMPTION] No per-video metadata** (store/aisle) initially. If we get it, we stratify the split.
-4. **[ASSUMPTION] We can rent 1× A100 80GB for ~48 hours total** for RF-DETR + VLM LoRA training. If only the 4070 Ti is available, we drop to YOLO26-l + classical PaddleOCR-RU + parser, and skip RF-DETR/VLM. Quality will be lower but still competitive.
-5. **[ASSUMPTION] The grading metric weights fields equally** (or close to it). If `regular_price` is the only graded field, we don't need the VLM and can win with YOLO26 + Russian PaddleOCR + the rewritten parser.
-6. **[ASSUMPTION] Inference is per-video.** One JSON/CSV per video, list of unique tags with all fields. If they want per-frame output we add a frame-level export.
-7. **[ASSUMPTION] We are allowed to use pretrained weights** (DINOv2 backbone in RF-DETR, COCO-pretrained YOLO26, PaddleOCR-VL pretrained checkpoint). 99% of hackathons allow this; confirm.
+| # | Original assumption | Resolved answer | Δ for this strategy |
+|---|---|---|---|
+| 1 | Annotation format = YOLO | **Lenta hackathon CSV** (`filename,product_name,price_default,price_card,…,frame_timestamp,x_min,y_min,x_max,y_max` + QR fields). `prepare_data.py` already ingests it; `frame_timestamp` is **ms**, not a frame index. | None for architecture; GT bboxes are noisy (briefing §6.1) — **build our own detection, don't reproduce GT boxes**. |
+| 2 | 9-field output schema | **29 CSV columns** = 18 tag fields + 11 QR fields (task.md §3). `price_default`/`price_card`/`price_discount`, `barcode`, `id_sku`, `print_datetime`, `code`, `color`, `special_symbols`, plus 11 `*_qr` fields. | §3.2's 9-field VLM prompt is **insufficient** — extend it to the full schema; add `color` classification (white/yellow/green/red) and display-type (`к/л/ш`). |
+| 3 | No per-video metadata | Confirmed — **none provided**. Store/aisle stratification is impossible. | Keep video-level GroupKFold *without* stratification (§2.5/§5.3 fallback path is the live one). |
+| 4 | Rent A100 for training | Allowed for **training only**. **Cloud APIs / external online services are banned at inference** (task.md §10). Lightweight + `rknn int8` is explicitly rewarded. | Train heavy (RF-DETR / VLM LoRA) off-box if needed, but the **shipped inference pipeline must run fully local**. Add a lightweight edge profile (YOLO-n/s) for the on-robot scenario the organizers are weighing (briefing §8.2). |
+| 5 | Metric weights fields equally | **Two-stage**: (A) match row→GT by **barcode** (primary key) else `frame_timestamp+bbox` with tolerances; (B) tag "recognized" iff ≥**80%** of *substantive* fields correct. Technical fields (`filename`, `frame_timestamp`, bbox) are **not scored**. | **Barcode recognition is now P0** — it is the matching key, not just a field. Duplicates actively hurt the score → cross-track dedup is critical. Plan QR as **11 separately-counted fields** (worst case). |
+| 6 | Inference is per-video | Confirmed — **one CSV, one row per unique tag**. Submit **one** timestamp per tag (the best-recognition frame); time tolerance covers it. | Matches current pipeline + `export_hack_csv.py`. Keep the top-K-sharpest "best frame" selection (§4.2). |
+| 7 | Pretrained weights allowed | **Yes**, any open-license model deployable locally. Manual labeling allowed for *training* only, never at inference, and must be disclosed in the README. | Proceed with DINOv2/COCO/PaddleOCR-VL pretrained checkpoints. Document every labeled/external dataset in the README (mandatory, task.md §7). |
+
+**Net effect on the plan:** the architecture in §1 is still right, but (a) the
+extraction schema must grow to 29 columns incl. `color`/`special_symbols`,
+(b) **barcode + dedup move to P0**, (c) inference is **local-only** with an
+optional lightweight edge profile, (d) "≥80% of fields" + barcode-keyed
+matching replaces the equal-weight metric in §0. §11 below is re-ordered
+accordingly in the runbooks; the original ordering is kept here for history.
 
 ---
 
@@ -331,6 +367,52 @@ Once you confirm or override the above:
 8. Iterate: fine-tune PaddleOCR-VL LoRA if needed; ensemble detectors with WBF if both look good.
 9. Final report generator + dedup pass.
 10. Lock final config, freeze checkpoints, write a short submission README.
+
+---
+
+## 12. Killer feature (STRETCH GOAL — only if the core metric is solid)
+
+> **Scope guard.** This is *optional* upside, attempted **only after** the
+> graded pipeline (detection → barcode → dedup → substantive fields → CSV) is
+> solid. It does **not** feed the technical metric. It is a deliberate bet on
+> the *non-metric* finals criteria — the organizers repeatedly say they value
+> "maturity of approach", "scalability", and "applicability in the business
+> process", and the task's own business framing is *shelf-compliance
+> automation* ([`hackathon/task.md`](./hackathon/task.md) §1,
+> [`hackathon/briefing.md`](./hackathon/briefing.md) §7–8). Do not let this
+> displace core work.
+
+**Idea.** On top of per-tag recognition, emit a lightweight **shelf-analytics
+layer**: for each detected/recognized product, report **how many facings
+(visible front units) are on the shelf**, plus optional empty-slot / gap
+flags. This turns "a CSV of tags" into "a shelf-state report" — the actual
+business outcome Lenta described (faster shelf audits, digital monitoring).
+
+**Why it fits this repo.** We already detect, track, and dedup objects per
+frame. Counting visible facings is mostly an aggregation head on top of
+existing detections + the tracker, not a new model. Gap/OOS is a small extra
+detector. The data backing exists — see
+[`data/datasets-research.md`](./data/datasets-research.md): **Locount** §4.4
+(localization + counting), **SKU-110K** §4.1 (dense facing detection),
+**Gap Detection / ROSCH** §4.7/§4.15 (OOS), and the modular MVP architecture
+§6/§8. Honest scoping (from that research): a single RGB pass gives
+**visible facings**, *not* true stock-depth — label the metric accordingly
+("visible facings / estimated stock"), which is itself the kind of
+limitation-awareness the organizers reward.
+
+**Minimal plan (in priority order, each independently shippable):**
+1. **Facings count per product** — group deduped detections by shelf
+   row + x-range; report `visible_facings` as an extra, clearly-separate
+   output column / panel (never inside the graded 29-column CSV).
+2. **Gap / empty-slot flag** — small detector or heuristic on row gaps;
+   surfaced in the UI overlay, not the scored CSV.
+3. **Shelf-state summary** in the UI: per-section product list with price +
+   facings + gap, the "applicability" story for the presentation.
+
+**Hard constraints (same as core):** local-only inference, lightweight enough
+for the edge scenario, every dataset used disclosed in the README. Keep this
+output **physically separate** from the graded CSV so it cannot corrupt the
+metric. Tracked here as future work; not on the §11 critical path.
 
 ---
 

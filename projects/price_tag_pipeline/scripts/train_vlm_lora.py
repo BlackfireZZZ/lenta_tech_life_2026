@@ -5,7 +5,7 @@ Status: STUB. Lands once we have:
     1. Annotated (crop_image, expected_json) pairs (≥1000 recommended).
     2. paddleocr>=3 OR transformers + peft installed.
 
-Strategy reference: STRATEGY.md §3.3.
+Strategy reference: docs/strategy.md §3.3.
 
 Expected dataset layout for fine-tuning:
     data/processed/vlm/
@@ -45,7 +45,7 @@ def main() -> int:
     raise NotImplementedError(
         "VLM LoRA training body is not implemented yet. "
         "Implement once annotated (crop, target_json) pairs exist. "
-        "See STRATEGY.md §3.3 for the recipe."
+        "See docs/strategy.md §3.3 for the recipe."
     )
 
 

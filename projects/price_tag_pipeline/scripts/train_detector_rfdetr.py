@@ -17,7 +17,7 @@ Usage (once implemented):
 
 References:
     https://github.com/roboflow/rf-detr
-    STRATEGY.md §2.1
+    docs/strategy.md §2.1
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def main() -> int:
 
     raise NotImplementedError(
         "RF-DETR training body is not implemented yet. "
-        "Hook it up here once data is in COCO format. See STRATEGY.md §2.1."
+        "Hook it up here once data is in COCO format. See docs/strategy.md §2.1."
     )
 
 

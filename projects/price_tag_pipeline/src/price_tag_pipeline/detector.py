@@ -264,7 +264,7 @@ class RFDETRDetector(BaseDetector):
             "RF-DETR backend is not yet wired. Either: "
             "(a) set detector.backend='yolo' in your config to use the Ultralytics path, or "
             "(b) implement RFDETRDetector.stream_video() once `rfdetr` is installed. "
-            "See STRATEGY.md §2.1 for the migration plan."
+            "See docs/strategy.md §2.1 for the migration plan."
         )
 
     def stream_video(self, video_path: str, fps_override: Optional[float] = None):

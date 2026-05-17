@@ -1,6 +1,16 @@
-# ANALYSIS.md — Price-Tag Recognition Hackathon (Lenta Tech Life 2026)
+# Analysis — Price-Tag Recognition Hackathon (Lenta Tech Life 2026)
 
 > Written cold, no sugarcoating. The repo is a runtime skeleton, not a solution.
+
+> **📜 Historical record (kept intentionally).** This is the cold critique of
+> the *original pre-rewrite scaffold*. Most P0/P1 items below have since been
+> implemented on `main` (rectifier with color + CLAHE-on-luminance, OCR
+> ensemble, training scripts, metrics package, dedup, CSV export, smoke tests
+> — see `git log`). Read it for **rationale and the failure-mode catalogue**,
+> not as a description of the current code. The "Open questions" in §7 are now
+> **answered** by [`hackathon/task.md`](./hackathon/task.md); see the note
+> there. Current state lives in [`pipeline-reference.md`](./pipeline-reference.md);
+> the forward plan in [`strategy.md`](./strategy.md).
 
 ## TL;DR
 
@@ -203,7 +213,17 @@ These are the few things the existing author got right; rewriting them buys noth
 
 ---
 
-## 7. Open questions for the user (before Stage 2)
+## 7. Open questions for the user (before Stage 2) — ANSWERED
+
+> **All five are now resolved** by the official task + organizer chat. See
+> [`hackathon/task.md`](./hackathon/task.md) and the resolved §10 in
+> [`strategy.md`](./strategy.md). Short answers: (1) Lenta hackathon **CSV**
+> format, data under `data/raw/` via `ingest_real_data.py`; (2) schema is the
+> **29-column** spec in task.md §3 — not the guessed 6-field set below;
+> (3) **no** per-video metadata, no stratification possible; (4) A100 allowed
+> for training, but **inference must be cloud-free / local**; (5) deadline
+> **2026-05-19 15:00 MSK**, finals 05-24 — favour the robust local pipeline
+> over an all-in cloud VLM. Original questions kept verbatim below for history.
 
 1. **Annotation format and data path.** The repo has no data and no path placeholder. Where will the dataset land? CVAT / COCO / YOLO / custom?
 2. **Output schema specified by the organizers.** Do we have a sample of the expected submission JSON/CSV? Without it I'm guessing the fields. Strong inference: regular_price, loyalty_price, product_name, weight, weight_unit, price_per_unit — please confirm or paste the spec.
