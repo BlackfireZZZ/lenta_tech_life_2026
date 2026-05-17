@@ -22,9 +22,14 @@ Everything from the crop onward is the **recognition** package
 For each of the top-K-sharpest crops of a track the pipeline runs an ordered
 chain of `CropDecoder`s:
 
-1. **QR** (`recognition/qr.py` → `QRDecoder`) — decode QR payload to fields.
-2. **barcode** (`recognition/barcode.py` → `BarcodeDecoder`) — 1D barcode /
-   `ШК:`-text GTIN. **STUB today** (owned by a separate branch).
+1. **QR / DataMatrix** (`recognition/qr.py` → `QRDecoder`) — decode the 2D
+   payload to fields.
+2. **barcode** (`recognition/barcode.py` → `BarcodeDecoder`) — the 1D product
+   barcode (GS1 DataBar / Code-128 / EAN GTIN). **Landed** from the QR/barcode
+   branch behind the unchanged seam; the heavy decode engine is
+   `recognition/qr_engine.py` (ensemble + classical preprocessing cascade +
+   doc-informed layout-ROI localiser, no ML). The `ШК:`-text GTIN fallback
+   stays the OCR decoder's job (it owns text), reconciled by the aggregator.
 3. **smart OCR** (`recognition/ocr.py` → `OCRDecoder`) — classical/VLM OCR +
    parser; an ensemble engine yields several readings per crop.
 
@@ -73,26 +78,30 @@ Decoder rules: cheap to construct; **never raise** on a bad crop (return
 `[]`); return `[]` when nothing is recognized so the chain reads correctly and
 no empty observation is emitted.
 
-## Contract for the separate QR/barcode branch
+## QR/barcode reader (landed) and its frozen contract
 
-The ultimate QR and barcode readers are being built on a **separate branch**.
-They plug in here **without changing the seam or the chain order**:
+The ultimate QR and barcode readers **have landed** from the QR/barcode
+branch, plugged in **without changing the seam or the chain order**:
 
-- **QR** → replace the internals behind `recognition/qr.py::QRDecoder`
-  (`QRCodeExtractor` / `parse_qr_payload` are the current baseline). Keep
-  `QRDecoder.decode` returning `list[RecognitionResult]`.
-- **barcode** → implement `recognition/barcode.py::BarcodeDecoder.decode`.
-  On success, `parsed.extra_fields["barcode"] = "<digits>"` (also
-  `"qr_code_barcode"` when it is the same GTIN), set `extra_confidences`,
-  `found=True`. Barcode is the metric's **primary GT-matching key — P0**
-  ([`index.md`](./index.md) "five facts"), not just one column.
-- **Do NOT change** `CropDecoder` / `RecognitionResult` / `parsed_is_empty` /
-  the QR→barcode→OCR order / the `recognition:` config keys.
-- Merge is the aggregator's job — do not add field-merge logic to decoders.
-
-Because this restructure moved `qr.py`/`ocr.py` into the package, the other
-branch should land its work in `recognition/qr.py` / `recognition/barcode.py`
-(not the old top-level `qr.py`).
+- **QR / DataMatrix** → `recognition/qr.py::QRDecoder` now wraps the shared
+  decode engine (`QRCodeExtractor` / `parse_qr_payload` kept as the public
+  surface; `parse_qr_payload` also maps a bare GTIN — previously silently
+  dropped). Emits only 2D-derived fields; opaque DataMatrix payloads are kept
+  raw under the **non-graded** `datamatrix_raw` scratch key.
+- **barcode** → `recognition/barcode.py::BarcodeDecoder.decode` reads the 1D
+  product barcode (GS1 DataBar `(01)`-GTIN / Code-128 / EAN). On success
+  `parsed.extra_fields["barcode"] = "<digits>"` (and `"qr_code_barcode"`, same
+  GTIN), `extra_confidences` set, `found=True`; checksum-failing reads are
+  dropped (a wrong barcode mis-keys the GT match). Barcode is the metric's
+  **primary GT-matching key — P0** ([`index.md`](./index.md) "five facts").
+- Shared engine `recognition/qr_engine.py` (decoder ensemble + escalating
+  classical preprocessing cascade + doc-informed layout-ROI localiser; no ML).
+  `decode_crop()` memoises one decode per crop so QR + barcode (run
+  back-to-back by the chain) don't decode twice. Eval harness:
+  `scripts/eval_qr.py`. Findings & input-quality ceiling: see project memory.
+- **Still frozen — do NOT change** `CropDecoder` / `RecognitionResult` /
+  `parsed_is_empty` / the QR→barcode→OCR order / the `recognition:` config
+  keys. Merge stays the aggregator's job — no field-merge logic in decoders.
 
 ## Configuration
 
@@ -102,7 +111,7 @@ profiles are unchanged):
 ```yaml
 recognition:
   enable_qr: true
-  enable_barcode: true       # currently a no-op stub; safe to leave on
+  enable_barcode: true       # 1D barcode reader (landed); on by default
   enable_ocr: true
   merge_policy: qr_first_fill_gaps
 ```
