@@ -191,7 +191,7 @@ class PriceTagPipeline:
         deduped = dedup_final_tags(
             finalized,
             iou_threshold=self.cfg.aggregation.dedup_iou_threshold,
-            time_window_frames=self.cfg.aggregation.dedup_time_window_frames,
+            time_window_s=self.cfg.aggregation.dedup_time_window_s,
         )
         LOGGER.info(
             "Finalized %d -> %d after dedup (saved %d duplicates).",

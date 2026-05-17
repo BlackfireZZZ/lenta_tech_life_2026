@@ -112,7 +112,8 @@ class AggregationConfig:
     price_fuzzy_tolerance: float = 0.5    # bucket prices within ±0.5 RUB
     name_fuzzy_ratio: float = 0.85        # Levenshtein ratio threshold for name bucketing
     dedup_iou_threshold: float = 0.4
-    dedup_time_window_frames: int = 150
+    dedup_time_window_frames: int = 150  # legacy; superseded by *_s below
+    dedup_time_window_s: float = 8.0     # cross-track dedup window, wall-clock
 
 
 @dataclass(frozen=True)
@@ -248,6 +249,7 @@ def _as_aggregation(node: dict[str, Any]) -> AggregationConfig:
         name_fuzzy_ratio=float(_opt(node, "name_fuzzy_ratio", 0.85)),
         dedup_iou_threshold=float(_opt(node, "dedup_iou_threshold", 0.4)),
         dedup_time_window_frames=int(_opt(node, "dedup_time_window_frames", 150)),
+        dedup_time_window_s=float(_opt(node, "dedup_time_window_s", 8.0)),
     )
 
 

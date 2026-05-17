@@ -14,6 +14,7 @@ A cross-track deduplication pass runs after all tracks are flushed.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
@@ -179,14 +180,18 @@ class TrackAggregator:
         if overall_conf < self.cfg.min_final_confidence:
             return None
 
-        # Pick a representative observation for bbox/timestamp.
+        # Pick the BEST observation for the reported bbox/timestamp — the
+        # frame where recognition was strongest, NOT state.last_bbox (the tag
+        # leaving the frame edge: motion-blurred and truncated). The hackathon
+        # matches a no-barcode row by frame_timestamp+bbox (briefing §3.4/§5),
+        # so emitting the leaving-frame box loses spatio-temporal matches.
         repr_obs = max(obs_list, key=lambda o: o.field_weight(1.0))
 
         weight_unit_str = weight_unit.value if hasattr(weight_unit, "value") else weight_unit
 
         return FinalTag(
             track_id=track_id,
-            bbox_xyxy=state.last_bbox or repr_obs.bbox_xyxy,
+            bbox_xyxy=repr_obs.bbox_xyxy,
             timestamp_s=repr_obs.timestamp_s,
             source_frames=sorted({o.frame_idx for o in obs_list}),
             regular_price=regular,
@@ -375,21 +380,108 @@ class TrackAggregator:
 # Cross-track dedup
 # ---------------------------------------------------------------------------
 
+_PRICE_TOL = 0.5
+
+
+def _tag_barcode(t: FinalTag) -> Optional[str]:
+    """The tag's decoded barcode as a digit string, or None.
+
+    Reads fields the recognition layer already produced — this is dedup
+    *identity*, not barcode reading (that lives on a separate branch). EAN-8
+    is the shortest real GTIN, so shorter digit runs are noise, not a key.
+    """
+    for key in ("barcode", "qr_code_barcode"):
+        v = t.extra_fields.get(key)
+        if v in (None, "", "нет"):
+            continue
+        digits = re.sub(r"\D", "", str(v))
+        if len(digits) >= 8:
+            return digits
+    return None
+
+
+def _price_relation(a: FinalTag, b: FinalTag) -> str:
+    """'agree' | 'conflict' | 'unknown' over co-present price fields."""
+    seen = False
+    for attr in ("regular_price", "loyalty_price"):
+        pa, pb = getattr(a, attr), getattr(b, attr)
+        if pa is None or pb is None:
+            continue
+        seen = True
+        if abs(pa - pb) > _PRICE_TOL:
+            return "conflict"
+    return "agree" if seen else "unknown"
+
+
+def _name_relation(a: FinalTag, b: FinalTag) -> str:
+    if not a.product_name or not b.product_name:
+        return "unknown"
+    r = _name_ratio(a.product_name.lower(), b.product_name.lower())
+    if r >= 0.85:
+        return "agree"
+    if r < 0.55:
+        return "conflict"
+    return "weak"
+
+
+def _content_proximity_merge(
+    a: FinalTag, b: FinalTag, iou_threshold: float, time_window_s: float
+) -> bool:
+    """Merge decision when barcode identity is NOT conclusive.
+
+    Barcode-equal pairs are merged before this is called; barcode-different
+    pairs are refused here. This path handles the no-/one-barcode case: it
+    needs content agreement plus either box overlap OR — for the moving-camera
+    ID-switch where the two fragments sit at different pixels (low IoU) —
+    strong corroborating content (price AND name agree).
+    """
+    ba, bb = _tag_barcode(a), _tag_barcode(b)
+    if ba and bb and ba != bb:
+        return False  # different physical tags — never merge
+
+    if abs(a.timestamp_s - b.timestamp_s) > time_window_s:
+        return False
+
+    price = _price_relation(a, b)
+    name = _name_relation(a, b)
+    if price == "conflict" or name == "conflict":
+        return False
+    if price != "agree" and name != "agree":
+        return False  # no strong content signal
+
+    if _iou(a.bbox_xyxy, b.bbox_xyxy) >= iou_threshold:
+        return True
+    # Low IoU: the camera moved between the two fragments. Require BOTH price
+    # and name to agree so fragmentation is recovered without merging
+    # unrelated tags that merely share a price.
+    return price == "agree" and name == "agree"
+
+
 def dedup_final_tags(
     tags: list[FinalTag],
     iou_threshold: float,
-    time_window_frames: int,
+    time_window_s: float,
 ) -> list[FinalTag]:
-    """Merge predictions that almost certainly describe the same physical tag.
+    """Collapse predictions describing the same physical tag.
 
-    Two tags are merged when their bboxes overlap above `iou_threshold`,
-    they fall inside `time_window_frames` of each other, and at least one
-    of (regular_price, loyalty_price, product_name) matches.
+    Identity is content-first, not box-first: the moving robot means two
+    fragments of one tag can have near-zero IoU, so an IoU gate would leave
+    the duplicate uncollapsed (the metric's #1 enemy, briefing §3.5).
+    Strength order:
+
+    1. **Equal decoded barcode ⇒ same tag**, regardless of bbox/time (it is
+       the hackathon's primary GT-matching key, briefing §5).
+    2. **Different decoded barcodes ⇒ never merged.**
+    3. Otherwise: price/name agreement within ``time_window_s`` seconds, with
+       IoU a positive — not mandatory — signal.
+
+    ``time_window_s`` is wall-clock seconds (FinalTag.timestamp_s), not
+    frames: container FPS varies and frame_timestamp is milliseconds, so a
+    frame-count window would mean different durations per video.
     """
     if not tags:
         return []
-    # Sort by start frame.
-    tags = sorted(tags, key=lambda t: t.source_frames[0] if t.source_frames else 0)
+
     parents = list(range(len(tags)))
 
     def find(x: int) -> int:
@@ -403,19 +495,28 @@ def dedup_final_tags(
         if ra != rb:
             parents[rb] = ra
 
-    for i in range(len(tags)):
-        for j in range(i + 1, len(tags)):
-            ti, tj = tags[i], tags[j]
-            # Time-window guard.
-            si = ti.source_frames[-1] if ti.source_frames else 0
-            sj = tj.source_frames[0] if tj.source_frames else 0
-            if sj - si > time_window_frames:
+    # Pass 1 — barcode identity, any time gap.
+    by_barcode: defaultdict[str, list[int]] = defaultdict(list)
+    for idx, t in enumerate(tags):
+        bc = _tag_barcode(t)
+        if bc:
+            by_barcode[bc].append(idx)
+    for idxs in by_barcode.values():
+        for k in idxs[1:]:
+            union(idxs[0], k)
+
+    # Pass 2 — content + proximity for the rest, time-sorted sliding window.
+    order = sorted(range(len(tags)), key=lambda i: tags[i].timestamp_s)
+    for ai in range(len(order)):
+        i = order[ai]
+        for bi in range(ai + 1, len(order)):
+            j = order[bi]
+            if tags[j].timestamp_s - tags[i].timestamp_s > time_window_s:
                 break
-            if _iou(ti.bbox_xyxy, tj.bbox_xyxy) < iou_threshold:
+            if find(i) == find(j):
                 continue
-            if not _content_matches(ti, tj):
-                continue
-            union(i, j)
+            if _content_proximity_merge(tags[i], tags[j], iou_threshold, time_window_s):
+                union(i, j)
 
     groups: defaultdict[int, list[int]] = defaultdict(list)
     for i in range(len(tags)):
@@ -426,11 +527,14 @@ def dedup_final_tags(
         if len(ids) == 1:
             merged.append(tags[ids[0]])
             continue
-        # Pick the highest-confidence as representative; merge source_frames.
         members = [tags[i] for i in ids]
-        rep = max(members, key=lambda t: t.overall_confidence)
-        merged_frames = sorted({f for m in members for f in m.source_frames})
-        rep.source_frames = merged_frames
+        # Representative: prefer one carrying a barcode (matches GT by the
+        # primary key), then highest confidence.
+        rep = max(
+            members,
+            key=lambda t: (_tag_barcode(t) is not None, t.overall_confidence),
+        )
+        rep.source_frames = sorted({f for m in members for f in m.source_frames})
         rep.n_observations = sum(m.n_observations for m in members)
         merged.append(rep)
     return merged
@@ -452,21 +556,6 @@ def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
     union = area_a + area_b - inter
     return inter / union if union > 0 else 0.0
-
-
-def _content_matches(a: FinalTag, b: FinalTag) -> bool:
-    # Prices are the strongest signal — if both have regular prices that disagree, refuse merge.
-    if a.regular_price is not None and b.regular_price is not None:
-        if abs(a.regular_price - b.regular_price) > 0.5:
-            return False
-        return True
-    if a.loyalty_price is not None and b.loyalty_price is not None:
-        if abs(a.loyalty_price - b.loyalty_price) > 0.5:
-            return False
-        return True
-    if a.product_name and b.product_name:
-        return _name_ratio(a.product_name.lower(), b.product_name.lower()) >= 0.80
-    return False
 
 
 def _name_ratio(a: str, b: str) -> float:

@@ -82,7 +82,7 @@ def test_dedup_merges_overlapping_same_price_tracks():
                  source_frames=[10, 11, 12], regular_price=129.99, overall_confidence=0.8, n_observations=3)
     b = FinalTag(track_id=2, bbox_xyxy=(2, 2, 102, 102), timestamp_s=1.1,
                  source_frames=[40, 41], regular_price=129.99, overall_confidence=0.7, n_observations=2)
-    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_frames=50)
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=2.0)
     assert len(merged) == 1
     # Source frames merged.
     assert set(merged[0].source_frames) == {10, 11, 12, 40, 41}
@@ -93,8 +93,102 @@ def test_dedup_keeps_distinct_when_prices_differ():
                  source_frames=[10], regular_price=99.99, overall_confidence=0.8, n_observations=1)
     b = FinalTag(track_id=2, bbox_xyxy=(0, 0, 100, 100), timestamp_s=1.0,
                  source_frames=[12], regular_price=149.99, overall_confidence=0.7, n_observations=1)
-    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_frames=50)
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=2.0)
     assert len(merged) == 2
+
+
+# --- The moving-camera ID-switch scenario (the reason content-keyed dedup
+#     exists): one physical tag fragments into two tracks whose boxes do NOT
+#     overlap because the robot moved between them. The old IoU>thr gate left
+#     the duplicate uncollapsed. ---
+
+def test_dedup_same_barcode_merges_despite_zero_iou_and_time_gap():
+    a = FinalTag(track_id=1, bbox_xyxy=(0, 0, 50, 50), timestamp_s=1.0,
+                 source_frames=[10, 11], regular_price=129.99, overall_confidence=0.6,
+                 n_observations=2, extra_fields={"barcode": "4601234567890"})
+    b = FinalTag(track_id=2, bbox_xyxy=(900, 900, 960, 960), timestamp_s=31.0,
+                 source_frames=[600, 601], regular_price=129.99, overall_confidence=0.9,
+                 n_observations=2, extra_fields={"qr_code_barcode": "4601234567890"})
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=8.0)
+    assert len(merged) == 1
+    assert set(merged[0].source_frames) == {10, 11, 600, 601}
+    # Representative must carry the barcode (GT primary key).
+    bc = merged[0].extra_fields.get("barcode") or merged[0].extra_fields.get("qr_code_barcode")
+    assert bc == "4601234567890"
+
+
+def test_dedup_different_barcodes_never_merged_even_overlapping():
+    a = FinalTag(track_id=1, bbox_xyxy=(0, 0, 100, 100), timestamp_s=1.0,
+                 source_frames=[10], regular_price=99.99, overall_confidence=0.8,
+                 n_observations=1, extra_fields={"barcode": "4601111111111"})
+    b = FinalTag(track_id=2, bbox_xyxy=(0, 0, 100, 100), timestamp_s=1.0,
+                 source_frames=[11], regular_price=99.99, overall_confidence=0.7,
+                 n_observations=1, extra_fields={"barcode": "4602222222222"})
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=8.0)
+    assert len(merged) == 2
+
+
+def test_dedup_low_iou_same_price_and_name_merges():
+    # No barcode (the common in-motion case). Camera moved → IoU 0, but price
+    # AND name agree → same physical tag.
+    a = FinalTag(track_id=1, bbox_xyxy=(0, 0, 100, 100), timestamp_s=1.0,
+                 source_frames=[10], regular_price=129.99, product_name="Молоко Простоквашино 3.2%",
+                 overall_confidence=0.7, n_observations=1)
+    b = FinalTag(track_id=2, bbox_xyxy=(600, 0, 700, 100), timestamp_s=1.4,
+                 source_frames=[18], regular_price=129.99, product_name="Молоко Простоквашино 3.2%",
+                 overall_confidence=0.6, n_observations=1)
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=8.0)
+    assert len(merged) == 1
+
+
+def test_dedup_low_iou_same_price_diff_name_kept_distinct():
+    # Precision guard: two different products that merely share a price must
+    # NOT be merged when boxes don't overlap.
+    a = FinalTag(track_id=1, bbox_xyxy=(0, 0, 100, 100), timestamp_s=1.0,
+                 source_frames=[10], regular_price=129.99, product_name="Молоко Простоквашино",
+                 overall_confidence=0.7, n_observations=1)
+    b = FinalTag(track_id=2, bbox_xyxy=(600, 0, 700, 100), timestamp_s=1.4,
+                 source_frames=[18], regular_price=129.99, product_name="Хлеб Бородинский",
+                 overall_confidence=0.6, n_observations=1)
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=8.0)
+    assert len(merged) == 2
+
+
+def test_dedup_no_barcode_outside_time_window_not_merged():
+    a = FinalTag(track_id=1, bbox_xyxy=(0, 0, 100, 100), timestamp_s=1.0,
+                 source_frames=[10], regular_price=129.99, product_name="Молоко",
+                 overall_confidence=0.7, n_observations=1)
+    b = FinalTag(track_id=2, bbox_xyxy=(0, 0, 100, 100), timestamp_s=40.0,
+                 source_frames=[800], regular_price=129.99, product_name="Молоко",
+                 overall_confidence=0.6, n_observations=1)
+    merged = dedup_final_tags([a, b], iou_threshold=0.4, time_window_s=8.0)
+    assert len(merged) == 2
+
+
+def test_finaltag_reports_best_frame_bbox_not_last_seen():
+    # P0 #3: the emitted bbox/timestamp must be the strongest-recognition
+    # frame, not state.last_bbox (the tag leaving the frame edge).
+    agg = TrackAggregator(_cfg(min_obs=2, min_conf=0.0))
+    best = TagObservation(
+        frame_idx=5, timestamp_s=5 / 30.0, track_id=3,
+        bbox_xyxy=(100, 100, 300, 260),
+        parsed=ParsedTag(regular_price=99.99, regular_price_confidence=0.95, currency="RUB"),
+        detection_confidence=0.95, sharpness=400.0,
+    )
+    weak = TagObservation(
+        frame_idx=20, timestamp_s=20 / 30.0, track_id=3,
+        bbox_xyxy=(1, 1, 40, 30),  # tiny, near origin: the leaving-frame box
+        parsed=ParsedTag(regular_price=99.99, regular_price_confidence=0.30, currency="RUB"),
+        detection_confidence=0.30, sharpness=15.0,
+    )
+    agg.add_observation(best)
+    agg.add_observation(weak)
+    # last_seen is the weak, leaving-frame box — must NOT be what we report.
+    agg.mark_seen(3, 30, (0, 0, 20, 15))
+    out = agg.flush_all()
+    assert len(out) == 1
+    assert out[0].bbox_xyxy == (100, 100, 300, 260)
+    assert abs(out[0].timestamp_s - 5 / 30.0) < 1e-6
 
 
 def test_extra_fields_are_voted_into_final_tag():
