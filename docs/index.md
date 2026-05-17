@@ -51,6 +51,7 @@ thin pointers here — do not duplicate knowledge into them.
 | Raw organizer decks (heavy — don't open) | [hackathon/source-materials.md](./hackathon/source-materials.md) |
 | Which model / why / training plan | [strategy.md](./strategy.md) |
 | Run inference / CSV / UI / CLI flags | [pipeline-reference.md](./pipeline-reference.md) |
+| **`import cv2` fails / new worktree env setup** | [runbooks/venv-setup.md](./runbooks/venv-setup.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
 | Colab — zero-shot GPU baseline | [runbooks/colab-baseline.md](./runbooks/colab-baseline.md) |
 | Colab — full pipeline on real videos | [runbooks/colab-real-data.md](./runbooks/colab-real-data.md) |

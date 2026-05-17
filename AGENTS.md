@@ -65,7 +65,9 @@ See [`docs/branches.md`](./docs/branches.md).
 
 - **No cloud APIs / external online services at inference.** The shipped
   pipeline must run fully local. Heavy training off-box is allowed; document it.
-- **No global pip.** Use a `uv`-managed `.venv`. See project memory.
+- **No global pip.** Use a `uv`-managed `.venv` on Python 3.12 (the global
+  Python is 3.14 — too new; `cv2` won't import there). Each worktree needs its
+  own. Setup: [`docs/runbooks/venv-setup.md`](./docs/runbooks/venv-setup.md).
 - **`frame_timestamp` is milliseconds** from video start, never a frame index.
 - **Non-ASCII paths must work.** Route still-image I/O through
   `price_tag_pipeline.cv_io`; never call `cv2.imread/imwrite` directly.
