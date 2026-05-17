@@ -17,10 +17,26 @@ if str(SRC) not in sys.path:
 from price_tag_pipeline.data.cvat import (  # noqa: E402
     LENTA_COLUMNS,
     build_label_spec,
+    MODEL_BACKED_SOURCES,
+    candidates_csv_to_image_boxes,
+    cvat_images_to_yolo,
     cvat_video_to_lenta_rows,
+    image_boxes_to_cvat_images_xml,
+    cvat_video_to_yolo,
+    has_substantive_annotations,
+    interpolate_track_boxes,
     lenta_rows_to_cvat_video_xml,
     parse_cvat_xml,
 )
+
+
+def _video_xml(tracks_xml: str, w: int = 100, h: int = 100) -> str:
+    return f"""<?xml version="1.0"?>
+    <annotations><version>1.1</version>
+      <meta><task><original_size><width>{w}</width><height>{h}</height>
+      </original_size></task></meta>
+      {tracks_xml}
+    </annotations>"""
 
 FPS = 25.0
 FRAMES = 1000
@@ -32,14 +48,9 @@ def _row(**kw: str) -> dict[str, str]:
     return r
 
 
-def test_label_spec_has_price_tag_and_categorical_attrs() -> None:
+def test_label_spec_is_bare_price_tag_rectangle() -> None:
     spec = build_label_spec()
-    assert len(spec) == 1 and spec[0]["name"] == "price_tag"
-    by_name = {a["name"]: a for a in spec[0]["attributes"]}
-    assert by_name["color"]["input_type"] == "select"
-    assert "red" in by_name["color"]["values"]
-    assert by_name["special_symbols"]["input_type"] == "select"
-    assert by_name["product_name"]["input_type"] == "text"
+    assert spec == [{"name": "price_tag", "type": "rectangle", "attributes": []}]
 
 
 def test_video_round_trip_preserves_bbox_attrs_and_ms() -> None:
@@ -91,6 +102,121 @@ def test_bad_rows_are_skipped_not_fatal() -> None:
     assert len(doc.tracks) == 1  # only the valid row became a track
 
 
+def test_interpolation_makes_dense_boxes_between_keyframes() -> None:
+    # Two keyframes 4 frames apart -> a box on every frame 0..4.
+    xml = _video_xml("""
+      <track id="0" label="price_tag" source="manual">
+        <box frame="0" xtl="0" ytl="0" xbr="10" ybr="10" outside="0" occluded="0" keyframe="1"/>
+        <box frame="4" xtl="40" ytl="0" xbr="50" ybr="10" outside="0" occluded="0" keyframe="1"/>
+      </track>""")
+    doc = parse_cvat_xml(xml)
+    pts = interpolate_track_boxes(doc.tracks[0])
+    frames = {p[0] for p in pts}
+    assert frames == {0, 1, 2, 3, 4}
+    by_f = {p[0]: p[1:] for p in pts}
+    assert by_f[0] == (0.0, 0.0, 10.0, 10.0)
+    assert by_f[4] == (40.0, 0.0, 50.0, 10.0)
+    assert by_f[2][0] == 20.0  # x0 linearly interpolated at midpoint
+
+    labels = cvat_video_to_yolo(doc, width=100, height=100)
+    assert sorted(labels) == [0, 1, 2, 3, 4]
+    assert labels[2] == ["0 0.250000 0.050000 0.100000 0.100000"]
+
+
+def test_single_keyframe_track_yields_one_frame() -> None:
+    # The seed style (one keyframe + an 'outside' terminator) -> exactly 1 box.
+    xml = _video_xml("""
+      <track id="0" label="price_tag" source="manual">
+        <box frame="7" xtl="1" ytl="1" xbr="9" ybr="9" outside="0" occluded="0" keyframe="1"/>
+        <box frame="8" xtl="1" ytl="1" xbr="9" ybr="9" outside="1" occluded="0" keyframe="1"/>
+      </track>""")
+    doc = parse_cvat_xml(xml)
+    pts = interpolate_track_boxes(doc.tracks[0])
+    assert [p[0] for p in pts] == [7]
+
+
+def test_boxes_only_is_detected_as_non_substantive() -> None:
+    boxes_only = parse_cvat_xml(_video_xml("""
+      <track id="0" label="price_tag" source="manual">
+        <box frame="0" xtl="0" ytl="0" xbr="5" ybr="5" outside="0" occluded="0" keyframe="1"/>
+      </track>"""))
+    assert has_substantive_annotations(boxes_only) is False
+
+    with_field = parse_cvat_xml(_video_xml("""
+      <track id="0" label="price_tag" source="manual">
+        <box frame="0" xtl="0" ytl="0" xbr="5" ybr="5" outside="0" occluded="0" keyframe="1">
+          <attribute name="color">red</attribute>
+        </box>
+      </track>"""))
+    assert has_substantive_annotations(with_field) is True
+
+
+def test_candidates_csv_filters_type_and_round_trips_images() -> None:
+    rows = [
+        # merged_final, absolute coords, portrait
+        {"image_key": "a.jpg", "image_width": "4080", "image_height": "3060",
+         "candidate_type": "merged_final", "confidence": "0.9",
+         "x_min": "100", "y_min": "200", "x_max": "300", "y_max": "500"},
+        # second box on same image, via YOLO-normalized fallback (no absolutes)
+        {"image_key": "a.jpg", "image_width": "4080", "image_height": "3060",
+         "candidate_type": "merged_final", "confidence": "",
+         "x_min": "", "y_min": "", "x_max": "", "y_max": "",
+         "yolo_x_center": "0.5", "yolo_y_center": "0.5",
+         "yolo_width": "0.1", "yolo_height": "0.2"},
+        # raw candidate — must be ignored
+        {"image_key": "a.jpg", "image_width": "4080", "image_height": "3060",
+         "candidate_type": "model_raw", "confidence": "0.8",
+         "x_min": "1", "y_min": "1", "x_max": "9", "y_max": "9"},
+        # landscape image
+        {"image_key": "b.jpg", "image_width": "8160", "image_height": "6120",
+         "candidate_type": "merged_final", "confidence": "0.7",
+         "x_min": "10", "y_min": "20", "x_max": "60", "y_max": "120"},
+    ]
+    boxes = candidates_csv_to_image_boxes(rows)  # default {"merged_final"}
+    assert set(boxes) == {"a.jpg", "b.jpg"}
+    assert len(boxes["a.jpg"].boxes) == 2  # absolute + yolo fallback, not raw
+    assert boxes["a.jpg"].width == 4080 and boxes["b.jpg"].height == 6120
+
+    xml = image_boxes_to_cvat_images_xml(
+        [boxes["a.jpg"], boxes["b.jpg"]], task_name="friends_scene_1"
+    )
+    doc = parse_cvat_xml(xml)
+    assert doc.mode == "images" and len(doc.images) == 2
+    yolo = cvat_images_to_yolo(doc)
+    aw, ah, alines = yolo["a.jpg"]
+    assert (aw, ah) == (4080, 3060) and len(alines) == 2
+    # first box centre: ((100+300)/2)/4080, ((200+500)/2)/3060
+    assert alines[0].startswith("0 0.049020 0.114379 ")
+
+
+def test_candidates_csv_source_filter_drops_color_cv() -> None:
+    rows = [
+        {"image_key": "i.jpg", "image_width": "100", "image_height": "100",
+         "candidate_type": "merged_final", "source": "openfoodfacts_yolo",
+         "x_min": "1", "y_min": "1", "x_max": "9", "y_max": "9"},
+        {"image_key": "i.jpg", "image_width": "100", "image_height": "100",
+         "candidate_type": "merged_final", "source": "classic_color_cv",
+         "x_min": "2", "y_min": "2", "x_max": "8", "y_max": "8"},
+        {"image_key": "i.jpg", "image_width": "100", "image_height": "100",
+         "candidate_type": "merged_final", "source": "merged_yolo_color_overlap",
+         "x_min": "3", "y_min": "3", "x_max": "7", "y_max": "7"},
+    ]
+    keep = candidates_csv_to_image_boxes(rows, sources=MODEL_BACKED_SOURCES)
+    assert len(keep["i.jpg"].boxes) == 2  # yolo + overlap, color_cv dropped
+    assert "classic_color_cv" not in MODEL_BACKED_SOURCES
+    assert len(candidates_csv_to_image_boxes(rows)["i.jpg"].boxes) == 3  # no filter
+
+
+def test_candidates_csv_min_conf_filter() -> None:
+    rows = [
+        {"image_key": "x.jpg", "image_width": "100", "image_height": "100",
+         "candidate_type": "merged_final", "confidence": "0.3",
+         "x_min": "1", "y_min": "1", "x_max": "9", "y_max": "9"},
+    ]
+    assert candidates_csv_to_image_boxes(rows, min_conf=0.5) == {}
+    assert "x.jpg" in candidates_csv_to_image_boxes(rows, min_conf=0.2)
+
+
 def test_image_export_parses_as_photos() -> None:
     xml = """<?xml version="1.0"?>
     <annotations><version>1.1</version>
@@ -107,3 +233,8 @@ def test_image_export_parses_as_photos() -> None:
     im = doc.images[0]
     assert im.name == "shot1.jpg" and im.width == 4000
     assert len(im.boxes) == 1 and im.boxes[0].attrs["color"] == "yellow"
+
+    yolo = cvat_images_to_yolo(doc)
+    w, h, lines = yolo["shot1.jpg"]
+    assert (w, h) == (4000, 3000) and len(lines) == 1
+    assert lines[0].startswith("0 ")
