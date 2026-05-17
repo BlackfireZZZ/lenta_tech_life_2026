@@ -15,6 +15,7 @@ All knowledge lives in **[`docs/`](./docs/index.md)** — start at
 |---|---|
 | Official task, CSV schema, metric | [docs/hackathon/task.md](./docs/hackathon/task.md) |
 | Organizer-chat intel & gotchas | [docs/hackathon/briefing.md](./docs/hackathon/briefing.md) |
+| App/service architecture (backend·frontend·ML) | [docs/architecture.md](./docs/architecture.md) |
 | Model & pipeline strategy | [docs/strategy.md](./docs/strategy.md) |
 | CLI / profiles / backends / output | [docs/pipeline-reference.md](./docs/pipeline-reference.md) |
 | Runbooks (local + Colab) | [docs/runbooks/](./docs/runbooks/local.md) |
@@ -22,16 +23,30 @@ All knowledge lives in **[`docs/`](./docs/index.md)** — start at
 | Branch map | [docs/branches.md](./docs/branches.md) |
 | Pre-rewrite analysis (historical) | [docs/analysis.md](./docs/analysis.md) |
 
+## Layout
+
+Monorepo: the **model** (training/experiments/research) lives in
+`projects/price_tag_pipeline/`; the **product** around it is
+`backend/` (API gateway) · `frontend/` (SPA) · `ml/` (deployable service
+wrapping the pipeline) + `docker-compose.yaml`. The service stack is
+currently a **reviewable skeleton** — structure and contracts in place,
+business logic intentionally not written yet. See
+[`docs/architecture.md`](./docs/architecture.md).
+
 ## Quick start
 
 ```bash
-# Install (Python 3.11/3.12; use a uv-managed .venv, not global pip).
+# Model — tests need no data, model, or GPU (use a uv-managed .venv).
 pip install -r projects/price_tag_pipeline/requirements.txt
-
-# Tests need no data, model, or GPU.
 pytest projects/price_tag_pipeline/tests -v
+
+# Whole product skeleton (mocked: no GPU/DB needed).
+docker compose up --build
+# frontend :5173 · backend :8000 (/docs) · ml :8002
 ```
 
-Full setup, data staging, training, inference, CSV export and the UI are in
+Model setup, training, inference, CSV export:
 [`docs/pipeline-reference.md`](./docs/pipeline-reference.md) and the
-[runbooks](./docs/runbooks/local.md). `main` is the canonical branch.
+[runbooks](./docs/runbooks/local.md). Service architecture & build order:
+[`docs/architecture.md`](./docs/architecture.md). `main` is the canonical
+branch.

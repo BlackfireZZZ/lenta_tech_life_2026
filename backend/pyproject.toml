@@ -1,0 +1,27 @@
+[project]
+name = "lenta-gateway"
+version = "0.1.0"
+description = "Price-tag gateway API — the only public service (auth, jobs, ML client)."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    "pydantic-settings",
+    "python-multipart",          # multipart video upload
+    "httpx",                     # → ML service
+    # --- enabled when persistence/auth land (see docs/architecture.md) ---
+    # "sqlalchemy[asyncio]",
+    # "asyncpg",
+    # "alembic",
+    # "redis",
+    # "pyjwt",
+    # "argon2-cffi",
+    # "itsdangerous",
+]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "black", "isort"]
+
+[tool.isort]
+profile = "black"

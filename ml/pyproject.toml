@@ -1,0 +1,17 @@
+[project]
+name = "lenta-ml-service"
+version = "0.1.0"
+description = "Deployable HTTP wrapper around the price_tag_pipeline package."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    # The actual model code. Path dependency — research/training lives there,
+    # this service just imports its public entry point (see app/runner.py).
+    # Enable when serving for real:
+    # "price-tag-pipeline @ file:../projects/price_tag_pipeline",
+]
+
+[dependency-groups]
+dev = ["pytest"]

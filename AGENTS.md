@@ -28,6 +28,8 @@ Priority reads:
    §10 reconciles old assumptions with ground truth.
 5. [`docs/pipeline-reference.md`](./docs/pipeline-reference.md) — current CLI,
    profiles, backends, output schema.
+6. [`docs/architecture.md`](./docs/architecture.md) — the product around the
+   model: monorepo layout, backend/frontend/ML contracts, build order.
 
 Raw organizer decks are heavy binaries in `real_data/materials/` (gitignored,
 local-only) — **never open them**; they are fully distilled into the docs
@@ -37,7 +39,11 @@ above. See [`docs/hackathon/source-materials.md`](./docs/hackathon/source-materi
 
 ```
 docs/                          single source of truth (start at index.md)
-projects/price_tag_pipeline/   the pipeline
+backend/                       FastAPI gateway — only public service (mocked)
+frontend/                      React + Vite SPA (placeholder)
+ml/                            deployable ML service wrapping the pipeline (mocked)
+docker-compose.yaml            whole product, one command
+projects/price_tag_pipeline/   THE MODEL: training, experiments, research
   src/price_tag_pipeline/      detector→rectifier→ocr→qr→parser→aggregator
   scripts/                     CLI entry points (prepare/train/infer/export/UI)
   configs/                     runtime profiles (fast/balanced/hq/zeroshot/…)
@@ -45,6 +51,11 @@ projects/price_tag_pipeline/   the pipeline
 data/                          raw/processed/splits/checkpoints (mostly gitignored)
 real_data/                     untouched local source of truth — never committed
 ```
+
+`backend`/`frontend`/`ml` are a **reviewable skeleton**: structure and
+contracts are in place; business logic is deliberately not written yet
+(backend `MOCK_MODE`, ml fake CSV, frontend placeholder). Architecture and
+build order: [`docs/architecture.md`](./docs/architecture.md).
 
 Branch: **`main` is canonical** and supersedes `feature/full-autonomous-demo`.
 See [`docs/branches.md`](./docs/branches.md).

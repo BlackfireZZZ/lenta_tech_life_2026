@@ -13,6 +13,13 @@ thin pointers here — do not duplicate knowledge into them.
 > `git switch feature/full-autonomous-demo` still work, but `main` is the
 > recommended target. See [`branches.md`](./branches.md).
 
+> **Monorepo note.** The model (training/experiments) lives in
+> `projects/price_tag_pipeline/`; the product around it —
+> `backend/` (API gateway), `frontend/` (SPA), `ml/` (deployable service
+> wrapping the pipeline) + `docker-compose.yaml` — is described in
+> **[architecture.md](./architecture.md)**. Those services are currently a
+> reviewable skeleton (mocked, no business logic yet) by design.
+
 ## Read in this order
 
 1. **[hackathon/task.md](./hackathon/task.md)** — the official task: the 29-column
@@ -38,6 +45,7 @@ thin pointers here — do not duplicate knowledge into them.
 | Need | Doc |
 |---|---|
 | What exactly to build & how it's scored | [hackathon/task.md](./hackathon/task.md), [hackathon/briefing.md](./hackathon/briefing.md) |
+| **App/service architecture (backend + frontend + ML)** | [architecture.md](./architecture.md) |
 | **Where each field sits on the tag (OCR)** | [hackathon/price-tag-guide.md](./hackathon/price-tag-guide.md) |
 | Raw organizer decks (heavy — don't open) | [hackathon/source-materials.md](./hackathon/source-materials.md) |
 | Which model / why / training plan | [strategy.md](./strategy.md) |

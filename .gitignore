@@ -157,6 +157,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# Node / frontend
+node_modules/
+frontend/.env
+frontend/openapi.json
+backend/.env
+
 # Spyder project settings
 .spyderproject
 .spyproject
