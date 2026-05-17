@@ -9,8 +9,8 @@ Heavy backends (cv2, paddle, transformers) stay lazily imported inside the
 engine modules; importing this package is cheap.
 """
 
-from .base import CropDecoder, RecognitionResult, parsed_is_empty
 from .barcode import BarcodeDecoder
+from .base import CropDecoder, RecognitionResult, parsed_is_empty
 from .chain import RecognitionChain, build_recognition_chain
 from .ocr import BaseOCREngine, OCRDecoder, build_ocr_engine
 from .qr import QRCodeExtractor, QRDecoder, parse_qr_payload
