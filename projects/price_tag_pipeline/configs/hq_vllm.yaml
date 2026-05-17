@@ -26,7 +26,7 @@ detector:
   iou: 0.50
   device: null
   classes: null
-  tracker_yaml: botsort.yaml
+  tracker_yaml: configs/trackers/botsort.yaml
   image_size: 1280
 
 rectifier:

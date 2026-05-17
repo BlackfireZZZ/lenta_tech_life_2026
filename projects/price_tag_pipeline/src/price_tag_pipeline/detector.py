@@ -29,6 +29,11 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_FPS_FALLBACK = 30.0
 HF_MODEL_PREFIX = "hf://"
 
+# Names Ultralytics resolves from *its own* bundled cfg/trackers/ when passed
+# bare. We ship tuned same-named files under configs/trackers/; the resolver
+# below makes those win so the tuned config is not silently ignored.
+ULTRALYTICS_BUILTIN_TRACKERS = {"botsort.yaml", "bytetrack.yaml"}
+
 
 def _require_cv2():
     try:
@@ -113,6 +118,11 @@ class YOLOTrackerDetector(BaseDetector):
         # (useful for tests of parser/aggregator on a CI box without GPU deps).
         from ultralytics import YOLO  # type: ignore
 
+        # Resolve eagerly (before the model load / possible download) so a
+        # misconfigured tracker fails fast, not silently mid-stream on stock
+        # defaults.
+        self._tracker_yaml = resolve_tracker_yaml(self.cfg.tracker_yaml)
+        LOGGER.info("Tracker config: %s", self._tracker_yaml)
         self._YOLO = YOLO
         self.model = YOLO(model_path)
         if self.cfg.open_vocab_labels:
@@ -138,7 +148,7 @@ class YOLOTrackerDetector(BaseDetector):
             stream=True,
             conf=self.cfg.conf,
             iou=self.cfg.iou,
-            tracker=self.cfg.tracker_yaml,
+            tracker=self._tracker_yaml,
             device=self.cfg.device,
             verbose=False,
             persist=True,
@@ -355,6 +365,74 @@ def resolve_detector_model_path(model_path: str) -> str:
         ) from exc
 
     return hf_hub_download(repo_id=repo_id, filename=filename)
+
+
+def _project_trackers_dir() -> Optional[Path]:
+    """``projects/price_tag_pipeline/configs/trackers`` derived from this file.
+
+    ``detector.py`` lives at ``<proj>/src/price_tag_pipeline/detector.py`` for
+    an editable install, so the project root is ``parents[2]``. Returns ``None``
+    when the package is installed non-editably (no sibling ``configs/``), in
+    which case resolution falls back to CWD-relative lookup.
+    """
+    candidate = Path(__file__).resolve().parents[2] / "configs" / "trackers"
+    return candidate if candidate.is_dir() else None
+
+
+def resolve_tracker_yaml(tracker_yaml: str) -> str:
+    """Resolve the tracker config to an absolute path Ultralytics will load.
+
+    The bug this fixes: a bare value like ``botsort.yaml`` makes Ultralytics
+    load *its own* bundled config and silently ignore the project's tuned
+    tracker, so every tracker-tuning change is a no-op. We resolve project /
+    relative paths to an absolute path so the tuned config actually takes
+    effect.
+
+    Resolution order:
+    1. Existing path (absolute, or relative to CWD) → absolute path.
+    2. Existing path relative to the project root → absolute path.
+    3. Bare ``<name>.yaml`` matching a file under ``configs/trackers/`` → that
+       tuned file (so a profile that still says just ``botsort.yaml`` upgrades
+       to the tuned one instead of Ultralytics' stock defaults).
+    4. A bare Ultralytics builtin with no project match → passed through with a
+       loud warning (stock, untuned — a tuning regression worth surfacing).
+    5. Anything else missing → ``FileNotFoundError`` (fail fast, not silently
+       fall back to stock).
+    """
+    raw = str(tracker_yaml).strip()
+    if not raw:
+        raise ValueError("detector.tracker_yaml is empty")
+
+    p = Path(raw).expanduser()
+    if p.is_file():
+        return str(p.resolve())
+
+    project_root = Path(__file__).resolve().parents[2]
+    rel_to_root = project_root / raw
+    if rel_to_root.is_file():
+        return str(rel_to_root.resolve())
+
+    trackers_dir = _project_trackers_dir()
+    if trackers_dir is not None:
+        by_name = trackers_dir / Path(raw).name
+        if by_name.is_file():
+            return str(by_name.resolve())
+
+    if raw in ULTRALYTICS_BUILTIN_TRACKERS:
+        LOGGER.warning(
+            "tracker_yaml=%r resolved to Ultralytics' STOCK bundled config "
+            "(no matching file under configs/trackers/). The tracker is "
+            "running UNTUNED for this moving-camera scenario. Point "
+            "detector.tracker_yaml at configs/trackers/%s.",
+            raw, raw,
+        )
+        return raw
+
+    raise FileNotFoundError(
+        f"tracker_yaml={raw!r} not found (looked at CWD, project root, and "
+        f"configs/trackers/). Use a path under configs/trackers/ or a builtin "
+        f"name ({sorted(ULTRALYTICS_BUILTIN_TRACKERS)})."
+    )
 
 
 # ---------------------------------------------------------------------------

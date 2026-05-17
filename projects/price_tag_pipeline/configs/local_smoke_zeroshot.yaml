@@ -23,7 +23,7 @@ detector:
     - "paper label"
     - "text sign"
     - "qr code"
-  tracker_yaml: botsort.yaml
+  tracker_yaml: configs/trackers/botsort.yaml
   image_size: 1920
 
 rectifier:

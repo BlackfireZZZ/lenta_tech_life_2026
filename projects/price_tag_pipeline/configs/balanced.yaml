@@ -12,7 +12,7 @@ detector:
   iou: 0.50
   device: null
   classes: null
-  tracker_yaml: botsort.yaml         # CMC helps because the robot moves
+  tracker_yaml: configs/trackers/botsort.yaml         # CMC helps because the robot moves
   image_size: 1280
 
 rectifier:

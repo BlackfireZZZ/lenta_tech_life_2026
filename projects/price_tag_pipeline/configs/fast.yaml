@@ -12,7 +12,7 @@ detector:
   iou: 0.50
   device: null
   classes: null            # null = use all classes the trained model knows
-  tracker_yaml: bytetrack.yaml
+  tracker_yaml: configs/trackers/bytetrack.yaml
   image_size: 960
 
 rectifier:
