@@ -65,6 +65,23 @@ Licenses vary per dataset (mostly CC BY 4.0); check each project page.
 3. Hold one organizer video out (`data/splits/`) as the only *real* val signal;
    external sets are train-only (domain shift — they are not Lenta tags).
 
+## Current external processing pipeline
+
+The reproducible intake/conversion script is
+[`projects/price_tag_pipeline/scripts/prepare_external_datasets.py`](../../projects/price_tag_pipeline/scripts/prepare_external_datasets.py).
+It reads raw downloads from `../dataset_research/` by default, or from
+`DATASET_RESEARCH_ROOT` when that environment variable is set.
+
+It builds task-specific research datasets instead of mixing incompatible labels:
+
+```bash
+python projects/price_tag_pipeline/scripts/prepare_external_datasets.py status
+python projects/price_tag_pipeline/scripts/prepare_external_datasets.py build-available
+```
+
+Current processed-output notes are in
+[`external-dataset-processing-report.md`](./external-dataset-processing-report.md).
+
 Sources: [SKU-110K](https://github.com/eg4000/SKU110K_CVPR19),
 [Ultralytics SKU-110K](https://docs.ultralytics.com/datasets/detect/sku-110k/),
 [Roboflow retail universe](https://universe.roboflow.com/browse/retail),
