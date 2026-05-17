@@ -92,7 +92,8 @@ Pure XML build/parse is cv2‑free and unit‑tested (`tests/test_cvat.py`,
 | Tool | Purpose | Key flags | Example |
 |---|---|---|---|
 | `cvat_prepare_task.py` | Emit the bare `price_tag` label spec + print task‑setup steps | `--label-spec`, `--rotate cw\|ccw` (off by default) | `… cvat_prepare_task.py --label-spec` |
-| `cvat_export_seed.py` | Released Lenta CSV → **CVAT‑video seed XML** (one track per tag) so you correct, not redraw | `--all --src <real_data>`, or `--csv --video`, `--out` | `… cvat_export_seed.py --all --src "E:/…/real_data/dataset" --out cvat_seeds` |
+| `cvat_video_frames_task.py` | **Slice videos every N s → image‑task seeds.** Organizer box kept only on the one sampled frame nearest its timestamp (no smear). Emits the bootstrap manifest | `--all --src <real_data>`, `--every 2.0`, `--out`, `--frames-dir` | `… cvat_video_frames_task.py --all --src "E:/…/real_data/dataset" --every 2.0` |
+| `cvat_export_seed.py` | *(legacy)* Released Lenta CSV → **CVAT‑video interpolation seed** (one track per tag). Superseded by `cvat_video_frames_task.py` for the released clips | `--all --src <real_data>`, `--out` | `… cvat_export_seed.py --all --src "E:/…/real_data/dataset" --out cvat_seeds` |
 | `cvat_bootstrap.py` | Create project + one **video task per released video**, upload mp4, import its seed (cvat‑sdk) | `--src`, `--seeds`, `--user/--password`, `--only` | `… cvat_bootstrap.py --src "E:/…/real_data/dataset" --seeds cvat_seeds --user admin --password ***` |
 | `cvat_from_external.py` | Friend dump (candidates CSV **or** classic YOLO‑txt) → N **chronological scene** image‑XMLs + `manifest.json` | `--csv` / `--yolo-labels`, `--model-backed`, `--sources`, `--scenes`, `--min-conf` | `… cvat_from_external.py --csv friends_labels/all_candidates2.csv --model-backed --images-dir friends_labels/dataset_lenta --scenes 4 --out cvat_seeds_friends` |
 | `cvat_bootstrap_photos.py` | Create one **image task per scene** from a manifest, upload photos, import seeds | `--manifest`, `--user/--password`, `--replace`, `--only` | `… cvat_bootstrap_photos.py --manifest cvat_seeds_friends/manifest.json --user admin --password ***` |
@@ -104,29 +105,40 @@ Pure XML build/parse is cv2‑free and unit‑tested (`tests/test_cvat.py`,
 
 ## 4. Workflows
 
-### A. Released videos (5 clips, seed already loaded)
+### A. Released videos — every-2-second image tasks (current approach)
 
-Tasks `25_12-20 … 49_5` exist with one track per released tag. Open a task:
+The organizer boxes are bad, so we **don't** smear them via interpolation.
+Each video is sliced one frame every 2 s into a plain **image task**
+`25_12-20 … 49_5`; each released tag's box is shown only on the **one
+sampled frame nearest its timestamp** (a hint of "a tag exists here"), never
+propagated. Box the rest yourself, detector-first, no fields.
 
-1. Fix obviously wrong seed boxes; **draw boxes on the many missing tags**.
-2. Per tag, set **2 keyframes** (first clear frame + last before it leaves);
-   CVAT interpolates the box on every frame between → dozens of labelled
-   detector frames for two clicks. Toggle **Outside** when it leaves; keep
-   the **same Track**. Don't touch fields.
-3. **Export** → "CVAT for video 1.1", *Save images OFF*.
-4. Hand back → I run:
+Rebuild the tasks (already done once — `--every` tunes the interval):
 
 ```bash
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_import.py \
-  --xml <export>/annotations.xml \
-  --video "E:/Hackatons/lenta_tech_life_2026/real_data/dataset/<id>/<id>.mp4"
-# auto: boxes-only → data/raw_det ; fields → data/raw  (force with --mode)
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/prepare_data.py \
-  --raw data/raw_det --processed data/processed_det
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_video_frames_task.py \
+  --all --src "E:/Hackatons/lenta_tech_life_2026/real_data/dataset" --every 2.0
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_bootstrap_photos.py \
+  --manifest cvat_seeds_frames/manifest.json --user admin --password *** [--replace]
 ```
 
-(Re)generate seeds yourself with `cvat_export_seed.py --all …`; load via the
-task's **Actions → Upload annotations → "CVAT 1.1"**.
+In each task: fix/replace the hint boxes, add every missing tag. **Export
+→ "CVAT for images 1.1"**, *Save images OFF*. Hand back → I run:
+
+```bash
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_pull_pack.py \
+  --tasks 25_12-20,25_2-10,26_12-20,43_15,49_5 \
+  --images-dir cvat_frames --set-name video_frames \
+  --user admin --password *** --into data/raw_photos
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/prepare_data.py \
+  --raw data/raw_photos --processed data/processed_photos
+```
+
+> The old interpolation flow (`cvat_export_seed.py` + `cvat_bootstrap.py`,
+> tracks + `cvat_import.py --video`) still works and is the only way to get
+> cross-track-dedup `track_id` ground truth — but for the released clips the
+> sampled image-task flow above is preferred (the organizer tracks were
+> "ужасные").
 
 ### B. Your own store photos
 
