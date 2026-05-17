@@ -68,8 +68,8 @@ python projects/price_tag_pipeline/scripts/prepare_data.py \\
 Or regenerate straight from CVAT next time:
 `cvat_pull_pack.py --tasks ... --into data/raw_photos` (idempotent per set).
 
-Filenames are the originals (unique camera timestamps) so re-runs and
-multi-source merges never collide.
+Filenames are `<scene>__<original>` so re-runs and multi-source /
+multi-video merges never collide.
 """
 
 
@@ -136,10 +136,18 @@ def main() -> int:
 
             for fi, fr in enumerate(frames):
                 fname = Path(fr.name).name
+                # photos sit flat in --images-dir; sliced video frames sit in
+                # <images-dir>/<task>/ and reuse 000123.jpg across videos.
                 src = a.images_dir / fname
                 if not src.exists():
+                    src = a.images_dir / name / fname
+                if not src.exists():
+                    src = next(a.images_dir.rglob(fname), None)
+                if src is None or not src.exists():
                     LOGGER.warning("[%s] source image %s missing — skipped", name, fname)
                     continue
+                # scene-prefix the output so multi-video/-source merges never collide
+                out_stem = f"{name}__{Path(fname).stem}"
                 w, h = fr.width, fr.height
                 lines = []
                 for pts in boxes_by_frame.get(fi, []):
@@ -152,7 +160,7 @@ def main() -> int:
                         f"0 {((x0 + x1) / 2) / w:.6f} {((y0 + y1) / 2) / h:.6f} "
                         f"{(x1 - x0) / w:.6f} {(y1 - y0) / h:.6f}"
                     )
-                dst_img = img_dir / fname
+                dst_img = img_dir / f"{out_stem}.jpg"
                 if src.suffix.lower() in (".jpg", ".jpeg"):
                     shutil.copy2(src, dst_img)
                 else:
@@ -160,9 +168,8 @@ def main() -> int:
                     if im is None:
                         LOGGER.warning("cannot read %s — skipped", src)
                         continue
-                    dst_img = dst_img.with_suffix(".jpg")
                     imwrite(dst_img, im)
-                (lbl_dir / f"{dst_img.stem}.txt").write_text(
+                (lbl_dir / f"{out_stem}.txt").write_text(
                     "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
                 )
                 manifest.append((name, fname, str(len(lines))))
