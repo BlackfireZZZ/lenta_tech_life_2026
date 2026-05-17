@@ -277,3 +277,4 @@ data/processed_det/
 # External / friend-provided raw datasets + their CVAT seeds (heavy, like real_data/)
 friends_labels/
 cvat_seeds_friends/
+cvat_exports/
