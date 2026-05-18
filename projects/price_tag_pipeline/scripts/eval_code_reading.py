@@ -76,6 +76,8 @@ def main() -> int:
     p.add_argument("--weights", default=None)
     p.add_argument("--device", default="0")
     p.add_argument("--max-frames", type=int, default=4000)
+    p.add_argument("--fuse", type=int, default=0,
+                   help="also median-fuse this many sharpest crops/track and decode (Level-2)")
     p.add_argument("--json-out", default="runs/code_reading.json")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -83,6 +85,7 @@ def main() -> int:
     from price_tag_pipeline.aggregator import TrackAggregator
     from price_tag_pipeline.config import load_config
     from price_tag_pipeline.detector import build_detector
+    from price_tag_pipeline.fusion import fuse_crops
     from price_tag_pipeline.recognition import build_recognition_chain
     from price_tag_pipeline.rectifier import build_rectifier
 
@@ -103,7 +106,7 @@ def main() -> int:
         v.stem for v in vdir.glob("*.mp4") if (gdir / f"{v.stem}.csv").is_file())
 
     rect = build_rectifier(cfg.rectifier)
-    totals = {"gt": 0, "old_hit": 0, "new_hit": 0,
+    totals = {"gt": 0, "old_hit": 0, "new_hit": 0, "fused_hit": 0,
               "old_dec": 0, "new_dec": 0}
     reports = []
     for stem in stems:
@@ -128,6 +131,7 @@ def main() -> int:
 
         old_dec: set[str] = set()
         new_dec: set[str] = set()
+        fused_dec: set[str] = set()
         for tid in list(agg._tracks.keys()):
             entries = agg.best_crops(tid, wide_k)
             for i, e in enumerate(entries):
@@ -138,29 +142,43 @@ def main() -> int:
                     new_dec |= g
                     if i < top_k:
                         old_dec |= g
+            if args.fuse > 0 and len(entries) >= 2:
+                fimg = fuse_crops([e.crop.image for e in entries[:args.fuse]],
+                                  max_frames=args.fuse)
+                if fimg is not None:
+                    for r in code_chain.decode(fimg):
+                        fused_dec |= _decoded_gtins(r.parsed)
+        # Level-2 is additive to the per-frame decodes (it rescues tags no
+        # single frame got): union with the wide-budget set.
+        fused_all = new_dec | fused_dec
         oh, nh = len(old_dec & gt), len(new_dec & gt)
+        fh = len(fused_all & gt)
         reports.append({"video": stem, "gt": len(gt),
                         "old_recall": round(oh / max(1, len(gt)), 3),
                         "new_recall": round(nh / max(1, len(gt)), 3),
-                        "old_hit": oh, "new_hit": nh,
+                        "fused_recall": round(fh / max(1, len(gt)), 3),
+                        "old_hit": oh, "new_hit": nh, "fused_hit": fh,
                         "old_dec": len(old_dec), "new_dec": len(new_dec)})
         totals["gt"] += len(gt)
         totals["old_hit"] += oh
         totals["new_hit"] += nh
+        totals["fused_hit"] += fh
         totals["old_dec"] += len(old_dec)
         totals["new_dec"] += len(new_dec)
         LOGGER.info(
-            "%-12s gt=%-3d  recall old(N=%d)=%.2f -> new(N=%d)=%.2f  "
-            "hits %d->%d  decoded %d->%d  (%.0fs)",
+            "%-12s gt=%-3d  recall old(N=%d)=%.2f new(N=%d)=%.2f "
+            "fused(+%d)=%.2f  hits %d/%d/%d  (%.0fs)",
             stem, len(gt), top_k, reports[-1]["old_recall"], wide_k,
-            reports[-1]["new_recall"], oh, nh,
-            reports[-1]["old_dec"], reports[-1]["new_dec"], time.time() - t0)
+            reports[-1]["new_recall"], args.fuse, reports[-1]["fused_recall"],
+            oh, nh, fh, time.time() - t0)
 
     g = max(1, totals["gt"])
     summ = {"videos": len(reports), "gt_total": totals["gt"],
             "old_recall": round(totals["old_hit"] / g, 3),
             "new_recall": round(totals["new_hit"] / g, 3),
-            "old_hits": totals["old_hit"], "new_hits": totals["new_hit"]}
+            "fused_recall": round(totals["fused_hit"] / g, 3),
+            "old_hits": totals["old_hit"], "new_hits": totals["new_hit"],
+            "fused_hits": totals["fused_hit"]}
     LOGGER.info("SUMMARY %s", json.dumps(summ, ensure_ascii=False))
     out = Path(args.json_out)
     out.parent.mkdir(parents=True, exist_ok=True)

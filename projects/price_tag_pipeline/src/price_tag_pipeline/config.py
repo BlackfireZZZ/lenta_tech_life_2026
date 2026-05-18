@@ -83,6 +83,10 @@ class OCRConfig:
     # decoders over far MORE of the track's best crops than OCR. Must be
     # >= top_k_crops_per_track to add anything; <=0 means "all buffered".
     code_decode_top_k: int = 24
+    # Level-2: median-fuse this many of the track's sharpest crops into one
+    # denoised image and decode THAT too (codes only). Targets tags where no
+    # single frame decodes. 0 = off (default; enable once benchmarked).
+    code_fuse_frames: int = 0
     vlm_model: str = "PaddlePaddle/PaddleOCR-VL"
     vlm_prompt_path: Optional[str] = None
     paddleocr_lang: str = "ru"
@@ -223,6 +227,7 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         min_detection_confidence=float(node["min_detection_confidence"]),
         top_k_crops_per_track=int(_opt(node, "top_k_crops_per_track", 5)),
         code_decode_top_k=int(_opt(node, "code_decode_top_k", 24)),
+        code_fuse_frames=int(_opt(node, "code_fuse_frames", 0)),
         vlm_model=str(_opt(node, "vlm_model", "PaddlePaddle/PaddleOCR-VL")),
         vlm_prompt_path=_opt(node, "vlm_prompt_path"),
         paddleocr_lang=str(_opt(node, "paddleocr_lang", "ru")),

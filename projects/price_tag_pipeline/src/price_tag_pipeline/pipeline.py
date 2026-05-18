@@ -27,6 +27,7 @@ from typing import Optional
 from .aggregator import TrackAggregator, dedup_final_tags
 from .config import PipelineConfig
 from .detector import build_detector, read_video_frame_count
+from .fusion import fuse_crops
 from .progress import Phase, ProgressEvent, ProgressLike, ProgressReporter, as_reporter
 from .recognition import RecognitionChain, build_recognition_chain, parsed_is_empty
 from .rectifier import build_rectifier
@@ -271,6 +272,21 @@ class PriceTagPipeline:
             for entry in self.aggregator.best_crops(track_id, code_k)[k:]:
                 for result in self._code_chain.decode(entry.crop.image):
                     _commit(entry, result)
+
+        # Pass 3 (Level-2) — median-fuse the track's sharpest crops into one
+        # denoised image and decode that, for tags where NO single frame
+        # decodes (motion blur). The tracker is what makes this safe: it
+        # certifies the crops are the same physical symbol. Off unless
+        # code_fuse_frames > 0.
+        fuse_n = self.cfg.ocr.code_fuse_frames
+        if fuse_n > 0:
+            fb = self.aggregator.best_crops(track_id, fuse_n)
+            if len(fb) >= 2:
+                fused = fuse_crops([e.crop.image for e in fb], max_frames=fuse_n)
+                if fused is not None:
+                    ref = fb[0]  # sharpest crop: lend its frame/bbox metadata
+                    for result in self._code_chain.decode(fused):
+                        _commit(ref, result)
 
         # Drop the buffer once we have committed observations.
         self.aggregator.clear_crops(track_id)
