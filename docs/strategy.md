@@ -216,16 +216,27 @@ For frames where the VLM returns nulls or invalid JSON:
 
 Ship `bytetrack.yaml` and `botsort.yaml` locally (under `projects/price_tag_pipeline/configs/trackers/`) so we tune `track_buffer`, `match_thresh`, `proximity_thresh`, `appearance_thresh`, and CMC method per profile.
 
-> **Status (worktree-tracking, shipped).** Both files exist and are tuned for
-> the moving-camera/stationary-tag case (CMC `sparseOptFlow`, `new_track_thresh
-> 0.6`, `track_buffer 60` == aggregation TTL, ReID off — tags are one visual
-> template). A latent bug is fixed: a bare `tracker_yaml: botsort.yaml` made
-> Ultralytics load its *own* stock config and silently ignore tuning;
-> `detector.resolve_tracker_yaml()` now resolves the project file (all 13
-> profiles point at it explicitly). Numeric thresholds are reasoned starting
-> points — sweep with `scripts/eval_tracking.py` (a detector+tracker-only,
-> no-OCR duplicate/fragmentation harness; metrics in `metrics/tracking.py`) on
-> a GPU box.
+> **Status (worktree-tracking, shipped + GPU-tuned).** Both files exist,
+> CMC `sparseOptFlow`, `track_buffer 60` == aggregation TTL, ReID off (tags
+> are one visual template). Latent bug fixed: a bare `tracker_yaml:
+> botsort.yaml` made Ultralytics load its *own* stock config and silently
+> ignore tuning; `detector.resolve_tracker_yaml()` now resolves the project
+> file (all 13 profiles point at it explicitly).
+>
+> **Two GPU-verified findings on the fine-tuned detector + full 5 videos:**
+> (1) *Orientation is the dominant lever.* The robot cam is mounted 90° CW;
+> feeding as-stored landscape fragments tracks catastrophically (26_12-20:
+> 219 tracks / 71 tags, median track 2 frames). `DetectorConfig.rotate=ccw`
+> (default) feeds upright frames → fragmentation gone. (2) That exposed
+> *under*-segmentation (sticky IDs gluing many tags across a pan).
+> `new_track_thresh` is the only knob with effect (`track_buffer`/
+> `match_thresh`/`track_high_thresh` provably inert here, left unchanged);
+> swept to **0.82**, which lands the recall-good motion videos ≈ one track
+> per tag (26_12-20 dup_ratio 0.17→0.92, 49_5 0.15→1.02) without
+> over-fragmenting (0.86 overshoots to 1.1–1.3). Harness/sweep:
+> `scripts/eval_tracking.py`, `scripts/sweep_trackers.py`,
+> `metrics/tracking.py`. Proxy = qual≈n_gt (no per-frame MOT GT). Re-sweep
+> if the detector changes.
 
 ### 4.2 Per-track frame selection
 
