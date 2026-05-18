@@ -6,6 +6,16 @@ writes one JPEG every ``--every`` seconds into
 ``<out>/<scene>/NNNNNN.jpg`` and skips frames where the robot was parked
 (near-duplicate of the last kept frame — see ``data.frame_sampling``).
 
+**Orientation.** The Lenta scan-robot camera is mounted rotated 90°
+clockwise: every clip is stored 3840×2160 *landscape* but the shelf is
+actually **vertical** — price tags lie on their side.  We undo it with a
+counter-clockwise rotation by default (``--rotate ccw``) so frames are
+upright portrait: the annotator sees a natural photo and, more importantly,
+the price-tag detector (trained on upright tags) stops missing/duplicating
+sideways tags.  Boxes are produced by the detector on these same rotated
+frames, so everything downstream stays consistent — there is no organizer
+seed to mis-place anymore.  ``--rotate none`` keeps the raw landscape.
+
 Output layout (Ultralytics-style, label files land next to images in STEP 2):
 
     cvat_video_frames/
@@ -77,33 +87,35 @@ def _scene_name(video: Path, taken: set[str]) -> str:
 
 
 def _slice_one(video: Path, scene: str, every: float, min_diff: float,
-               out_root: Path, jpeg_q: int) -> dict | None:
+               out_root: Path, jpeg_q: int, rotate: str) -> dict | None:
     sdir = out_root / scene
     sdir.mkdir(parents=True, exist_ok=True)
     files: list[str] = []
-    try:
-        import cv2  # noqa: F401  (only for the JPEG quality flag)
-        from cv2 import IMWRITE_JPEG_QUALITY
-        jpeg_params = [IMWRITE_JPEG_QUALITY, jpeg_q]
-    except Exception:
-        jpeg_params = None
+    import cv2
+    jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_q]
+    rot_code = {
+        "ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
+        "cw": cv2.ROTATE_90_CLOCKWISE,
+    }.get(rotate)
 
     seen = sampled = 0
     for idx, frame, total, fps in iter_sampled_frames(
         video, every_s=every, min_diff=min_diff
     ):
         sampled += 1
+        if rot_code is not None:
+            frame = cv2.rotate(frame, rot_code)
         fn = f"{idx:06d}.jpg"
-        dst = sdir / fn
-        if not dst.exists():
-            imwrite(dst, frame, jpeg_params)
+        # always (over)write — a re-slice with different --rotate/--every
+        # must not keep stale frames from a previous run.
+        imwrite(sdir / fn, frame, jpeg_params)
         files.append(fn)
         seen = total
     if not files:
         LOGGER.warning("%s: no frames produced", scene)
         return None
-    LOGGER.info("%s: kept %d frames (every %.1fs, dedup<%.3f) <- %s",
-                scene, len(files), every, min_diff, video.name)
+    LOGGER.info("%s: kept %d frames (every %.1fs, dedup<%.3f, rotate=%s) <- %s",
+                scene, len(files), every, min_diff, rotate, video.name)
     return {
         "scene": scene,
         "video": str(video),
@@ -129,6 +141,9 @@ def main() -> int:
     p.add_argument("--out", type=Path, default=Path("cvat_video_frames"))
     p.add_argument("--include-unlabeled", action="store_true",
                    help="also slice an Unlabeled/ subtree (skipped by default)")
+    p.add_argument("--rotate", choices=["ccw", "cw", "none"], default="ccw",
+                   help="90° rotation to upright the sideways robot footage "
+                        "(default ccw — the rig is mounted 90° clockwise)")
     p.add_argument("--jpeg-quality", type=int, default=95)
     p.add_argument("--log-level", default="INFO")
     a = p.parse_args()
@@ -151,7 +166,7 @@ def main() -> int:
     manifest = []
     for v in videos:
         entry = _slice_one(v, _scene_name(v, taken), a.every, a.min_diff,
-                            a.out, a.jpeg_quality)
+                            a.out, a.jpeg_quality, a.rotate)
         if entry:
             manifest.append(entry)
     if not manifest:
