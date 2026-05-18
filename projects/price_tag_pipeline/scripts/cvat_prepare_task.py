@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare a CVAT task: emit the label spec + print exact setup steps.
+"""Prepare CVAT's bare price-tag label spec and print setup steps.
 
 Writes ``cvat_label_spec.json`` (paste into CVAT → Constructor → "Raw", or
-import via the label JSON) so every task uses the *same* ``price_tag``
-schema the importer expects. Optionally pre-rotates a source video/photo
-folder (OFF by default — see the runbook for why we annotate in the
-original, un-rotated orientation to stay coordinate-compatible with the
-released CSVs and the training pipeline).
+import via the label JSON) so every task uses the same boxes-only
+``price_tag`` schema the importer expects. This helper is optional; the main
+video-frame flow is fully scripted in ``annotation-cvat.md`` via
+``slice_video_frames.py`` → ``prelabel_frames.py``/Colab →
+``frames_to_cvat.py`` → ``cvat_bootstrap_photos.py``.
 
     python projects/price_tag_pipeline/scripts/cvat_prepare_task.py --label-spec
     python projects/price_tag_pipeline/scripts/cvat_prepare_task.py \\
@@ -41,21 +41,16 @@ CVAT task setup
 1. Open http://localhost:8080 and log in.
 2. Projects → + → "Lenta price tags". Open it → Constructor → switch to
    "Raw" → paste the contents of {spec} → Done. (All tasks in this project
-   then inherit the price_tag label + attributes the importer expects.)
-3. Tasks → + :
-     • VIDEO: Name = the video_id (e.g. 25_2-10). Upload the .mp4.
-       Leave "Use cache" on. Submit. This is an interpolation task —
-       tracking works (see the runbook's "Tracking in CVAT" section).
-     • PHOTOS: Name = a set id (e.g. store_run_1). Upload the images as
-       "Image" data. (No tracking — each photo is independent.)
-4. (Video only, to start from existing labels) open the task → Actions →
-   "Upload annotations" → format "CVAT 1.1" → pick the matching
-   cvat_seeds/<video_id>.cvat.xml produced by cvat_export_seed.py.
-5. Annotate / correct. Export: task → Actions → "Export task dataset" →
-   format "CVAT for video 1.1" (video) or "CVAT for images 1.1" (photos),
-   "Save images" OFF → download the .zip, unzip → annotations.xml.
-6. Hand the XML back; cvat_import.py folds it into data/raw and
-   prepare_data.py extends the dataset — no pipeline change.
+   then inherit the bare price_tag rectangle label: boxes only, no fields.)
+3. Main video-frame flow:
+     slice_video_frames.py → prelabel_frames.py (or the Colab notebook) →
+     frames_to_cvat.py → cvat_bootstrap_photos.py.
+   See docs/runbooks/annotation-cvat.md for copy-paste commands.
+4. For one-off photos: create an Image task in that project, upload photos,
+   draw/fix price_tag boxes, then export as "CVAT for images 1.1" with
+   "Save images" OFF.
+5. Convert validated labels with cvat_pull_pack.py (for scripted tasks) or
+   cvat_import.py (for a single exported XML), then run prepare_data.py.
 """
 
 
