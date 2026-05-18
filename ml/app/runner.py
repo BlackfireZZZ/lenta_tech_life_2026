@@ -305,6 +305,19 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
 
         cfg = replace(cfg, runtime=replace(cfg.runtime, log_every_n_frames=n))
 
+    # Detector-only frame pre-rotation, chosen in the UI (none|ccw|cw). This
+    # ONLY changes how the model sees frames; the detector un-projects boxes
+    # back, so the stored video, the review playback and the graded CSV
+    # coords stay in the original orientation. The request is authoritative
+    # for the product path (the canonical balanced.yaml ccw is for the
+    # offline CLI benchmark). Unknown value → keep the config's setting.
+    rot = str(getattr(req, "rotation", "none") or "none").strip().lower()
+    if rot in ("none", "ccw", "cw") and rot != cfg.detector.frame_rotation:
+        from dataclasses import replace
+
+        cfg = replace(cfg, detector=replace(cfg.detector, frame_rotation=rot))
+    LOGGER.info("detector frame_rotation = %s", cfg.detector.frame_rotation)
+
     tags = PriceTagPipeline(cfg).run(req.video_path, progress=_on_progress)
 
     # task.md §3.4: the released Lenta CSVs use a bare stem as `filename`.
@@ -330,6 +343,7 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
             "elapsed_s": elapsed,
             "catalog": catalog_status,
             "weights": weights_src,
+            "rotation": cfg.detector.frame_rotation,
             **_video_meta(req.video_path),
         },
     )

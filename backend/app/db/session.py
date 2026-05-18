@@ -66,9 +66,21 @@ async def init_models() -> None:
     """
     import app.db.models  # noqa: F401  (populate Base.metadata)
 
+    from sqlalchemy import text
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("DB schema ready (create_all on %s)", settings.DB_HOST)
+        # create_all only creates *missing tables*, never new columns on an
+        # existing one. We deliberately use create_all over Alembic (one
+        # table — see module docstring); additive columns are applied here
+        # with idempotent, Postgres-native `ADD COLUMN IF NOT EXISTS`. Keep
+        # this list append-only; each entry is safe to run every boot.
+        for ddl in (
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
+            "rotation VARCHAR(8) NOT NULL DEFAULT 'none'",
+        ):
+            await conn.execute(text(ddl))
+    logger.info("DB schema ready (create_all + additive DDL on %s)", settings.DB_HOST)
 
 
 async def ping() -> None:

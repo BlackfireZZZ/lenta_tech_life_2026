@@ -10,6 +10,9 @@ import { apiClient, apiUrl } from "./client";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
+/** Detector-only frame pre-rotation (never alters stored video / CSV). */
+export type Rotation = "none" | "ccw" | "cw";
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -55,9 +58,13 @@ export interface JobPredictions {
 export const ABSENT = "нет"; // field not present on the tag (task.md §3.3)
 
 export const jobsApi = {
-  create: async (video: File): Promise<Job> => {
+  create: async (video: File, rotation: Rotation = "none"): Promise<Job> => {
     const form = new FormData();
     form.append("video", video);
+    // Detector-only pre-rotation. The stored video, the review playback and
+    // the graded CSV coords always stay in the uploaded orientation — this
+    // only steers how the detector model sees frames (backend → ML).
+    form.append("rotation", rotation);
     return (await apiClient.post<Job>("/api/v1/jobs", form)).data;
   },
 

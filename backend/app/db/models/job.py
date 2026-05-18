@@ -41,6 +41,11 @@ class Job(Base):
     # Absolute path on the shared `uploads` volume, readable by the ML
     # service at the same mount (docs/architecture.md §6).
     video_path: Mapped[str] = mapped_column(String, nullable=False)
+    # Detector-only frame pre-rotation chosen in the UI: none | ccw | cw.
+    # Passed to the ML service; never alters the stored video or CSV coords.
+    rotation: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="none", server_default="none"
+    )
 
     rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

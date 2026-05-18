@@ -14,6 +14,14 @@ class ProcessRequest(BaseModel):
     # "" → fall back to the video_path stem (backward compat). See the
     # backend mirror for why this is required for correct GT matching.
     filename: str = ""
+    # Detector-only frame pre-rotation: none | ccw | cw. Steers
+    # cfg.detector.frame_rotation (how the model sees frames). The stored
+    # video, the review playback and the graded CSV coords are ALWAYS the
+    # original orientation — boxes are un-projected back, this never rotates
+    # any output. Default "none": the ML makes no orientation assumption —
+    # the uploaded video is trusted as-is; the UI's rotate button is the
+    # explicit, user-driven fix for a sideways clip.
+    rotation: str = "none"
 
 
 class ProcessResponse(BaseModel):

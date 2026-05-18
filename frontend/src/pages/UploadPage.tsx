@@ -1,8 +1,16 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { FileVideo, ScanLine, Tag, Table2, UploadCloud, X } from "lucide-react";
-import { jobsApi } from "@/api/jobs";
+import {
+  FileVideo,
+  RotateCw,
+  ScanLine,
+  Tag,
+  Table2,
+  UploadCloud,
+  X,
+} from "lucide-react";
+import { jobsApi, type Rotation } from "@/api/jobs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -26,12 +34,42 @@ const STEPS = [
   },
 ];
 
+const ROTATE_NEXT: Record<Rotation, Rotation> = {
+  none: "ccw",
+  ccw: "cw",
+  cw: "none",
+};
+// CSS preview = how the detector will see the frames.
+const ROTATE_DEG: Record<Rotation, number> = { none: 0, ccw: -90, cw: 90 };
+const ROTATE_LABEL: Record<Rotation, string> = {
+  none: "как загружено",
+  ccw: "против часовой 90°",
+  cw: "по часовой 90°",
+};
+
 export default function UploadPage() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Detector-only pre-rotation. Default "none" — the upload is trusted
+  // as-is; this button is the explicit fix for a sideways clip. It NEVER
+  // changes the stored video, the review playback or the graded CSV
+  // coords — only how the detector model sees frames.
+  const [rotation, setRotation] = useState<Rotation>("none");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  // Own the object URL for the local preview; revoke when it changes/clears.
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   const pick = useCallback((f: File | undefined | null) => {
     if (!f) return;
@@ -57,7 +95,7 @@ export default function UploadPage() {
     if (!file || submitting) return;
     setSubmitting(true);
     try {
-      const job = await jobsApi.create(file);
+      const job = await jobsApi.create(file, rotation);
       navigate(`/jobs/${job.id}`);
     } catch (err) {
       setSubmitting(false);
@@ -65,7 +103,7 @@ export default function UploadPage() {
         description: err instanceof Error ? err.message : "Проверьте, что бэкенд запущен.",
       });
     }
-  }, [file, submitting, navigate]);
+  }, [file, submitting, navigate, rotation]);
 
   return (
     <div className="flex flex-col gap-12">
@@ -121,24 +159,62 @@ export default function UploadPage() {
 
           {file ? (
             <div className="flex flex-col items-center gap-4">
-              <span className="grid size-12 place-items-center rounded-card bg-chartwell-blue/10 text-chartwell-blue">
-                <FileVideo className="size-6" />
-              </span>
-              <div>
+              {/* Local preview — judge orientation before uploading. */}
+              <div className="grid h-72 w-full place-items-center overflow-hidden rounded-input bg-ghost-ink">
+                {previewUrl ? (
+                  <video
+                    key={previewUrl}
+                    src={previewUrl}
+                    muted
+                    controls
+                    playsInline
+                    preload="metadata"
+                    className="max-h-full max-w-full object-contain"
+                    style={{
+                      transform: `rotate(${ROTATE_DEG[rotation]}deg)`,
+                      transition: "transform 200ms ease",
+                    }}
+                  />
+                ) : (
+                  <FileVideo className="size-8 text-ash-gray" />
+                )}
+              </div>
+
+              <div className="text-center">
                 <p className="text-[15px] font-medium text-slate-text">{file.name}</p>
                 <p className="mt-0.5 text-caption text-ash-gray">{formatBytes(file.size)}</p>
               </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setFile(null);
-                  if (inputRef.current) inputRef.current.value = "";
-                }}
-                className="inline-flex items-center gap-1 text-caption text-ash-gray hover:text-slate-text"
-              >
-                <X className="size-3.5" /> Выбрать другое видео
-              </button>
+
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRotation((r) => ROTATE_NEXT[r]);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-pill border border-stone-border bg-cloud-white px-3 py-1.5 text-caption font-medium text-slate-text hover:border-chartwell-blue hover:text-chartwell-blue"
+                >
+                  <RotateCw className="size-3.5" /> Повернуть · {ROTATE_LABEL[rotation]}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFile(null);
+                    setRotation("none");
+                    if (inputRef.current) inputRef.current.value = "";
+                  }}
+                  className="inline-flex items-center gap-1 rounded-pill px-3 py-1.5 text-caption text-ash-gray hover:text-slate-text"
+                >
+                  <X className="size-3.5" /> Другое видео
+                </button>
+              </div>
+
+              <p className="max-w-md text-center text-caption text-ash-gray">
+                Поворот нужен, только если ценники лежат на боку — он влияет
+                лишь на то, как кадры видит детектор. Сам файл, видео в обзоре
+                и координаты в CSV остаются в исходной ориентации.
+              </p>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-4">

@@ -20,6 +20,12 @@ class ProcessRequest(BaseModel):
     # `video_path`. Optional/"" only for backward compat (then the ML side
     # falls back to the video_path stem).
     filename: str = ""
+    # Detector-only frame pre-rotation: none | ccw | cw. Steers
+    # cfg.detector.frame_rotation (how the model sees frames). The stored
+    # video, the review playback and the graded CSV coords are ALWAYS the
+    # original orientation (boxes un-projected back). Default "none": no ML
+    # orientation assumption — the UI's rotate button is the explicit fix.
+    rotation: str = "none"
 
 
 class ProcessResponse(BaseModel):

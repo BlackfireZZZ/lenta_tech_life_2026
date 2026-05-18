@@ -33,7 +33,7 @@ from pathlib import Path
 from tempfile import gettempdir
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, UploadFile, status
+from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -209,7 +209,18 @@ async def _poll_progress(job_id: UUID) -> None:
             logger.debug("progress write failed (job=%s): %s", job_id, exc)
 
 
-async def _process_job(job_id: UUID, video_path: str, filename: str) -> None:
+ROTATIONS = {"none", "ccw", "cw"}
+
+
+def _norm_rotation(value: str | None) -> str:
+    """Detector-only pre-rotation. Unknown/empty → 'none' (trust upload)."""
+    v = (value or "none").strip().lower()
+    return v if v in ROTATIONS else "none"
+
+
+async def _process_job(
+    job_id: UUID, video_path: str, filename: str, rotation: str
+) -> None:
     """Out-of-band worker: run the ML pipeline, persist its result.
 
     Owns its DB sessions (the request-scoped one is long gone by now).
@@ -227,7 +238,10 @@ async def _process_job(job_id: UUID, video_path: str, filename: str) -> None:
     try:
         resp = await ml_client.process(
             ProcessRequest(
-                video_path=video_path, job_id=str(job_id), filename=filename
+                video_path=video_path,
+                job_id=str(job_id),
+                filename=filename,
+                rotation=rotation,
             )
         )
     except Exception as exc:
@@ -280,10 +294,13 @@ async def _get_job_or_404(s: AsyncSession, job_id: UUID) -> _JobModel:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=JobResponse)
-async def create_job(video: UploadFile) -> JobResponse:
+async def create_job(
+    video: UploadFile, rotation: str = Form("none")
+) -> JobResponse:
     if settings.MOCK_MODE:
         return _mock_create(video)
 
+    rotation = _norm_rotation(rotation)
     job_id = uuid4()
     filename, video_path = _save_upload(video, job_id)
     async with session_scope() as s:
@@ -294,10 +311,11 @@ async def create_job(video: UploadFile) -> JobResponse:
                 progress=0.0,
                 filename=filename,
                 video_path=str(video_path),
+                rotation=rotation,
             )
         )
     task = asyncio.create_task(
-        _process_job(job_id, str(video_path), filename)
+        _process_job(job_id, str(video_path), filename, rotation)
     )
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
