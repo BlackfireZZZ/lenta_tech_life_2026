@@ -264,8 +264,6 @@ runs/
 .venv-lenta/
 
 # CVAT annotation — derived artifacts (regenerable via scripts/cvat_*.py)
-cvat_seeds/
-cvat_staging/
 cvat_label_spec.json
 
 # CVAT import roots (same policy as data/raw, data/processed)
@@ -277,8 +275,6 @@ data/processed_det/
 # External / friend-provided raw datasets + their CVAT seeds (heavy, like real_data/)
 friends_labels/
 cvat_seeds_friends/
-cvat_seeds_frames/
-cvat_frames/
 cvat_video_frames/
 cvat_seeds_video/
 cvat_exports/
