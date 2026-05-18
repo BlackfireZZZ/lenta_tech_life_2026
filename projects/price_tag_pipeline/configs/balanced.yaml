@@ -7,7 +7,7 @@ runtime:
 
 detector:
   backend: yolo
-  model_path: hf://openfoodfacts/price-tag-detection/weights/best.pt
+  model_path: data/checkpoints/detector/best.pt   # fine-tuned (upright-trained); see DetectorConfig.rotate
   conf: 0.25
   iou: 0.50
   device: null
