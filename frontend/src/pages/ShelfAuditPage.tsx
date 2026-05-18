@@ -91,7 +91,7 @@ function AlertRow({ alert, videoId }: { alert: ShelfAlert; videoId: string }) {
         <p className="mt-2 text-[13px] leading-[1.5] text-slate-text">
           {oos
             ? "Ценник распознан, но товара над ним нет — упущенные продажи."
-            : "Товар на полке без ценника — нарушение (ЗоЗПП требует цену на каждом товаре)."}
+            : "Кандидат: товар без сопоставленного ценника. Требует проверки — на части видео ценник просто не попал в кадр рядом с товаром."}
         </p>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ash-gray">
           <span>⏱ {fmtTime(alert.timestamp_s)}</span>
@@ -257,7 +257,7 @@ export default function ShelfAuditPage() {
           {/* Stats */}
           <section className="mx-auto grid w-full max-w-4xl grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat value={s.n_out_of_stock} label="Пустые полки" tone="danger" />
-            <Stat value={s.n_missing_price_tag} label="Товары без ценника" tone="warning" />
+            <Stat value={s.n_missing_price_tag} label="Без ценника (кандидаты)" tone="warning" />
             <Stat value={s.n_product_cards} label="Распознано товаров" tone="accent" />
             <Stat value={s.n_relations_ok} label="Ценник ↔ товар" tone="neutral" />
           </section>
@@ -266,7 +266,9 @@ export default function ShelfAuditPage() {
               Группировка фейсингов в товар убирает ложные срабатывания:{" "}
               {s.n_product_tracks} фейсингов → {s.n_product_cards} карточек;
               «товар без ценника» {s.missing_tag_facing_level_would_be} →{" "}
-              {s.n_missing_price_tag} на уровне товара.
+              {s.n_missing_price_tag} на уровне товара. «Пустая полка» —
+              точный сигнал; «без ценника» пока кандидаты (зависит от того,
+              попал ли ценник в кадр рядом с товаром).
             </p>
           )}
 

@@ -108,13 +108,34 @@ def test_two_equally_good_products_are_ambiguous() -> None:
     left = _trace(1, (60, 100, 150, 260), 0, 15)
     right = _trace(2, (150, 100, 240, 260), 0, 15)
 
+    # confident_score=1.0 disables the dense-shelf override so this isolates
+    # the pure margin gate.
     res = associate_tracks([tag], [left, right], frame_w=640, frame_h=480,
-                            fps=25.0, cfg=AssociationConfig(rotation="none",
-                                                            ambiguous_margin=0.15))
+                            fps=25.0, cfg=AssociationConfig(
+                                rotation="none", ambiguous_margin=0.15,
+                                confident_score=1.0))
 
     assert res.relations[0].status == "ambiguous"
     assert res.relations[0].product_group_id is None
     assert [u.track_id for u in res.unmatched_price_tags] == [7]
+
+
+def test_confident_top_overrides_close_sibling_runner_up() -> None:
+    # Dense shelf: the correct product directly under the tag, plus an adjacent
+    # sibling facing that scores close. A strong top-1 must NOT be discarded.
+    tag = _trace(7, (100, 270, 200, 305), 0, 15)
+    under = _trace(1, (95, 100, 205, 260), 0, 15)    # squarely under the tag
+    sibling = _trace(2, (98, 103, 208, 263), 0, 15)  # near-identical → close score
+
+    res = associate_tracks(
+        [tag], [under, sibling], frame_w=640, frame_h=480, fps=25.0,
+        cfg=AssociationConfig(rotation="none", confident_score=0.62))
+
+    rel = res.relations[0]
+    assert rel.status == "ok"  # not discarded as ambiguous
+    assert rel.product_group_id in {"product_1", "product_2"}
+    assert "confident_override" in rel.reasons
+    assert res.unmatched_price_tags == ()  # → no false OOS
 
 
 def test_persistence_gate_marks_short_tracks_non_persistent() -> None:

@@ -62,6 +62,13 @@ class AssociationConfig:
     min_co_frames: int = 3          # need this many shared frames to score a pair
     min_score: float = 0.42         # below this a tag has no product (OOS candidate)
     ambiguous_margin: float = 0.08  # top-two closer than this -> ambiguous
+    # Dense-shelf override (P4, data-driven): on a packed shelf the runner-up
+    # is almost always a *sibling facing of the same product*, so a strong
+    # top-1 must not be discarded as "ambiguous" just because it is close.
+    # Real matches on the 5 Lenta videos score ~0.73-0.88; 0.62 sits above the
+    # noise floor and below genuine matches. Accept top-1 when best>=this even
+    # if the margin is small.
+    confident_score: float = 0.62
     max_below_distance_ratio: float = 2.2   # tag may sit up to N tag-heights below
     drop_worst_frac: float = 0.20   # trim this fraction of worst co-frame scores
     persistence_min_frames: int = 10  # an unmatched track shorter than this is noise
@@ -240,7 +247,8 @@ def associate_tracks(
             continue
 
         second = ranked[1][0] if len(ranked) > 1 else 0.0
-        if second > 0 and best[0] - second < cfg.ambiguous_margin:
+        if (second > 0 and best[0] - second < cfg.ambiguous_margin
+                and best[0] < cfg.confident_score):
             relations.append(TagProductRelation(
                 price_tag_id=f"tag_{t.track_id}",
                 product_group_id=None,
@@ -258,12 +266,15 @@ def associate_tracks(
         co = sorted(t.frames & p.frames)
         bf = max(co, key=lambda f: _pair_score(
             tag_up[t.track_id][f], prod_up[p.track_id][f], cfg))
+        reasons = list(_reasons(tag_up[t.track_id][bf], prod_up[p.track_id][bf], cfg))
+        if second > 0 and best[0] - second < cfg.ambiguous_margin:
+            reasons.append("confident_override")  # close sibling runner-up
         relations.append(TagProductRelation(
             price_tag_id=f"tag_{t.track_id}",
             product_group_id=f"product_{p.track_id}",
             score=s,
             status="ok",
-            reasons=_reasons(tag_up[t.track_id][bf], prod_up[p.track_id][bf], cfg),
+            reasons=tuple(reasons),
             candidates=candidates,
         ))
 
