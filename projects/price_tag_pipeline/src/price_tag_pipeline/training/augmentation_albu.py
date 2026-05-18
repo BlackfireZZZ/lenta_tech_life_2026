@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -47,9 +45,8 @@ class HeavyAugConfig:
 def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
     """Return a `albumentations.Compose` pipeline with bbox support.
 
-    The output transform expects images as HxWx3 RGB ndarrays plus a list of
-    bboxes in `pascal_voc` (x1,y1,x2,y2) format. The Ultralytics adapter
-    converts to/from YOLO normalized internally.
+    The output transform follows Ultralytics' built-in Albumentations wrapper:
+    images are HxWx3 ndarrays and boxes are normalized YOLO xywh boxes.
     """
     try:
         import albumentations as A  # type: ignore
@@ -58,10 +55,69 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
             "albumentations is not installed. Install: pip install albumentations"
         ) from e
 
+    def gauss_noise():
+        try:
+            return A.GaussNoise(std_range=(0.04, 0.16), mean_range=(0.0, 0.0), p=1.0)
+        except TypeError:
+            return A.GaussNoise(var_limit=(10.0, 60.0), p=1.0)
+
+    def random_shadow():
+        try:
+            return A.RandomShadow(
+                shadow_roi=(0, 0, 1, 1),
+                num_shadows_limit=(1, 2),
+                p=cfg.shadow_prob,
+            )
+        except TypeError:
+            return A.RandomShadow(
+                shadow_roi=(0, 0, 1, 1),
+                num_shadows_lower=1,
+                num_shadows_upper=2,
+                p=cfg.shadow_prob,
+            )
+
+    def random_sun_flare():
+        try:
+            return A.RandomSunFlare(
+                flare_roi=(0, 0, 1, 0.5),
+                num_flare_circles_range=(0, 3),
+                src_radius=120,
+                p=cfg.sun_flare_prob,
+            )
+        except TypeError:
+            return A.RandomSunFlare(
+                flare_roi=(0, 0, 1, 0.5),
+                num_flare_circles_lower=0,
+                num_flare_circles_upper=3,
+                src_radius=120,
+                p=cfg.sun_flare_prob,
+            )
+
+    def coarse_dropout():
+        try:
+            return A.CoarseDropout(
+                num_holes_range=(1, cfg.coarse_dropout_max_holes),
+                hole_height_range=(4, 24),
+                hole_width_range=(4, 24),
+                fill=0,
+                p=cfg.coarse_dropout_prob,
+            )
+        except TypeError:
+            return A.CoarseDropout(
+                max_holes=cfg.coarse_dropout_max_holes,
+                max_height=24,
+                max_width=24,
+                min_holes=1,
+                min_height=4,
+                min_width=4,
+                fill_value=0,
+                p=cfg.coarse_dropout_prob,
+            )
+
     transform = A.Compose([
         # --- Blur family (the robot moves fast) ---
         A.OneOf([
-            A.MotionBlur(blur_limit=cfg.motion_blur_kernel_max, p=1.0),
+            A.MotionBlur(blur_limit=(3, cfg.motion_blur_kernel_max), p=1.0),
             A.Defocus(radius=(3, 7), alias_blur=(0.1, 0.3), p=1.0),
             A.GaussianBlur(blur_limit=(3, 7), p=1.0),
         ], p=cfg.motion_blur_prob),
@@ -69,15 +125,14 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
         # --- Noise (low-light store interiors) ---
         A.OneOf([
             A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=1.0),
-            A.GaussNoise(var_limit=(10.0, 60.0), p=1.0),
+            gauss_noise(),
         ], p=cfg.noise_prob),
 
         # --- Lighting (aisle-to-aisle variation) ---
         A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=cfg.brightness_prob),
         A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=cfg.clahe_prob),
-        A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_lower=1, num_shadows_upper=2, p=cfg.shadow_prob),
-        A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5), num_flare_circles_lower=0,
-                         num_flare_circles_upper=3, src_radius=120, p=cfg.sun_flare_prob),
+        random_shadow(),
+        random_sun_flare(),
 
         # --- Hue (gently — preserve yellow/red promo signal) ---
         A.HueSaturationValue(hue_shift_limit=8, sat_shift_limit=15, val_shift_limit=10, p=cfg.hue_prob),
@@ -87,14 +142,9 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
         A.HorizontalFlip(p=cfg.hflip_prob),
 
         # --- Partial occlusion (other shelf items, shopping carts, hands) ---
-        A.CoarseDropout(
-            max_holes=cfg.coarse_dropout_max_holes,
-            max_height=24, max_width=24,
-            min_holes=1, min_height=4, min_width=4,
-            fill_value=0, p=cfg.coarse_dropout_prob,
-        ),
+        coarse_dropout(),
     ], bbox_params=A.BboxParams(
-        format="pascal_voc",
+        format="yolo",
         label_fields=["class_labels"],
         min_visibility=0.30,
     ))
@@ -124,10 +174,13 @@ def attach_to_ultralytics(model, cfg: HeavyAugConfig = HeavyAugConfig()) -> bool
     transform = build_albu_transform(cfg)
 
     class _HeavyAlbumentations(_UltraAlbu):
-        def __init__(self, p: float = 1.0):
-            super().__init__(p=p)
+        def __init__(self, *args, **kwargs):
+            try:
+                super().__init__(*args, **kwargs)
+            except TypeError:
+                super().__init__(p=kwargs.get("p", 1.0))
             self.transform = transform
-            self.p = p
+            self.p = kwargs.get("p", getattr(self, "p", 1.0))
             self.contains_spatial = True
 
     # Patch the class used by Ultralytics' DataLoader pipeline.
