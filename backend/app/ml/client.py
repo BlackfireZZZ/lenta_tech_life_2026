@@ -47,9 +47,18 @@ class MLClient:
                 meta={"mock": True},
             )
 
+        # A real GPU run (detect + Qwen-VL OCR over a full clip) routinely
+        # exceeds any fixed read budget — a flat `timeout=600` made httpx
+        # abandon a still-running job and surface a bogus 502. Processing is
+        # out-of-band and its liveness is observable via `/progress`, so the
+        # READ is intentionally unbounded; only connect/write keep a fast
+        # guard so a genuinely-down ML still fails quickly.
+        timeout = httpx.Timeout(
+            connect=10.0, read=None, write=60.0, pool=None
+        )
         try:
             async with httpx.AsyncClient(
-                base_url=self._base_url, timeout=self._timeout
+                base_url=self._base_url, timeout=timeout
             ) as c:
                 r = await c.post("/process", json=req.model_dump())
                 r.raise_for_status()
