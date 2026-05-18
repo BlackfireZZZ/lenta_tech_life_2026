@@ -69,6 +69,14 @@ def main() -> int:
     p.add_argument("--wandb", action="store_true", help="Enable W&B logging via Ultralytics integration")
     p.add_argument("--use-albu", action="store_true",
                    help="Use the Albumentations integration in price_tag_pipeline.training.augmentation_albu")
+    p.add_argument("--mosaic", type=float, default=None,
+                   help="Override mosaic probability for the §5.1 sweep "
+                        "(try 0.0 / 0.3 / 0.5). Default keeps the "
+                        "UltralyticsAugConfig value (mosaic hurts small-object "
+                        "recall above ~0.3, so this is a real knob).")
+    p.add_argument("--close-mosaic", type=int, default=10,
+                   help="Disable mosaic for the last N epochs (§5.1). "
+                        "0 = never close. Ultralytics default is 10.")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
 
@@ -115,6 +123,15 @@ def main() -> int:
         save=True,
         **aug.as_kwargs(),
     )
+
+    # §5.1 mosaic sweep + close_mosaic schedule. as_kwargs() already set a
+    # mosaic value; override it only when explicitly swept, and always pass an
+    # explicit close_mosaic so the last epochs train without mosaic.
+    if args.mosaic is not None:
+        train_kwargs["mosaic"] = args.mosaic
+    train_kwargs["close_mosaic"] = args.close_mosaic
+    logging.info("mosaic=%s close_mosaic=%d",
+                 train_kwargs["mosaic"], train_kwargs["close_mosaic"])
 
     if args.use_albu:
         from price_tag_pipeline.training.augmentation_albu import attach_to_ultralytics

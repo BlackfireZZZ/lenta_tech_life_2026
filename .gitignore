@@ -245,6 +245,10 @@ data/checkpoints/**/*.onnx
 data/checkpoints/**/*.engine
 data/checkpoints/**/*.bin
 data/checkpoints/**/*.safetensors
+# Full HF model bundles also ship tokenizer/config/vocab files next to the
+# weights — ignore the entire bundle dir so nothing model-related is committed.
+data/checkpoints/detector/**
+data/checkpoints/vlm/**
 
 # Keep directory structure but not contents
 !data/raw/videos/.gitkeep
