@@ -14,7 +14,10 @@ RUN uv pip install --system --no-cache \
 
 COPY app ./app
 COPY scripts ./scripts
-RUN chmod +x scripts/init.sh
+# No .gitattributes in the repo → on a Windows checkout init.sh may carry
+# CRLF, which makes the shell choke on `set -e\r`. Normalise + run via `sh`
+# so neither line endings nor the exec bit can break the entrypoint.
+RUN sed -i 's/\r$//' scripts/init.sh && chmod +x scripts/init.sh
 
 EXPOSE 8000
-ENTRYPOINT ["scripts/init.sh"]
+ENTRYPOINT ["sh", "scripts/init.sh"]

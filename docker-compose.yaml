@@ -1,9 +1,11 @@
 # Local monorepo orchestration. One `docker compose up --build` brings up the
-# whole product. See docs/architecture.md §6.
+# whole product. See docs/architecture.md §6 and docs/runbooks/docker-compose.md.
 #
-# In the current skeleton the backend runs MOCK_MODE=true, so db/redis are
-# started (they are part of the target architecture) but not yet required.
-# The root ./Dockerfile is the separate CUDA *training* image — not used here.
+# backend runs MOCK_MODE=true (deterministic mock; db/redis start but aren't
+# used yet — it does not call ml until the backend↔ML wiring lands). `ml` is
+# the REAL GPU pipeline image (CUDA + Qwen3-VL); weights are mounted, not
+# baked (see the ml service). The root ./Dockerfile is the separate CUDA
+# *training* image — not used here.
 
 services:
   backend:
@@ -35,10 +37,33 @@ services:
     depends_on: [backend]
 
   ml:
-    build: { context: ./ml }
+    # Context is the repo ROOT (not ./ml): runner.py imports the pipeline
+    # from projects/price_tag_pipeline, which must be in the build context.
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
     ports: ["8002:8002"]                # internal service; exposed for debugging
+    environment:
+      HF_HOME: /models/hf               # weights cache → the hf_cache volume
+      HF_HUB_ENABLE_HF_TRANSFER: "1"    # fast Qwen/detector download
+      ML_PIPELINE_CONFIG: projects/price_tag_pipeline/configs/balanced.yaml
+      # ML_MOCK unset → real GPU pipeline. Set ML_MOCK=1 to force the mock CSV
+      # (boots without GPU/weights — architecture.md §5).
     volumes:
       - uploads:/data/uploads           # reads videos the backend wrote
+      - hf_cache:/models/hf             # MODEL WEIGHTS live here, NOT in the
+                                        # image: Qwen3-VL-4B (~8GB) + the OFF
+                                        # detector download once, then persist.
+    # GPU passthrough. Works with `docker compose up` on Docker Desktop +
+    # WSL2 (no NVIDIA Container Toolkit needed on Windows). If your Compose
+    # is too old for this block, use the top-level `gpus: all` key instead.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   db:
     image: postgres:18-alpine
@@ -70,3 +95,4 @@ volumes:
   redis_data:
   frontend_node_modules:
   uploads:
+  hf_cache:                             # persistent HF weights cache (ml)
