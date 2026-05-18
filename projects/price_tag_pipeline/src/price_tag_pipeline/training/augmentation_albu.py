@@ -21,9 +21,29 @@ Sections map to docs/detector-finetuning-report.md §5:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
+from typing import Any
+
 LOGGER = logging.getLogger(__name__)
+
+
+def _accepts(cls: Any, name: str) -> bool:
+    """True if ``cls.__init__`` accepts a keyword called ``name``.
+
+    Albumentations renamed several constructor args between the 1.x and 2.x
+    lines (var_limit→std_range, max_holes→num_holes_range, num_shadows_lower→
+    num_shadows_limit, num_flare_circles_lower→num_flare_circles_range,
+    fill_value→fill). The repo code was written for the 1.x names while
+    requirements/train.txt pins only ``albumentations>=1.4`` (resolves to 2.x),
+    so heavy aug crashed at runtime. Introspecting the signature keeps this
+    working across the drift instead of hard-pinning an old release.
+    """
+    try:
+        return name in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -83,74 +103,49 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
             "albumentations is not installed. Install: pip install albumentations"
         ) from e
 
-    def gauss_noise():
-        try:
-            return A.GaussNoise(std_range=(0.04, 0.16), mean_range=(0.0, 0.0), p=1.0)
-        except TypeError:
-            return A.GaussNoise(var_limit=(10.0, 60.0), p=1.0)
+    # --- Gaussian noise: var_limit (1.x) vs std_range fraction-of-255 (2.x).
+    if _accepts(A.GaussNoise, "std_range"):
+        # var 10..60 -> std sqrt(10)..sqrt(60) -> /255 fraction (mild, matches intent).
+        gauss_noise = A.GaussNoise(std_range=(0.012, 0.031), mean_range=(0.0, 0.0), p=1.0)
+    else:
+        gauss_noise = A.GaussNoise(var_limit=(10.0, 60.0), p=1.0)
 
-    def random_shadow():
-        try:
-            return A.RandomShadow(
-                shadow_roi=(0, 0, 1, 1),
-                num_shadows_limit=(1, 2),
-                p=cfg.shadow_prob,
-            )
-        except TypeError:
-            return A.RandomShadow(
-                shadow_roi=(0, 0, 1, 1),
-                num_shadows_lower=1,
-                num_shadows_upper=2,
-                p=cfg.shadow_prob,
-            )
+    # --- RandomShadow: num_shadows_lower/upper (1.x) vs num_shadows_limit (2.x).
+    if _accepts(A.RandomShadow, "num_shadows_limit"):
+        random_shadow = A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_limit=(1, 2),
+                                       p=cfg.shadow_prob)
+    else:
+        random_shadow = A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_lower=1,
+                                       num_shadows_upper=2, p=cfg.shadow_prob)
 
-    def random_sun_flare():
-        try:
-            # Albumentations 2.x pydantic-validates the range and rejects a 0
-            # lower bound (raises ValueError, *not* TypeError, so the except
-            # below would not catch it) — keep it >= 1. 1.x still accepts 0.
-            return A.RandomSunFlare(
-                flare_roi=(0, 0, 1, 0.5),
-                num_flare_circles_range=(1, 3),
-                src_radius=120,
-                p=cfg.sun_flare_prob,
-            )
-        except TypeError:
-            return A.RandomSunFlare(
-                flare_roi=(0, 0, 1, 0.5),
-                num_flare_circles_lower=0,
-                num_flare_circles_upper=3,
-                src_radius=120,
-                p=cfg.sun_flare_prob,
-            )
+    # --- RandomSunFlare: num_flare_circles_lower/upper (1.x) vs _range (2.x).
+    if _accepts(A.RandomSunFlare, "num_flare_circles_range"):
+        # 2.x validation requires all values >= 1 (1.x allowed a 0 lower bound).
+        sun_flare = A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5),
+                                     num_flare_circles_range=(1, 3),
+                                     src_radius=120, p=cfg.sun_flare_prob)
+    else:
+        sun_flare = A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5), num_flare_circles_lower=0,
+                                     num_flare_circles_upper=3, src_radius=120,
+                                     p=cfg.sun_flare_prob)
 
-    def coarse_dropout():
-        try:
-            return A.CoarseDropout(
-                num_holes_range=(1, cfg.coarse_dropout_max_holes),
-                hole_height_range=(4, 24),
-                hole_width_range=(4, 24),
-                fill=0,
-                p=cfg.coarse_dropout_prob,
-            )
-        except TypeError:
-            return A.CoarseDropout(
-                max_holes=cfg.coarse_dropout_max_holes,
-                max_height=24,
-                max_width=24,
-                min_holes=1,
-                min_height=4,
-                min_width=4,
-                fill_value=0,
-                p=cfg.coarse_dropout_prob,
-            )
+    # --- CoarseDropout: max_holes/min_holes/fill_value (1.x) vs *_range/fill (2.x).
+    if _accepts(A.CoarseDropout, "num_holes_range"):
+        coarse_dropout = A.CoarseDropout(
+            num_holes_range=(1, cfg.coarse_dropout_max_holes),
+            hole_height_range=(4, 24), hole_width_range=(4, 24),
+            fill=0, p=cfg.coarse_dropout_prob,
+        )
+    else:
+        coarse_dropout = A.CoarseDropout(
+            max_holes=cfg.coarse_dropout_max_holes, max_height=24, max_width=24,
+            min_holes=1, min_height=4, min_width=4,
+            fill_value=0, p=cfg.coarse_dropout_prob,
+        )
 
     # === §5.3 camera-matched geometric/codec aug ===
 
     def lens_distortion():
-        # OpticalDistortion/GridDistortion both accept ``distort_limit``
-        # (tuple ok) and ``p`` across Albumentations 1.x/2.x; the 1.x-only
-        # ``shift_limit`` defaults harmlessly, so no version branch is needed.
         return A.OneOf([
             A.OpticalDistortion(
                 distort_limit=(-cfg.lens_distort_limit, cfg.lens_distort_limit),
@@ -163,25 +158,18 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
             ),
         ], p=cfg.lens_distortion_prob)
 
-    def image_compression():
-        # quality_lower/quality_upper (1.x) -> quality_range (2.x).
-        try:
-            return A.ImageCompression(
-                quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
-                p=cfg.image_compression_prob,
-            )
-        except TypeError:
-            return A.ImageCompression(
-                quality_lower=cfg.jpeg_quality_min,
-                quality_upper=cfg.jpeg_quality_max,
-                p=cfg.image_compression_prob,
-            )
+    if _accepts(A.ImageCompression, "quality_range"):
+        image_compression = A.ImageCompression(
+            quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
+            p=cfg.image_compression_prob,
+        )
+    else:
+        image_compression = A.ImageCompression(
+            quality_lower=cfg.jpeg_quality_min,
+            quality_upper=cfg.jpeg_quality_max,
+            p=cfg.image_compression_prob,
+        )
 
-    # Core Albumentations has no radial-vignette transform stable across
-    # 1.x/2.x, so implement a small, bounded ImageOnly transform: a quadratic
-    # radial darkening toward the corners. ``super().__init__(p=p)`` is
-    # keyword-compatible with both the 1.x ``(always_apply, p)`` and the 2.x
-    # ``(p,)`` BasicTransform signatures.
     class _Vignette(A.ImageOnlyTransform):
         """Radial corner darkening (wide-lens + small-sensor falloff). §5.3."""
 
@@ -198,7 +186,6 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
             h, w = img.shape[:2]
             yy, xx = np.ogrid[:h, :w]
             cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
-            # Normalized radial distance: 0 at centre, 1 at the corners.
             dist = np.sqrt(((xx - cx) / max(cx, 1.0)) ** 2
                            + ((yy - cy) / max(cy, 1.0)) ** 2) / np.sqrt(2.0)
             mask = (1.0 - strength * np.clip(dist, 0.0, 1.0) ** 2).astype(np.float32)
@@ -208,13 +195,12 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
         def get_transform_init_args_names(self):
             return ("min_strength", "max_strength")
 
-    def vignette():
-        return _Vignette(cfg.vignette_min_strength, cfg.vignette_max_strength,
-                         p=cfg.vignette_prob)
+    vignette = _Vignette(
+        cfg.vignette_min_strength,
+        cfg.vignette_max_strength,
+        p=cfg.vignette_prob,
+    )
 
-    # Mild chromatic aberration — only present in newer Albumentations
-    # (≥1.4 / 2.x). Explicitly optional per §5.3, so degrade gracefully on
-    # stacks that lack it instead of crashing the whole pipeline.
     chromatic_cls = getattr(A, "ChromaticAberration", None)
     if chromatic_cls is not None:
         chroma = chromatic_cls(
@@ -241,14 +227,14 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
         # --- Noise (low-light store interiors) ---
         A.OneOf([
             A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=1.0),
-            gauss_noise(),
+            gauss_noise,
         ], p=cfg.noise_prob),
 
         # --- Lighting (aisle-to-aisle variation) ---
         A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=cfg.brightness_prob),
         A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=cfg.clahe_prob),
-        random_shadow(),
-        random_sun_flare(),
+        random_shadow,
+        sun_flare,
 
         # --- Hue (gently — preserve yellow/red promo signal) ---
         A.HueSaturationValue(hue_shift_limit=8, sat_shift_limit=15, val_shift_limit=10, p=cfg.hue_prob),
@@ -259,12 +245,12 @@ def build_albu_transform(cfg: HeavyAugConfig = HeavyAugConfig()):
 
         # --- §5.3 camera-matched geometric/codec ---
         lens_distortion(),
-        image_compression(),
-        vignette(),
+        image_compression,
+        vignette,
         *([chroma] if chroma is not None else []),
 
         # --- Partial occlusion (other shelf items, shopping carts, hands) ---
-        coarse_dropout(),
+        coarse_dropout,
     ], bbox_params=A.BboxParams(
         format="yolo",
         label_fields=["class_labels"],
@@ -296,13 +282,15 @@ def attach_to_ultralytics(model, cfg: HeavyAugConfig = HeavyAugConfig()) -> bool
     transform = build_albu_transform(cfg)
 
     class _HeavyAlbumentations(_UltraAlbu):
+        # Newer Ultralytics (8.4.x) constructs this as
+        # ``Albumentations(p=1.0, transforms=...)``. Accept whatever the
+        # current version passes, defer to the real __init__, then swap in
+        # our heavy domain pipeline. *args/**kwargs keeps this robust to
+        # further Ultralytics signature drift.
         def __init__(self, *args, **kwargs):
-            try:
-                super().__init__(*args, **kwargs)
-            except TypeError:
-                super().__init__(p=kwargs.get("p", 1.0))
+            super().__init__(*args, **kwargs)
             self.transform = transform
-            self.p = kwargs.get("p", getattr(self, "p", 1.0))
+            self.p = kwargs.get("p", args[0] if args else 1.0)
             self.contains_spatial = True
 
     # Patch the class used by Ultralytics' DataLoader pipeline.
