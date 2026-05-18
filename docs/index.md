@@ -60,7 +60,6 @@ thin pointers here — do not duplicate knowledge into them.
 | Detector experiments (fine-tune OFF base) | [`../projects/price_tag_pipeline/experiments/`](../projects/price_tag_pipeline/experiments/README.md) |
 | **`import cv2` fails / new worktree env setup** | [runbooks/venv-setup.md](./runbooks/venv-setup.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
-<<<<<<< HEAD
 | Current inference issues + fix plan | [runbooks/inference-current-issues.md](./runbooks/inference-current-issues.md) |
 | **Hand-label / extend the dataset (CVAT)** | [runbooks/annotation-cvat.md](./runbooks/annotation-cvat.md) |
 | Colab — zero-shot GPU baseline | [runbooks/colab-baseline.md](./runbooks/colab-baseline.md) |
