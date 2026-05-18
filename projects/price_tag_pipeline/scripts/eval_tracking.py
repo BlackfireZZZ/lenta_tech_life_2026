@@ -67,6 +67,9 @@ def main() -> int:
     p.add_argument("--max-frames", type=int, default=500)
     p.add_argument("--imgsz", type=int, default=None, help="override detector imgsz")
     p.add_argument("--device", default="cpu")
+    p.add_argument(
+        "--tracker", default=None, help="override detector.tracker_yaml (path)"
+    )
     p.add_argument("--json-out", default=None)
     args = p.parse_args()
 
@@ -119,6 +122,8 @@ def main() -> int:
             det_cfg = dataclasses.replace(det_cfg, image_size=args.imgsz)
         if args.device:
             det_cfg = dataclasses.replace(det_cfg, device=args.device)
+        if args.tracker:
+            det_cfg = dataclasses.replace(det_cfg, tracker_yaml=args.tracker)
 
         try:
             detector = build_detector(det_cfg)
@@ -154,9 +159,7 @@ def main() -> int:
             if not records:
                 continue
 
-        dedup_time_window_s = (
-            cfg.aggregation.dedup_time_window_frames / fps if fps > 0 else 0.0
-        )
+        dedup_time_window_s = cfg.aggregation.dedup_time_window_s
         report = compute_tracking_metrics(
             video=stem,
             records=records,
