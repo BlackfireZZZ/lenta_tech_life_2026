@@ -1,289 +1,382 @@
-# Guide — annotating & extending the dataset with CVAT
+# Guide — annotate & extend the dataset with CVAT
 
-How to use **our** CVAT, push annotations into it, run every adapter tool,
-and fold the result back into the project with **zero pipeline change**: a
-CVAT export becomes either the native 29‑column Lenta CSV (video, fields
-filled) or the YOLO raw layout (boxes‑only / photos), and the existing
-`prepare_data.py` ingests it exactly like the original 5 videos.
+This is the **friend-facing runbook**. Follow it top to bottom. Every
+command is copy-paste; every click is spelled out. If you only read one
+thing, read **§Pipeline at a glance** and the **§Cheat sheet**.
 
-> **Allowed?** Manual labelling **for training** is explicitly permitted
-> (task.md §7) and must be *disclosed* in the README (volume, method, how
-> used). It is **forbidden at inference**. Keep that line.
+Goal: turn the organizers' raw videos into more training data. We slice
+them into frames, **pre-label them automatically with our detector** (so you
+*correct* boxes instead of drawing from scratch), load them into CVAT, you
+fix them by hand, and a converter folds the result back into the project
+with **zero pipeline change**.
 
-CVAT is vendored as a git submodule at **`third_party/cvat`** (gitlink‑pinned
-to commit `c0f002237`, CVAT 2.64.1) and runs locally via its own Docker
-Compose — no cloud, consistent with the inference constraint (task.md §10).
-
-All commands assume **cwd = this worktree** (`.claude/worktrees/annotation`)
-and the worktree venv **`.venv/Scripts/python.exe`** (uv‑managed; project
-rule: never global pip). Replace `***` with the admin password you set.
+> **Is hand-labelling allowed?** Yes — manual labelling **for training** is
+> explicitly permitted (task.md §7) and must be *disclosed* in the README
+> (volume, method, how used). It is **forbidden at inference**. Keep that line.
 
 ---
 
-## TL;DR
+## Pipeline at a glance
 
-1. `cd third_party/cvat && docker compose up -d` → open http://localhost:8080.
-2. Open a task in the **"Lenta price tags"** project, **draw boxes** on
-   price tags (label `price_tag`, no fields — boxes only).
-3. **Actions → Export task dataset →** "CVAT for video 1.1" (video) or
-   "CVAT for images 1.1" (photos), *Save images OFF*.
-4. Hand the `annotations.xml` back → `cvat_import.py` + `prepare_data.py`
-   extend the dataset.
+```
+            LAPTOP (CPU, no GPU needed)            │   GOOGLE COLAB (free GPU)
+  ─────────────────────────────────────────────── │ ───────────────────────────
+  STEP 1  slice_video_frames.py                    │
+          videos → frames, drop robot-parked dupes │
+                         │  upload cvat_video_frames/ to Drive
+                         ▼                          │
+                                          STEP 2  lenta_prelabel_colab.ipynb
+                                          detector → a YOLO .txt per frame
+                         ┌──────────────────────────┘
+                         ▼  download the folder back (now has .txt files)
+  STEP 3  frames_to_cvat.py → cvat_bootstrap_photos.py
+          push frames + pre-boxes into CVAT
+                         │
+                         ▼
+  ANNOTATE in the browser (http://localhost:8080) — fix/add boxes
+                         │
+                         ▼
+  EXPORT  cvat_pull_pack.py   →   CONVERT  prepare_data.py
+          → dataset folded into data/raw_photos, ready to train
+```
 
-The 5 released videos and the friend's 4 photo scenes are **already loaded
-with seed boxes** — you mostly validate/extend, not start from scratch.
+STEP 2 is the only GPU step → it runs on Colab. Everything else is the
+laptop. If your laptop *does* have a usable GPU you can run STEP 2 locally
+(§3B) and skip Colab entirely.
 
 ---
 
-## 1. Setup (one‑time)
+## Part 0 — One-time setup
+
+You need: **Docker Desktop** (running), **git**, and this repo checked out.
+All commands assume:
+
+* **cwd = this worktree:** `cd .../.claude/worktrees/annotation`
+* **the worktree venv** for python: `.venv/Scripts/python.exe`
+  (uv-managed; project rule: never global pip). On Linux/Mac it's
+  `.venv/bin/python`.
+* Replace **`***`** with the CVAT admin password (ask the repo owner; it is
+  *not* written in any committed file).
+
+If the venv is missing detector deps and you run STEP 2 **locally**:
+`uv pip install --python .venv ultralytics huggingface-hub`. For Colab you
+don't need them locally at all.
+
+---
+
+## Part 1 — Bring up CVAT
+
+CVAT is vendored as a git submodule at **`third_party/cvat`** (pinned to
+commit `c0f002237`, CVAT 2.64.1) and runs locally via its own Docker
+Compose — no cloud (consistent with the inference constraint, task.md §10).
 
 ```bash
 cd third_party/cvat
-docker compose up -d                       # first run pulls images, ~minutes
-docker exec -it cvat_server bash -ic 'python3 ~/manage.py createsuperuser'
+docker compose up -d            # first run pulls images (~minutes)
+cd ../..                        # back to the worktree root for everything else
 ```
 
-Open http://localhost:8080 and log in. The project **"Lenta price tags"**
-holds one **bare** rectangle label `price_tag` (no attributes → no
-per‑object "details" panel; detector‑first, boxes only). Pause/resume any
-time — state lives in Docker volumes (§7):
+* Open **http://localhost:8080** and log in (`admin` / `***`).
+* First account only, if it doesn't exist yet:
+  `docker exec -it cvat_server bash -ic 'python3 ~/manage.py createsuperuser'`
+* Pause / resume any time — state lives in Docker volumes (§Storage):
+  * `cd third_party/cvat && docker compose stop` — pause
+  * `cd third_party/cvat && docker compose up -d` — resume
+* **NEVER** `docker compose down -v` — `-v` wipes every annotation volume.
+
+Submodule clone failed on a flaky network? Shallow + pinned:
+`git -c http.version=HTTP/1.1 clone --depth 1 --branch v2.64.0 https://github.com/cvat-ai/cvat third_party/cvat`
+then `git submodule add --force https://github.com/cvat-ai/cvat third_party/cvat`.
+
+---
+
+## Part 2 — STEP 1: slice videos into frames (laptop)
+
+Put the organizers' videos anywhere (e.g. the released set at
+`real_data/dataset/<id>/<id>.mp4`, or a folder of new clips). Then:
 
 ```bash
-docker compose stop      # pause      |   docker compose up -d   # resume
-# NEVER `docker compose down -v`  — the -v wipes all annotation volumes
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/slice_video_frames.py \
+  --src "E:/Hackatons/lenta_tech_life_2026/real_data/dataset" \
+  --every 2.0 --out cvat_video_frames
 ```
 
-Submodule clone of CVAT failing on flaky network? Shallow + pinned:
-`git -c http.version=HTTP/1.1 clone --depth 1 --branch v2.64.0 \
-https://github.com/cvat-ai/cvat third_party/cvat` then
-`git submodule add --force https://github.com/cvat-ai/cvat third_party/cvat`.
+* `--every 2.0` — one frame every 2 seconds (the default; tune freely).
+* **Robot-parked de-dup is automatic.** The scan robot often stops; those
+  runs of identical frames are dropped (compared against the last *kept*
+  frame, so a long pause collapses to one frame, not every Nth).
+  `--min-diff 0.02` is the default sensitivity; `--min-diff 0` keeps all
+  frames; raise it to drop more aggressively.
+* Single file instead of a folder: `--video path/to/clip.mp4`.
+
+Output: `cvat_video_frames/<scene>/NNNNNN.jpg` + `slice_manifest.json`.
+**One scene = one video** (becomes one CVAT task).
 
 ---
 
-## 2. Concepts
+## Part 3 — STEP 2: pre-annotate with our detector
 
-| | **Video task** | **Image task (photos)** |
-|---|---|---|
-| Mode | interpolation / **tracking** | independent frames |
-| Unit | a **Track** (stable id across frames) | a box per image |
-| Use | released videos, robot clips | store photos, friend datasets |
-| Import path | `tags` (fields) or `detector` (boxes) | always `detector` (YOLO) |
+"Our detector" = the **OpenFoodFacts price-tag YOLO**
+(`hf://openfoodfacts/price-tag-detection/weights/best.pt`) — the exact
+weights the original auto-label notebook used and the fixed base of our
+solution. Override with a fine-tuned checkpoint via `--model` / `MODEL_PATH`
+once we have one.
 
-**Detector‑first.** We only draw boxes; OCR fields are not annotated (now
-or planned). Two import paths, auto‑selected by `cvat_import.py`:
+### 3A — Google Colab (recommended — no GPU on the laptop)
 
-- **boxes only → `detector`**: tracks interpolated between keyframes →
-  dense per‑frame YOLO under `data/raw_det`; photos → YOLO under
-  `data/raw_photos`. The cheap way to grow the detector.
-- **fields filled → `tags`**: one Track → one 29‑col Lenta CSV row
-  (`frame_timestamp` in ms, `track_id` carried as cross‑track‑dedup GT)
-  under `data/raw`. Only if you ever do OCR ground truth.
+The notebook **`notebooks/lenta_prelabel_colab.ipynb`** *is* this step.
 
-Both feed the **unchanged** `prepare_data.py`.
+1. Open https://colab.research.google.com → **File → Upload notebook** →
+   pick `notebooks/lenta_prelabel_colab.ipynb`.
+2. **Runtime → Change runtime type → T4 GPU → Save.**
+3. In Google Drive (drive.google.com) create `MyDrive/lenta_prelabel/` and
+   **drag the whole `cvat_video_frames/` folder** (from STEP 1) into it, so
+   it lands at `MyDrive/lenta_prelabel/cvat_video_frames`.
+4. In the notebook: **Runtime → Run all**. Approve the Drive-mount popup.
+5. Wait for `DONE: N frames, M pre-labelled boxes`. The notebook wrote a
+   `.txt` next to every `.jpg` **in that Drive folder**.
+6. Download the folder back to the laptop (right-click → Download in Drive,
+   or use CELL 4's zip) and replace the local `cvat_video_frames/` with it,
+   so locally every `.jpg` now has a sibling `.txt`.
 
----
+Nothing to edit in the notebook unless you want a different model (CELL 2).
 
-## 3. Tool reference
-
-All under `projects/price_tag_pipeline/scripts/`, run with the venv python.
-Pure XML build/parse is cv2‑free and unit‑tested (`tests/test_cvat.py`,
-`data/cvat.py`).
-
-| Tool | Purpose | Key flags | Example |
-|---|---|---|---|
-| `cvat_prepare_task.py` | Emit the bare `price_tag` label spec + print task‑setup steps | `--label-spec`, `--rotate cw\|ccw` (off by default) | `… cvat_prepare_task.py --label-spec` |
-| `cvat_video_frames_task.py` | **Slice videos every N s → image‑task seeds.** Organizer box kept only on the one sampled frame nearest its timestamp (no smear). Emits the bootstrap manifest | `--all --src <real_data>`, `--every 2.0`, `--out`, `--frames-dir` | `… cvat_video_frames_task.py --all --src "E:/…/real_data/dataset" --every 2.0` |
-| `cvat_export_seed.py` | *(legacy)* Released Lenta CSV → **CVAT‑video interpolation seed** (one track per tag). Superseded by `cvat_video_frames_task.py` for the released clips | `--all --src <real_data>`, `--out` | `… cvat_export_seed.py --all --src "E:/…/real_data/dataset" --out cvat_seeds` |
-| `cvat_bootstrap.py` | Create project + one **video task per released video**, upload mp4, import its seed (cvat‑sdk) | `--src`, `--seeds`, `--user/--password`, `--only` | `… cvat_bootstrap.py --src "E:/…/real_data/dataset" --seeds cvat_seeds --user admin --password ***` |
-| `cvat_from_external.py` | Friend dump (candidates CSV **or** classic YOLO‑txt) → N **chronological scene** image‑XMLs + `manifest.json` | `--csv` / `--yolo-labels`, `--model-backed`, `--sources`, `--scenes`, `--min-conf` | `… cvat_from_external.py --csv friends_labels/all_candidates2.csv --model-backed --images-dir friends_labels/dataset_lenta --scenes 4 --out cvat_seeds_friends` |
-| `cvat_bootstrap_photos.py` | Create one **image task per scene** from a manifest, upload photos, import seeds | `--manifest`, `--user/--password`, `--replace`, `--only` | `… cvat_bootstrap_photos.py --manifest cvat_seeds_friends/manifest.json --user admin --password ***` |
-| `cvat_import.py` | **CVAT export → ours.** Auto: boxes‑only→detector, fields→tags; photos→YOLO | `--xml`, `--video` \| `--images-dir --set`, `--mode auto\|tags\|detector` | `… cvat_import.py --xml ann.xml --images-dir friends_labels/dataset_lenta --set friends_scene_2` |
-| `cvat_strip_attributes.py` | Remove all attributes from the **live** project label (kills the details panel; no re‑upload) | `--user/--password`, `--project` | `… cvat_strip_attributes.py --user admin --password ***` |
-| `prepare_data.py` | Existing pipeline ingest — **unchanged** | `--raw <root> --processed <out>` | `… prepare_data.py --raw data/raw_photos --processed data/processed_photos` |
-
----
-
-## 4. Workflows
-
-### A. Released videos — every-2-second image tasks (current approach)
-
-The organizer boxes are bad, so we **don't** smear them via interpolation.
-Each video is sliced one frame every 2 s into a plain **image task**
-`25_12-20 … 49_5`; each released tag's box is shown only on the **one
-sampled frame nearest its timestamp** (a hint of "a tag exists here"), never
-propagated. Box the rest yourself, detector-first, no fields.
-
-Rebuild the tasks (already done once — `--every` tunes the interval):
+### 3B — Local (only if the laptop has a decent GPU)
 
 ```bash
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_video_frames_task.py \
-  --all --src "E:/Hackatons/lenta_tech_life_2026/real_data/dataset" --every 2.0
+uv pip install --python .venv ultralytics huggingface-hub   # once
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/prelabel_frames.py \
+  --frames-dir cvat_video_frames
+```
+
+Same result: a YOLO `.txt` next to each frame (empty `.txt` = "checked, no
+tag" — a useful **negative**, keep it). Add `--device 0` for GPU, `cpu` to
+force CPU (slow). `--model data/checkpoints/detector/best.pt` to use a
+fine-tuned checkpoint.
+
+---
+
+## Part 4 — STEP 3: push frames + pre-boxes into CVAT (laptop)
+
+```bash
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/frames_to_cvat.py \
+  --frames-dir cvat_video_frames --out cvat_seeds_video
 .venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_bootstrap_photos.py \
-  --manifest cvat_seeds_frames/manifest.json --user admin --password *** [--replace]
+  --manifest cvat_seeds_video/manifest.json --user admin --password ***
 ```
 
-In each task: fix/replace the hint boxes, add every missing tag. **Export
-→ "CVAT for images 1.1"**, *Save images OFF*. Hand back → I run:
+* `frames_to_cvat.py` turns each scene's frames + `.txt` into a *CVAT for
+  images 1.1* seed and a bootstrap manifest (every frame is uploaded —
+  blank ones too, so confirming "no tag here" is recorded).
+* `cvat_bootstrap_photos.py` creates one **image task per scene** in the
+  **"Lenta price tags"** project, uploads the photos, and imports the
+  pre-boxes. Re-running skips existing scenes; add `--replace` to re-import
+  annotations into an existing scene **without** re-uploading photos.
+
+---
+
+## Part 5 — Annotate (browser)
+
+1. http://localhost:8080 → project **"Lenta price tags"** → open a task →
+   open its **Job** (boxes only show *inside a job*, not in list views).
+2. Each price tag should have one tight `price_tag` box. The detector
+   pre-drew them: **delete false boxes, fix loose ones, add missed tags.**
+   Boxes only — there are no fields/attributes to fill (detector-first; the
+   per-object "details" panel is intentionally off).
+3. Shortcuts: `N` new box · drag handles to resize · `Del` delete ·
+   `F` next frame · `D` previous · `Ctrl+S` save (save often).
+4. A frame with genuinely no tag → just leave it empty and move on; that's
+   a valuable negative.
+
+These are **image tasks** (independent frames, no tracking) — the right
+model here because we sample every 2 s. The tracking/interpolation mode is
+explained in the appendix for the legacy video-task flow.
+
+---
+
+## Part 6 — Export from CVAT
+
+In the task: **Actions → Export task dataset →** format
+**"CVAT for images 1.1"**, **"Save images" → OFF** (we already have the
+media). You get a zip with an `annotations.xml`. You can export every scene,
+or let the puller pull straight from the running server (next step) — no
+manual export needed.
+
+---
+
+## Part 7 — Convert to our format
+
+One command pulls the validated scenes straight from CVAT, writes
+single-class YOLO, zips it (to share), **and** folds it into the pipeline
+raw layout:
 
 ```bash
 .venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_pull_pack.py \
   --tasks 25_12-20,25_2-10,26_12-20,43_15,49_5 \
-  --images-dir cvat_frames --set-name video_frames \
+  --images-dir cvat_video_frames --set-name video_frames \
   --user admin --password *** --into data/raw_photos
 .venv/Scripts/python.exe projects/price_tag_pipeline/scripts/prepare_data.py \
   --raw data/raw_photos --processed data/processed_photos
 ```
 
-> The old interpolation flow (`cvat_export_seed.py` + `cvat_bootstrap.py`,
-> tracks + `cvat_import.py --video`) still works and is the only way to get
-> cross-track-dedup `track_id` ground truth — but for the released clips the
-> sampled image-task flow above is preferred (the organizer tracks were
-> "ужасные").
+* `--tasks` = the scene names (one per video). `--images-dir` must be the
+  STEP 1 frames root so the puller finds the source JPEGs.
+* Output filenames are `<scene>__<frame>` so multi-video merges never
+  collide. `--labels-only` makes a tiny zip (no images) to send the friend.
+* `prepare_data.py` is **unchanged** — it ingests `data/raw_photos` exactly
+  like the original 5 videos. The dataset is now extended; train as usual.
 
-### B. Your own store photos
+---
 
-`cvat_prepare_task.py --label-spec` → create an **image task** (name = a set
-id), upload photos, draw `price_tag` boxes, **Export "CVAT for images 1.1"**.
-Then:
-
-```bash
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_import.py \
-  --xml <export>/annotations.xml --images-dir <photo_folder> --set <set_id>
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/prepare_data.py \
-  --raw data/raw_photos --processed data/processed_photos
-```
-
-Shoot guidance: 4K, landscape, **don't pre‑rotate**, H.264 CFR / JPEG,
-ASCII folder per zone, focus on barcode + hard cases (glass, glare, blur).
-
-### C. Friend / external dataset (already loaded — `friends_scene_1..4`)
-
-`friends_labels/` ships a candidates CSV. `all_candidates2.csv` is the full
-run over all **132** mixed portrait/landscape photos in
-`friends_labels/dataset_lenta/`. `merged_final` is recall‑first
-pseudo‑labelling (YOLO `conf≥0.05` + a colour‑CV heuristic); **`--model-backed`**
-drops the noisy `classic_color_cv` (~⅔) → ~**1958** YOLO‑backed boxes,
-split into 4 chronological scenes (≈490 each, all 132 photos boxed).
+## Cheat sheet (the whole pipeline)
 
 ```bash
-# regenerate scenes (already done once)
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_from_external.py \
-  --csv friends_labels/all_candidates2.csv --model-backed \
-  --images-dir friends_labels/dataset_lenta --scenes 4 --out cvat_seeds_friends
+# 0. CVAT up
+cd third_party/cvat && docker compose up -d && cd ../..
 
-# (re)load into CVAT — --replace re-imports WITHOUT re-uploading photos
+# 1. slice + dedup (laptop)
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/slice_video_frames.py \
+  --src "E:/Hackatons/lenta_tech_life_2026/real_data/dataset" --every 2.0 --out cvat_video_frames
+
+# 2. pre-label  ->  Colab: run notebooks/lenta_prelabel_colab.ipynb
+#                   local: prelabel_frames.py --frames-dir cvat_video_frames
+
+# 3. push to CVAT (laptop)
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/frames_to_cvat.py \
+  --frames-dir cvat_video_frames --out cvat_seeds_video
 .venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_bootstrap_photos.py \
-  --manifest cvat_seeds_friends/manifest.json --user admin --password *** [--replace]
-```
+  --manifest cvat_seeds_video/manifest.json --user admin --password ***
 
-Validate/fix boxes in `friends_scene_1..4`, then per scene:
+# 4. ...annotate in the browser...
 
-```bash
-.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_import.py \
-  --xml <export>/annotations.xml \
-  --images-dir friends_labels/dataset_lenta --set friends_scene_2
+# 5. export + convert
+.venv/Scripts/python.exe projects/price_tag_pipeline/scripts/cvat_pull_pack.py \
+  --tasks <scene1,scene2,...> --images-dir cvat_video_frames --set-name video_frames \
+  --user admin --password *** --into data/raw_photos
 .venv/Scripts/python.exe projects/price_tag_pipeline/scripts/prepare_data.py \
   --raw data/raw_photos --processed data/processed_photos
 ```
 
-(Classic YOLO‑txt dump instead of a CSV? swap `--csv` for `--yolo-labels <dir>`.)
+---
+
+## Other inputs (same tools)
+
+* **Your own store photos.** Skip STEP 1–2. Make an image task, upload the
+  photos, draw boxes, export, then `cvat_import.py --xml <ann.xml>
+  --images-dir <photos> --set <id>` → `prepare_data.py`. Shoot 4K,
+  landscape, **don't pre-rotate**, focus on barcodes + hard cases (glare,
+  glass, blur).
+* **Friend / external dataset** (`friends_scene_1..4`, already loaded from
+  `friends_labels/`): `cvat_from_external.py --csv
+  friends_labels/all_candidates2.csv --model-backed --images-dir
+  friends_labels/dataset_lenta --scenes 4 --out cvat_seeds_friends` →
+  `cvat_bootstrap_photos.py --manifest cvat_seeds_friends/manifest.json`.
+  Export each scene → `cvat_pull_pack.py` / `cvat_import.py`.
 
 ---
 
-## 5. How tracking works in CVAT (video tasks)
+## Tool reference
 
-A video task is **interpolation mode**; the unit is a **Track**, not a
-per‑frame box:
+All under `projects/price_tag_pipeline/scripts/`, run with the venv python.
 
-- Draw a box, press **N** → a Track is created, that frame is a **keyframe**.
-- Move/resize it on a later frame → that frame auto‑becomes a keyframe;
-  CVAT **linearly interpolates** the box on every frame between. Two
-  keyframes cover a smooth pan; add more only for non‑linear motion.
-- Toggle **Outside** when the tag leaves view — same Track, don't start a
-  new one.
-- Each Track has a stable **id** = one physical tag across its whole pass.
-  `cvat_import.py` writes it as a `track_id` column → free, exact ground
-  truth for cross‑track dedup (the metric's hardest part, briefing §5.4/§6.5).
-- AI Tools → Tracker (SiamMask/TransT) can auto‑propagate; interpolation
-  alone is deterministic and enough. Export is identical either way.
+| Tool | Step | Purpose |
+|---|---|---|
+| `slice_video_frames.py` | **1** | videos → frames every N s, drop robot-parked dupes |
+| `prelabel_frames.py` | **2 (local)** | detector → a YOLO `.txt` per frame |
+| `notebooks/lenta_prelabel_colab.ipynb` | **2 (Colab)** | same, on free GPU |
+| `frames_to_cvat.py` | **3** | frames + `.txt` → CVAT image-task seeds + manifest |
+| `cvat_bootstrap_photos.py` | **3** | create image task per scene, upload, import seeds (`--replace`) |
+| `cvat_pull_pack.py` | **5** | pull validated scenes → single-class YOLO + zip, `--into data/raw_photos` |
+| `prepare_data.py` | **5** | existing pipeline ingest — **unchanged** |
+| `cvat_import.py` | alt | a single CVAT export → ours (auto: boxes→detector, fields→tags) |
+| `cvat_from_external.py` | alt | friend candidates CSV / YOLO-txt → scene seeds |
+| `cvat_prepare_task.py` | alt | print the bare `price_tag` label spec / task steps |
+| `cvat_strip_attributes.py` | fix | strip attributes off the live label (kills details panel) |
+| `train_detector_yolo.py` | — | fine-tune the OFF detector on our data (`experiments/finetune_openfoodfacts.yaml`) |
+| `cvat_video_frames_task.py` / `cvat_export_seed.py` | legacy | old organizer-hint / interpolation-seed flows (see appendix) |
 
----
-
-## 6. Export from CVAT
-
-Task → **Actions → Export task dataset →** format **"CVAT for video 1.1"**
-(video) or **"CVAT for images 1.1"** (photos), **"Save images" OFF** (we
-already have the media). Unzip → `annotations.xml` → hand back.
-
-Round‑trip verified on `43_15`: 29 tags in → 29 out, comma‑decimal bboxes
-parsed, Cyrillic names intact, `track_id` preserved, max `frame_timestamp`
-drift **15 ms** vs a 50 ms frame — inside the matching tolerance (task.md
-§6.3) and identical to the mapping the training pipeline already applies.
+Pure XML build/parse is cv2-free and unit-tested (`tests/test_cvat.py`,
+`tests/test_frame_sampling.py`, `tests/test_detector_model_path.py`).
 
 ---
 
-## 7. Where everything is stored
+## Where everything is stored
 
 | What | Location |
 |---|---|
 | CVAT source (pinned) | `third_party/cvat` (submodule @ `c0f002237`, 2.64.1) |
 | **Annotations + uploaded media** | Docker volume **`cvat_data`** → `/home/django/data` |
 | Tasks / users / labels | Docker volume **`cvat_db`** (PostgreSQL) |
-| Keys / logs / events / caches | `cvat_keys`, `cvat_logs`, `cvat_events_db`, `cvat_inmem_db`, `cvat_cache_db` |
-| Released‑video seeds | `cvat_seeds/*.cvat.xml` (gitignored) |
-| Friend scene seeds + manifest | `cvat_seeds_friends/` (gitignored) |
-| Friend raw dataset | `friends_labels/` (gitignored: photos, `all_candidates*.csv`) |
-| Imported video — tags / detector | `data/raw/annotations/csv/<id>.csv` / `data/raw_det/…` |
-| Imported photos | `data/raw_photos/{frames,annotations/labels}/<set>/` |
-| Adapter code | `src/price_tag_pipeline/data/cvat.py` + `scripts/cvat_*.py` |
+| Keys / logs / caches | `cvat_keys`, `cvat_logs`, `cvat_events_db`, `cvat_inmem_db`, `cvat_cache_db` |
+| Sliced frames + STEP-2 labels | `cvat_video_frames/<scene>/*.jpg|*.txt` (gitignored) |
+| STEP-3 seeds + manifest | `cvat_seeds_video/` (gitignored) |
+| Imported photos / detector data | `data/raw_photos/{frames,annotations/labels}/<set>/` (gitignored) |
+| Adapter code | `src/price_tag_pipeline/data/{cvat,frame_sampling}.py` + `scripts/` |
 
-Inspect: `docker volume inspect cvat_data`. Backup (stop CVAT first):
+Backup (stop CVAT first):
 `docker run --rm -v cvat_db:/v -v "$PWD:/b" busybox tar czf /b/cvat_db.tgz -C /v .`
 (repeat for `cvat_data`).
 
 ---
 
-## 8. Troubleshooting
+## Troubleshooting
 
-- **"I don't see any boxes."** You opened the wrong task/frame, or the
-  project/task list (boxes only show inside a **Job**). Released `scene_1`
-  style seeds may be sparse on early frames. Friend scenes: every photo is
-  boxed — open `friends_scene_2`'s job. Check label **Opacity** in the
-  right panel; 4K images make ~400 px boxes look tiny at fit‑to‑screen.
-- **"The per‑box details panel annoys me."** It's label attributes. Run
-  `cvat_strip_attributes.py --user admin --password ***` — strips them off
-  the live label (no re‑upload, boxes untouched). New projects are already
-  bare.
-- **Re‑filtered the friend CSV, don't want to re‑upload 132 photos.**
-  Regenerate scenes, then `cvat_bootstrap_photos.py … --replace` (clears +
-  re‑imports annotations only).
-- **CVAT won't start / port busy.** `docker compose ps`; logs:
-  `docker compose logs cvat_server`. First boot runs DB migrations (~1 min).
-- **Submodule clone fails (RPC reset).** Shallow + pinned (see §1).
-- **`cvat-sdk` missing.** `uv pip install --python .venv cvat-sdk`.
+* **"I don't see any boxes."** You opened the task page, not its **Job**.
+  Open the job. Also check label **Opacity** in the right panel; 4K frames
+  make ~400 px boxes look tiny at fit-to-screen.
+* **STEP 2 says `ultralytics not installed`.** Run it on Colab (§3A) or
+  `uv pip install --python .venv ultralytics huggingface-hub`.
+* **Colab can't find the frames folder.** Path in CELL 0 must match where
+  you uploaded it: `MyDrive/lenta_prelabel/cvat_video_frames`.
+* **Re-pushing without re-uploading photos.** `cvat_bootstrap_photos.py …
+  --replace` clears + re-imports annotations only.
+* **CVAT won't start / port busy.** `cd third_party/cvat && docker compose
+  ps`; logs: `docker compose logs cvat_server`. First boot runs DB
+  migrations (~1 min).
+* **Frames look too similar / too sparse.** Tune STEP 1 `--every` and
+  `--min-diff`, re-run STEP 1→3 (use `--replace` in bootstrap).
+* **`cvat-sdk` missing.** `uv pip install --python .venv cvat-sdk`.
+
+---
+
+## Appendix — how tracking works (legacy video-task flow)
+
+The current flow uses **image tasks** (no tracking) because we sample every
+2 s. The old `cvat_export_seed.py` + `cvat_bootstrap.py` flow created
+**video tasks** (interpolation mode); kept only when you need cross-track
+ground truth:
+
+* Draw a box, press `N` → a **Track** + a **keyframe**.
+* Move/resize it on a later frame → that frame auto-becomes a keyframe;
+  CVAT **linearly interpolates** between. Two keyframes cover a smooth pan.
+* Toggle **Outside** when the tag leaves view — same Track, don't start a
+  new one.
+* Each Track id = one physical tag across its whole pass. `cvat_import.py
+  --video` writes it as a `track_id` column → free, exact ground truth for
+  cross-track dedup. Export: **"CVAT for video 1.1"**.
 
 ---
 
-## 9. Decisions baked in (and why)
+## Decisions baked in (and why)
 
-- **Bare `price_tag` label, no attributes.** Detector‑first; no OCR fields
-  now or planned → no details panel. The parser still reads `<attribute>`
-  if a future XML carries them.
-- **No 90° rotation by default.** Released CSV boxes are un‑rotated;
-  `ingest_lenta_csv` doesn't rotate; the pipeline rotates uniformly later.
-  Rotating only the CVAT video would silently mis‑place every seed.
-  `cvat_prepare_task.py --rotate` exists for *fresh* sets with no seed.
-- **Photos use a separate raw root** (`data/raw_photos`/`data/raw_det`):
-  `detect_format` prefers CSV over YOLO under one root, so mixing would
-  shadow a video CSV.
-- **Friend `merged_final` filtered to `--model-backed`.** The friend's own
-  notebook flags `classic_color_cv` as low‑trust; dropping it removes ~⅔
-  noise while keeping YOLO recall.
-- **Pure, Unicode‑safe adapters** (`ElementTree` + `cv_io`; cv2 only in CLI
-  wrappers), tested without OpenCV like `test_lenta_csv.py`.
-
----
+* **Detector pre-labelling, not from scratch.** Correcting boxes is ~5×
+  faster than drawing them. The OFF price-tag detector is the same model
+  the original auto-label notebook trusted; recall-first (`conf 0.05`) so
+  you delete extras rather than miss tags.
+* **Robot-parked de-dup.** The scan robot stops a lot; identical frames are
+  wasted annotation effort and skew training. Dropped against the last
+  *kept* frame so static runs collapse to one.
+* **Image tasks, no attributes.** Detector-first; no OCR fields now or
+  planned → no per-object details panel. Boxes only.
+* **No 90° rotation by default.** Released boxes are un-rotated; the
+  pipeline rotates uniformly later. Rotating only CVAT would mis-place
+  seeds.
+* **Photos use a separate raw root** (`data/raw_photos`): `detect_format`
+  prefers CSV over YOLO under one root, so mixing would shadow a video CSV.
+* **Pure, Unicode-safe adapters** (`ElementTree` + `cv_io`; cv2 only in CLI
+  wrappers), unit-tested without OpenCV.
 
 *Sources: [CVAT dataset formats](https://docs.cvat.ai/docs/dataset_management/formats/format-cvat/),
 [import/export](https://docs.cvat.ai/docs/dataset_management/import-datasets/),
-[installation](https://docs.cvat.ai/docs/administration/community/basics/installation/).*
+[installation](https://docs.cvat.ai/docs/administration/community/basics/installation/),
+OpenFoodFacts [price-tag-detection](https://huggingface.co/openfoodfacts/price-tag-detection).*

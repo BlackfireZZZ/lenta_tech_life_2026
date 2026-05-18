@@ -19,7 +19,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Optional
 
-import cv2
 import numpy as np
 
 from .config import DetectorConfig
@@ -28,10 +27,23 @@ from .types import Detection
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_FPS_FALLBACK = 30.0
+HF_MODEL_PREFIX = "hf://"
+
+
+def _require_cv2():
+    try:
+        import cv2  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "OpenCV is required for video detector runtime. Install "
+            "projects/price_tag_pipeline/requirements/base.txt in the project venv."
+        ) from exc
+    return cv2
 
 
 def read_video_fps(video_path: str) -> float:
     """Read FPS from the container. Falls back to 30 fps with a loud warning."""
+    cv2 = _require_cv2()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         LOGGER.warning("Could not open %s to read FPS; falling back to %.1f", video_path, DEFAULT_FPS_FALLBACK)
@@ -52,6 +64,7 @@ def read_video_frame_count(video_path: str) -> int:
     in that case we return 0 and progress degrades to phase-only updates
     (an indeterminate bar) — never an exception, never a wrong total.
     """
+    cv2 = _require_cv2()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         LOGGER.warning("Could not open %s to read frame count.", video_path)
@@ -89,18 +102,19 @@ class YOLOTrackerDetector(BaseDetector):
 
     def __init__(self, cfg: DetectorConfig):
         self.cfg = cfg
-        if not Path(cfg.model_path).exists() and not cfg.model_path.endswith(".pt"):
+        model_path = resolve_detector_model_path(cfg.model_path)
+        if not Path(model_path).exists() and "/" in model_path:
             LOGGER.warning(
                 "Detector checkpoint '%s' does not exist locally. Ultralytics may "
                 "attempt to download it.",
-                cfg.model_path,
+                model_path,
             )
         # Lazy import so the package is importable without ultralytics installed
         # (useful for tests of parser/aggregator on a CI box without GPU deps).
         from ultralytics import YOLO  # type: ignore
 
         self._YOLO = YOLO
-        self.model = YOLO(self.cfg.model_path)
+        self.model = YOLO(model_path)
         if self.cfg.open_vocab_labels:
             if hasattr(self.model, "set_classes"):
                 self.model.set_classes(list(self.cfg.open_vocab_labels))
@@ -135,6 +149,8 @@ class YOLOTrackerDetector(BaseDetector):
 
         try:
             results = self.model.track(**track_kwargs)
+            next_tid = 1
+            fallback_tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
             for frame_idx, result in enumerate(results):
                 frame = result.orig_img  # do not copy — downstream rectifier copies its slice
                 boxes = getattr(result, "boxes", None)
@@ -148,13 +164,21 @@ class YOLOTrackerDetector(BaseDetector):
                 xyxy = boxes.xyxy
                 confs = boxes.conf
                 classes = boxes.cls
+                fallback_ids: list[int] | None = None
+                if ids is None:
+                    fallback_ids, fallback_tracks, next_tid = _assign_iou_track_ids(
+                        boxes_xyxy=[tuple(int(round(float(v))) for v in row.tolist()) for row in xyxy],
+                        tracks=fallback_tracks,
+                        next_tid=next_tid,
+                        frame_idx=frame_idx,
+                    )
 
                 detections: list[Detection] = []
                 for i in range(len(boxes)):
                     x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
                     conf = float(confs[i].item()) if confs is not None else 1.0
                     cls_id = int(classes[i].item()) if classes is not None else 0
-                    track_id = int(ids[i].item()) if ids is not None else None
+                    track_id = int(ids[i].item()) if ids is not None else fallback_ids[i]
                     detections.append(
                         Detection(
                             frame_idx=frame_idx,
@@ -181,6 +205,7 @@ class YOLOTrackerDetector(BaseDetector):
         video_path: str,
         fps: float,
     ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
+        cv2 = _require_cv2()
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
@@ -256,6 +281,80 @@ class YOLOTrackerDetector(BaseDetector):
             yield frame, detections
 
         cap.release()
+
+
+def _assign_iou_track_ids(
+    boxes_xyxy: list[tuple[int, int, int, int]],
+    tracks: list[tuple[int, tuple[int, int, int, int], int]],
+    next_tid: int,
+    frame_idx: int,
+    max_age: int = 15,
+    iou_gate: float = 0.3,
+) -> tuple[list[int], list[tuple[int, tuple[int, int, int, int], int]], int]:
+    """Assign stable-enough IDs when Ultralytics returns boxes without tracker IDs."""
+    out: list[int] = []
+    assigned: set[int] = set()
+    for bbox in boxes_xyxy:
+        best_j = -1
+        best_iou = 0.0
+        for j, (tid, tb, last_seen) in enumerate(tracks):
+            if frame_idx - last_seen > max_age or j in assigned:
+                continue
+            iou = _bbox_iou(bbox, tb)
+            if iou > best_iou:
+                best_iou = iou
+                best_j = j
+        if best_j >= 0 and best_iou >= iou_gate:
+            tid, _, _ = tracks[best_j]
+            tracks[best_j] = (tid, bbox, frame_idx)
+            assigned.add(best_j)
+            out.append(tid)
+        else:
+            tid = next_tid
+            next_tid += 1
+            tracks.append((tid, bbox, frame_idx))
+            assigned.add(len(tracks) - 1)
+            out.append(tid)
+    tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
+    return out, tracks, next_tid
+
+
+def resolve_detector_model_path(model_path: str) -> str:
+    """Resolve a detector model path understood by runtime configs.
+
+    Supported forms:
+    - local path or Ultralytics model name, passed through unchanged;
+    - ``hf://owner/repo/path/in/repo.pt``, downloaded through Hugging Face Hub.
+
+    The default production configs use OpenFoodFacts'
+    ``hf://openfoodfacts/price-tag-detection/weights/best.pt`` model so a fresh
+    checkout has a real detector before we fine-tune our own checkpoint.
+    """
+    raw = str(model_path).strip()
+    if not raw.startswith(HF_MODEL_PREFIX):
+        return raw
+
+    spec = raw[len(HF_MODEL_PREFIX):].strip("/")
+    parts = spec.split("/", 2)
+    if len(parts) != 3 or not all(parts):
+        raise ValueError(
+            "HF detector URI must look like "
+            "hf://owner/repo/path/to/file.pt, got: "
+            f"{model_path!r}"
+        )
+    repo_id = f"{parts[0]}/{parts[1]}"
+    filename = parts[2]
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "Detector model_path uses hf:// but huggingface-hub is not installed. "
+            "Install projects/price_tag_pipeline/requirements/base.txt or set "
+            "detector.model_path to a local checkpoint."
+        ) from exc
+
+    return hf_hub_download(repo_id=repo_id, filename=filename)
 
 
 # ---------------------------------------------------------------------------

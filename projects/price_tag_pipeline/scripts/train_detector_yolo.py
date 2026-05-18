@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Train a YOLO-family detector via Ultralytics.
 
-Defaults target YOLO26-l on our 1280-shortest-side input. Switch with --model.
+Defaults to fine-tuning the OpenFoodFacts price-tag detector — the fixed
+base of our solution — on our 1280-shortest-side input. We tune THIS
+architecture from THESE weights; override only to compare (--model).
+The canonical knobs/promotion gate live in
+``projects/price_tag_pipeline/experiments/finetune_openfoodfacts.yaml``.
 
-Usage:
+Usage (--model defaults to the OFF base; --name is auto-derived):
     python projects/price_tag_pipeline/scripts/train_detector_yolo.py \\
         --dataset data/processed/dataset.yaml \\
-        --model yolo26l.pt \\
         --epochs 200 \\
         --imgsz 1280 \\
         --batch 8 \\
-        --device 0 \\
-        --name yolo26l_fold0
+        --device 0
 
 For a different fold, first re-emit dataset.yaml:
     python projects/price_tag_pipeline/scripts/make_splits.py --emit-dataset-yaml-fold 1
@@ -36,12 +38,23 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from price_tag_pipeline.training.augmentation import UltralyticsAugConfig  # noqa: E402
+from price_tag_pipeline.detector import resolve_detector_model_path  # noqa: E402
+
+
+DEFAULT_DETECTOR_MODEL = "hf://openfoodfacts/price-tag-detection/weights/best.pt"
+
+
+def _default_run_name(model_arg: str, seed: int) -> str:
+    if model_arg.startswith("hf://openfoodfacts/price-tag-detection/"):
+        return f"openfoodfacts_price_tag_detection_seed{seed}"
+    return f"{Path(model_arg).stem}_seed{seed}"
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", required=True, help="Path to dataset.yaml")
-    p.add_argument("--model", default="yolo26l.pt", help="Pretrained checkpoint or model name")
+    p.add_argument("--model", default=DEFAULT_DETECTOR_MODEL,
+                   help="Pretrained checkpoint, hf:// URI, or Ultralytics model name")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--batch", type=int, default=8)
@@ -74,13 +87,14 @@ def main() -> int:
             "ultralytics is not installed. pip install ultralytics"
         ) from e
 
-    name = args.name or f"{Path(args.model).stem}_seed{args.seed}"
+    name = args.name or _default_run_name(args.model, args.seed)
     aug = UltralyticsAugConfig()
+    model_path = resolve_detector_model_path(args.model)
 
     logging.info("Starting training: model=%s data=%s epochs=%d imgsz=%d batch=%d",
                  args.model, args.dataset, args.epochs, args.imgsz, args.batch)
 
-    model = YOLO(args.model)
+    model = YOLO(model_path)
     train_kwargs = dict(
         data=args.dataset,
         epochs=args.epochs,
