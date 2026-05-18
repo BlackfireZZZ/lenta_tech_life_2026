@@ -18,6 +18,7 @@ crops only, materially improving accuracy at the same call budget.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -50,6 +51,16 @@ class PriceTagPipeline:
         # QR -> barcode -> smart OCR, behind one stable seam. Parser/OCR/QR
         # wiring now lives in price_tag_pipeline.recognition, not here.
         self.recognition: RecognitionChain = build_recognition_chain(cfg)
+        # Tracker-amplified code reading: QR/1D decode is ~ms and only fires on
+        # a few lucky frames of a tag's pass, so we sweep a CHEAP codes-only
+        # sub-chain over many more of the track's best crops than OCR. Built
+        # via the public factory with OCR disabled — no reader-seam change.
+        self._code_chain: RecognitionChain = build_recognition_chain(
+            dataclasses.replace(
+                cfg,
+                recognition=dataclasses.replace(cfg.recognition, enable_ocr=False),
+            )
+        )
         self.aggregator = TrackAggregator(cfg.aggregation)
         self._sr = None
         if cfg.rectifier.super_resolution:
@@ -222,26 +233,44 @@ class PriceTagPipeline:
         QR/barcode/OCR is the aggregator's weighted voting, not done here.
         """
         k = self.cfg.ocr.top_k_crops_per_track
+        code_k = self.cfg.ocr.code_decode_top_k
+        if code_k <= 0:
+            code_k = 1 << 30  # "all buffered"
+
+        def _commit(entry, result) -> None:
+            self._audit(track_id, entry.crop.frame_idx, result)
+            if parsed_is_empty(result.parsed):
+                return
+            self.aggregator.add_observation(
+                TagObservation(
+                    frame_idx=entry.crop.frame_idx,
+                    timestamp_s=entry.crop.timestamp_s,
+                    track_id=track_id,
+                    bbox_xyxy=entry.crop.bbox_xyxy,
+                    parsed=result.parsed,
+                    detection_confidence=entry.crop.detection_confidence,
+                    sharpness=entry.crop.sharpness,
+                )
+            )
+
+        # Pass 1 — full chain (QR→barcode→OCR) on the top-K sharpest crops.
+        # Unchanged: OCR (the expensive call) stays bounded by top_k.
         crops = self.aggregator.best_crops(track_id, k)
         if not crops:
             return
-
         for entry in crops:
             for result in self.recognition.decode(entry.crop.image):
-                self._audit(track_id, entry.crop.frame_idx, result)
-                if parsed_is_empty(result.parsed):
-                    continue
-                self.aggregator.add_observation(
-                    TagObservation(
-                        frame_idx=entry.crop.frame_idx,
-                        timestamp_s=entry.crop.timestamp_s,
-                        track_id=track_id,
-                        bbox_xyxy=entry.crop.bbox_xyxy,
-                        parsed=result.parsed,
-                        detection_confidence=entry.crop.detection_confidence,
-                        sharpness=entry.crop.sharpness,
-                    )
-                )
+                _commit(entry, result)
+
+        # Pass 2 — codes only, swept over the WIDER set of the track's best
+        # crops (frames the tracker matched to this physical tag but that
+        # didn't make OCR's top-K). A QR/GTIN reads on only a few lucky
+        # frames; trying more of them is the tracker amplifying code reading,
+        # at ~ms each. OCR is NOT re-run here.
+        if code_k > k:
+            for entry in self.aggregator.best_crops(track_id, code_k)[k:]:
+                for result in self._code_chain.decode(entry.crop.image):
+                    _commit(entry, result)
 
         # Drop the buffer once we have committed observations.
         self.aggregator.clear_crops(track_id)

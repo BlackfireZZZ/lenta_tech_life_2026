@@ -78,6 +78,11 @@ class OCRConfig:
     min_crop_area_px: int
     min_detection_confidence: float
     top_k_crops_per_track: int = 5
+    # QR/1D-barcode decode is ~ms (vs a heavy VLM OCR call), and a code only
+    # decodes on a few lucky frames of a tag's pass. So sweep the cheap code
+    # decoders over far MORE of the track's best crops than OCR. Must be
+    # >= top_k_crops_per_track to add anything; <=0 means "all buffered".
+    code_decode_top_k: int = 24
     vlm_model: str = "PaddlePaddle/PaddleOCR-VL"
     vlm_prompt_path: Optional[str] = None
     paddleocr_lang: str = "ru"
@@ -217,6 +222,7 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         min_crop_area_px=int(node["min_crop_area_px"]),
         min_detection_confidence=float(node["min_detection_confidence"]),
         top_k_crops_per_track=int(_opt(node, "top_k_crops_per_track", 5)),
+        code_decode_top_k=int(_opt(node, "code_decode_top_k", 24)),
         vlm_model=str(_opt(node, "vlm_model", "PaddlePaddle/PaddleOCR-VL")),
         vlm_prompt_path=_opt(node, "vlm_prompt_path"),
         paddleocr_lang=str(_opt(node, "paddleocr_lang", "ru")),
