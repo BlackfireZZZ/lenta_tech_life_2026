@@ -262,3 +262,16 @@ runs/
 
 # Project virtualenv
 .venv-lenta/
+
+# OCR campaign artifacts — large/generated, never commit (OCR_CAMPAIGN_LOG.md).
+# NOTE: .gitignore has no inline comments — keep patterns on their own lines.
+# weights/ = 13 GB assembled VLM checkpoints; raw_photos/ = user photos+labels;
+# friends_crops *.jpg = 1166 regenerable crops (export_friends_crops.py).
+weights/
+raw_photos/
+data/friends_crops_1536/
+data/friends_crops/*.jpg
+data/friends_crops/gallery.html
+# but DO keep the small, hand-verified scoreboard + manifest:
+!data/friends_crops/reference.jsonl
+!data/friends_crops/manifest.jsonl
