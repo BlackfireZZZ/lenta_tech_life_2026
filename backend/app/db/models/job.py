@@ -46,6 +46,13 @@ class Job(Base):
     rotation: Mapped[str] = mapped_column(
         String(8), nullable=False, default="none", server_default="none"
     )
+    # sha256 of the uploaded bytes. Together with `rotation` it is the
+    # content-cache key: a re-upload of the same clip + same rotation reuses
+    # a prior succeeded job's result instead of re-running the pipeline
+    # (UI-debug loop without waiting out the full run again).
+    content_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
 
     rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

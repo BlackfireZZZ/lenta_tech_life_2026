@@ -78,6 +78,10 @@ async def init_models() -> None:
         for ddl in (
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
             "rotation VARCHAR(8) NOT NULL DEFAULT 'none'",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
+            "content_hash VARCHAR(64)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_content_hash "
+            "ON jobs (content_hash)",
         ):
             await conn.execute(text(ddl))
     logger.info("DB schema ready (create_all + additive DDL on %s)", settings.DB_HOST)

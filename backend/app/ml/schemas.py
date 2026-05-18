@@ -23,8 +23,10 @@ class ProcessRequest(BaseModel):
     # Detector-only frame pre-rotation: none | ccw | cw. Steers
     # cfg.detector.frame_rotation (how the model sees frames). The stored
     # video, the review playback and the graded CSV coords are ALWAYS the
-    # original orientation (boxes un-projected back). Default "none": no ML
-    # orientation assumption — the UI's rotate button is the explicit fix.
+    # original orientation (boxes un-projected back). Default "none": an
+    # uploaded clip is trusted to be in its real-life orientation and the
+    # detector sees it untouched. The UI rotate button is the per-clip
+    # override for sideways footage (e.g. robot cam mounted 90° CW).
     rotation: str = "none"
 
 

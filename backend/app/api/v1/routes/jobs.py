@@ -27,7 +27,7 @@ gateway never reshapes graded columns.
 from __future__ import annotations
 
 import asyncio
-import shutil
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import gettempdir
@@ -35,6 +35,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, PlainTextResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.job import JobPredictions, JobResponse, JobStatus
@@ -76,18 +77,25 @@ def _upload_dir(job_id: UUID) -> Path:
         return d
 
 
-def _save_upload(video: UploadFile, job_id: UUID) -> tuple[str, Path]:
-    """Persist the clip under an ASCII-safe name; return (orig_name, path).
-
-    The original name may be non-ASCII; keep it only as metadata and store
-    the bytes as ``source.<ext>`` so non-ASCII paths never break I/O.
+def _save_upload(video: UploadFile, job_id: UUID) -> tuple[str, Path, str]:
+    """Persist the clip under an ASCII-safe name; return
+    (orig_name, path, sha256). The original name may be non-ASCII; keep it
+    only as metadata and store the bytes as ``source.<ext>`` so non-ASCII
+    paths never break I/O. The hash is computed in the same streaming pass
+    (no second read) and is the content-cache key.
     """
     filename = video.filename or "upload.mp4"
     ext = Path(filename).suffix.lower() or ".mp4"
     video_path = _upload_dir(job_id) / f"source{ext}"
+    digest = hashlib.sha256()
     with video_path.open("wb") as out:
-        shutil.copyfileobj(video.file, out)
-    return filename, video_path
+        while True:
+            chunk = video.file.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            digest.update(chunk)
+    return filename, video_path, digest.hexdigest()
 
 
 # ===========================================================================
@@ -112,7 +120,7 @@ def _mock_tags_for(job: dict) -> list:
 
 def _mock_create(video: UploadFile) -> JobResponse:
     job_id = uuid4()
-    filename, video_path = _save_upload(video, job_id)
+    filename, video_path, _ = _save_upload(video, job_id)
     _MOCK_JOBS[job_id] = {
         "id": job_id,
         "status": JobStatus.queued,
@@ -213,7 +221,11 @@ ROTATIONS = {"none", "ccw", "cw"}
 
 
 def _norm_rotation(value: str | None) -> str:
-    """Detector-only pre-rotation. Unknown/empty → 'none' (trust upload)."""
+    """Detector-only pre-rotation. Unknown/empty → 'none': an uploaded clip
+    is trusted to be in its real-life orientation and passes through the
+    detector untouched (verified: a normal upright phone clip gets clean
+    boxes at 'none', garbage at 'ccw'). The UI rotate button is the per-clip
+    override for sideways footage (e.g. the robot cam mounted 90° CW)."""
     v = (value or "none").strip().lower()
     return v if v in ROTATIONS else "none"
 
@@ -288,6 +300,27 @@ async def _get_job_or_404(s: AsyncSession, job_id: UUID) -> _JobModel:
     return job
 
 
+async def _find_cached(
+    s: AsyncSession, content_hash: str, rotation: str
+) -> _JobModel | None:
+    """Newest succeeded job with the same bytes + rotation, complete enough
+    to replay. Rotation is part of the key because it changes detection
+    (and thus the output)."""
+    stmt = (
+        select(_JobModel)
+        .where(
+            _JobModel.content_hash == content_hash,
+            _JobModel.rotation == rotation,
+            _JobModel.status == JobStatus.succeeded.value,
+            _JobModel.result_csv.is_not(None),
+            _JobModel.predictions_json.is_not(None),
+        )
+        .order_by(_JobModel.created_at.desc())
+        .limit(1)
+    )
+    return (await s.execute(stmt)).scalars().first()
+
+
 # ===========================================================================
 # Routes
 # ===========================================================================
@@ -302,8 +335,55 @@ async def create_job(
 
     rotation = _norm_rotation(rotation)
     job_id = uuid4()
-    filename, video_path = _save_upload(video, job_id)
+    filename, video_path, content_hash = _save_upload(video, job_id)
+    base = f"/api/v1/jobs/{job_id}"
+
     async with session_scope() as s:
+        cached = await _find_cached(s, content_hash, rotation)
+        if cached is not None:
+            # Replay a prior identical run instantly (no pipeline). The new
+            # job has its own stored clip, so /video works; we only repoint
+            # the predictions payload's ids/urls at this job.
+            preds = cached.predictions_json
+            try:
+                jp = JobPredictions.model_validate_json(preds)
+                jp.job_id = job_id
+                jp.video_url = f"{base}/video"
+                jp.csv_url = f"{base}/result.csv"
+                preds = jp.model_dump_json()
+            except Exception:  # malformed cache → UI builds urls itself
+                pass
+            s.add(
+                _JobModel(
+                    id=job_id,
+                    status=JobStatus.succeeded.value,
+                    progress=1.0,
+                    filename=filename,
+                    video_path=str(video_path),
+                    rotation=rotation,
+                    content_hash=content_hash,
+                    rows=cached.rows,
+                    result_csv=cached.result_csv,
+                    predictions_json=preds,
+                )
+            )
+            logger.info(
+                "job=%s cache HIT (hash=%s… rot=%s) reused job=%s",
+                job_id, content_hash[:12], rotation, cached.id,
+            )
+            return JobResponse(
+                id=job_id,
+                status=JobStatus.succeeded,
+                progress=1.0,
+                filename=filename,
+                rows=cached.rows,
+                result_csv_url=f"{base}/result.csv",
+                predictions_url=f"{base}/predictions",
+                video_url=f"{base}/video",
+                created_at=_now(),
+                updated_at=_now(),
+            )
+
         s.add(
             _JobModel(
                 id=job_id,
@@ -312,8 +392,10 @@ async def create_job(
                 filename=filename,
                 video_path=str(video_path),
                 rotation=rotation,
+                content_hash=content_hash,
             )
         )
+
     task = asyncio.create_task(
         _process_job(job_id, str(video_path), filename, rotation)
     )
