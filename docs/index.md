@@ -56,6 +56,7 @@ thin pointers here — do not duplicate knowledge into them.
 | **Concrete ML quality improvement plan** | [ml-quality-improvement-plan.md](./ml-quality-improvement-plan.md) |
 | Run inference / CSV / UI / CLI flags | [pipeline-reference.md](./pipeline-reference.md) |
 | **Crop→fields chain + QR/barcode seam contract** | [recognition-pipeline.md](./recognition-pipeline.md) |
+| Optional product/facing shelf-state layer | [shelf-analytics.md](./shelf-analytics.md) |
 | Detector experiments (fine-tune OFF base) | [`../projects/price_tag_pipeline/experiments/`](../projects/price_tag_pipeline/experiments/README.md) |
 | **`import cv2` fails / new worktree env setup** | [runbooks/venv-setup.md](./runbooks/venv-setup.md) |
 | Local annotated-video + CSV runbook | [runbooks/local.md](./runbooks/local.md) |
