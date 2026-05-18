@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from .geometry import BBox
@@ -156,5 +157,120 @@ class ShelfState:
             "price_tags": [t.to_dict() for t in self.price_tags],
             "relations": [r.to_dict() for r in self.relations],
             "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Run-scale shelf-audit contracts (killer feature: OOS + missing-tag + cards).
+# These are video/run-scale and intentionally separate from the per-image
+# ShelfState above and from the graded 29-column CSV. See docs/shelf-audit.md.
+# ---------------------------------------------------------------------------
+
+
+class AlertType(str, Enum):
+    OUT_OF_STOCK = "OUT_OF_STOCK"            # price tag with no product above it
+    MISSING_PRICE_TAG = "MISSING_PRICE_TAG"  # product with no price tag
+
+
+@dataclass(frozen=True)
+class ShelfAlert:
+    """One actionable shelf-audit finding for the alerts feed."""
+
+    id: str
+    type: AlertType
+    severity: str  # "high" | "medium"
+    video_id: str
+    timestamp_s: float
+    frame_idx: int
+    bbox_xyxy: BBox  # original-frame coords (drawable on the raw video)
+    track_id: int | None = None
+    evidence_crop: str | None = None
+    price_tag: dict[str, Any] | None = None
+    product: dict[str, Any] | None = None
+    first_seen_s: float | None = None
+    last_seen_s: float | None = None
+    persistence_frames: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": self.type.value,
+            "severity": self.severity,
+            "video_id": self.video_id,
+            "timestamp_s": round(float(self.timestamp_s), 3),
+            "frame_idx": int(self.frame_idx),
+            "bbox_xyxy": [round(float(v), 2) for v in self.bbox_xyxy],
+            "track_id": self.track_id,
+            "evidence_crop": self.evidence_crop,
+            "price_tag": self.price_tag,
+            "product": self.product,
+            "first_seen_s": (None if self.first_seen_s is None
+                             else round(float(self.first_seen_s), 3)),
+            "last_seen_s": (None if self.last_seen_s is None
+                            else round(float(self.last_seen_s), 3)),
+            "persistence_frames": int(self.persistence_frames),
+        }
+
+
+@dataclass(frozen=True)
+class ProductCard:
+    """One distinct product seen in the run (the UI 'card')."""
+
+    card_id: str
+    product_track_id: int
+    best_crop: str | None = None
+    facing_count: int = 1
+    seen_from_s: float | None = None
+    seen_to_s: float | None = None
+    matched_price_tag_track_id: int | None = None
+    price: float | None = None
+    loyalty_price: float | None = None
+    name: str | None = None
+    barcode: str | None = None
+    catalog: dict[str, Any] | None = None
+    embedding_dim: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "card_id": self.card_id,
+            "product_track_id": int(self.product_track_id),
+            "best_crop": self.best_crop,
+            "facing_count": int(self.facing_count),
+            "seen_from_s": (None if self.seen_from_s is None
+                            else round(float(self.seen_from_s), 3)),
+            "seen_to_s": (None if self.seen_to_s is None
+                          else round(float(self.seen_to_s), 3)),
+            "matched_price_tag_track_id": self.matched_price_tag_track_id,
+            "price": None if self.price is None else round(float(self.price), 2),
+            "loyalty_price": (None if self.loyalty_price is None
+                              else round(float(self.loyalty_price), 2)),
+            "name": self.name,
+            "barcode": self.barcode,
+            "catalog": self.catalog,
+            "embedding_dim": self.embedding_dim,
+        }
+
+
+@dataclass(frozen=True)
+class ShelfAudit:
+    """Full run-scale shelf-audit report for one video."""
+
+    video_id: str
+    fps: float
+    summary: dict[str, Any]
+    relations: tuple[TagProductRelation, ...] = ()
+    alerts: tuple[ShelfAlert, ...] = ()
+    cards: tuple[ProductCard, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "video_id": self.video_id,
+            "fps": round(float(self.fps), 3),
+            "summary": dict(self.summary),
+            "relations": [r.to_dict() for r in self.relations],
+            "alerts": [a.to_dict() for a in self.alerts],
+            "cards": [c.to_dict() for c in self.cards],
             "metadata": dict(self.metadata),
         }

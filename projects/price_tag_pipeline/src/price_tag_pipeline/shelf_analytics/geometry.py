@@ -50,3 +50,30 @@ def below_distance(group_box: BBox, tag_box: BBox) -> float:
     _, group_y = center((group_box[0], group_box[3], group_box[2], group_box[3]))
     _, tag_y = center(tag_box)
     return tag_y - group_y
+
+
+def to_upright(box: BBox, frame_w: int, frame_h: int, rotation: str = "ccw") -> BBox:
+    """Forward-map an ORIGINAL-frame box into the rotation-upright space.
+
+    The detector runs on a 90°-rotated frame and un-projects boxes back to
+    original coords via ``detector.unrotate_box_xyxy``. Shelf-audit geometry
+    ("price tag sits below its product") is only valid in the upright space the
+    detector actually saw, so the associator maps both boxes here first. This
+    is the exact analytic inverse of ``unrotate_box_xyxy`` (P0-verified on real
+    Lenta footage: tag-above-product ratio 1.00 upright vs 0.60 original).
+
+    - ``ccw``: ``x_up = oy``, ``y_up = frame_w - ox``
+    - ``cw`` : ``x_up = frame_h - oy``, ``y_up = ox``
+    - else   : identity
+    """
+    x1, y1, x2, y2 = (float(v) for v in box)
+    r = str(rotation).lower()
+    if r == "ccw":
+        xs = sorted((y1, y2))
+        ys = sorted((frame_w - x1, frame_w - x2))
+    elif r == "cw":
+        xs = sorted((frame_h - y1, frame_h - y2))
+        ys = sorted((x1, x2))
+    else:
+        xs, ys = sorted((x1, x2)), sorted((y1, y2))
+    return (xs[0], ys[0], xs[1], ys[1])
