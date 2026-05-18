@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Shelf-audit runner (P2): OUT_OF_STOCK + MISSING_PRICE_TAG alerts.
-
-Pipeline (all detector-only, base.txt deps — NO OCR/VLM needed here):
+"""Shelf-audit runner (P2 + base-only P3): OOS / MISSING_PRICE_TAG + cards.
 
     video ─► product-facing detector (rotate=ccw, tracked) ─► product traces
           ─► price-tag detector       (rotate=ccw, tracked) ─► tag traces
-          ─► associate_tracks (upright-space, persistence gate)
-          ─► ShelfAudit{relations, alerts} + evidence crops
+          ─► associate_tracks (upright space, persistence gate)
+          ─► build_card_set: sibling facings → one product card
+                              (geometry + colour-hist appearance)
+          ─► alerts: OUT_OF_STOCK (per tag) + MISSING_PRICE_TAG (per card,
+                     collapses the facing-level over-alerting)
+          ─► ShelfAudit{relations, alerts, cards} + evidence/card crops
 
-Writes ``outputs/shelf_audit/<video>/{audit.json,alerts.json,crops/*.jpg}``.
-Never touches the graded 29-column CSV / submission path. Price/name/barcode
-on cards + est-lost-revenue are P3 (need the full recognition pipeline).
-
-See docs/shelf-audit.md (P2).
+Detector-only (base.txt deps; NO OCR). Card price/name/barcode +
+est-lost-revenue are filled at integration time from the real recognition
+pipeline. Never touches the graded 29-column CSV / submission path.
+See docs/shelf-audit.md (P2/P3).
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -28,14 +30,16 @@ from price_tag_pipeline.config import DetectorConfig
 from price_tag_pipeline.detector import build_detector, read_video_fps
 from price_tag_pipeline.shelf_analytics import (
     AssociationConfig,
+    CardConfig,
     ShelfAlert,
     ShelfAudit,
     TrackTrace,
     associate_tracks,
+    build_card_set,
+    regroup_missing_price_tag,
 )
 from price_tag_pipeline.shelf_analytics.schema import AlertType
 
-# Checkpoints + videos are .gitignore'd → main working tree only.
 MAIN_TREE = Path("E:/Hackatons/lenta_tech_life_2026")
 DEFAULT_PRODUCT_W = MAIN_TREE / "data/checkpoints/product_detector/product_facing_retail_pretrain_yolo11s_best.pt"
 DEFAULT_TAG_W = MAIN_TREE / "data/checkpoints/detector/best.pt"
@@ -44,18 +48,16 @@ VIDEO_DIR = MAIN_TREE / "data/raw/videos"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", type=Path, default=None,
-                   help="single video; omit with --all to run every video in data/raw/videos")
+    p.add_argument("--video", type=Path, default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--product-weights", type=Path, default=DEFAULT_PRODUCT_W)
     p.add_argument("--tag-weights", type=Path, default=DEFAULT_TAG_W)
-    p.add_argument("--product-conf", type=float, default=0.30)  # P0-recommended
+    p.add_argument("--product-conf", type=float, default=0.30)
     p.add_argument("--tag-conf", type=float, default=0.25)
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--rotation", default="ccw")
     p.add_argument("--max-frames", type=int, default=0, help="0 = whole video")
-    p.add_argument("--persistence", type=int, default=10,
-                   help="min frames an unmatched track must persist to alert")
+    p.add_argument("--persistence", type=int, default=10)
     p.add_argument("--device", default=None)
     p.add_argument("--outdir", type=Path, default=MAIN_TREE / "outputs/shelf_audit")
     return p.parse_args()
@@ -70,10 +72,19 @@ def _cfg(model_path: Path, conf: float, imgsz: int, rotation: str, device) -> De
     )
 
 
-def _collect_traces(cfg: DetectorConfig, video: Path, max_frames: int):
-    """Stream the video once → {track_id: {frame_idx: bbox}} + (W, H)."""
+def _sharpness(crop) -> float:
+    if crop is None or crop.size == 0 or crop.shape[0] < 4 or crop.shape[1] < 4:
+        return 0.0
+    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(g, cv2.CV_64F).var())
+
+
+def _collect_traces(cfg: DetectorConfig, video: Path, max_frames: int,
+                    capture_best: bool = False):
+    """Stream once → traces + (W,H) [+ best {tid:(sharpness,frame,bbox)}]."""
     det = build_detector(cfg)
     boxes: dict[int, dict[int, tuple]] = defaultdict(dict)
+    best: dict[int, tuple] = {}
     frame_w = frame_h = 0
     for frame_idx, (frame, dets) in enumerate(det.stream_video(str(video))):
         if frame_idx == 0:
@@ -81,21 +92,26 @@ def _collect_traces(cfg: DetectorConfig, video: Path, max_frames: int):
         for d in dets:
             if d.track_id is None:
                 continue
-            boxes[d.track_id][frame_idx] = tuple(float(v) for v in d.bbox_xyxy)
+            bb = tuple(float(v) for v in d.bbox_xyxy)
+            boxes[d.track_id][frame_idx] = bb
+            if capture_best:
+                x1, y1, x2, y2 = (int(v) for v in d.bbox_xyxy)
+                if x2 - x1 >= 10 and y2 - y1 >= 10:
+                    s = _sharpness(frame[y1:y2, x1:x2])
+                    if d.track_id not in best or s > best[d.track_id][0]:
+                        best[d.track_id] = (s, frame_idx, bb)
         if max_frames and frame_idx + 1 >= max_frames:
             break
     traces = [TrackTrace(track_id=tid, boxes=bx) for tid, bx in boxes.items()]
-    return traces, frame_w, frame_h
+    return traces, frame_w, frame_h, best
 
 
 def _grab_frames(video: Path, wanted: set[int]) -> dict[int, "cv2.Mat"]:
-    """Sequentially read the few frames needed for evidence crops."""
     if not wanted:
         return {}
     cap = cv2.VideoCapture(str(video))
     out: dict[int, "cv2.Mat"] = {}
-    last = max(wanted)
-    idx = -1
+    last, idx = max(wanted), -1
     while idx < last:
         ok, frame = cap.read()
         if not ok:
@@ -107,81 +123,137 @@ def _grab_frames(video: Path, wanted: set[int]) -> dict[int, "cv2.Mat"]:
     return out
 
 
-def _save_crop(frame, bbox, path: Path, pad: float = 0.06) -> bool:
+def _crop(frame, bbox, pad: float = 0.06):
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = bbox
     bw, bh = x2 - x1, y2 - y1
     x1 = int(max(0, x1 - bw * pad)); y1 = int(max(0, y1 - bh * pad))
     x2 = int(min(w, x2 + bw * pad)); y2 = int(min(h, y2 + bh * pad))
     if x2 - x1 < 2 or y2 - y1 < 2:
-        return False
-    cv2.imwrite(str(path), frame[y1:y2, x1:x2])
-    return True
+        return None
+    return frame[y1:y2, x1:x2]
 
 
-def _mid_frame(track_boxes_frames: list[int]) -> int:
-    fr = sorted(track_boxes_frames)
-    return fr[len(fr) // 2]
+def _hist(crop) -> tuple:
+    """Normalised HS colour histogram → appearance vector for SKU similarity."""
+    if crop is None or crop.size == 0:
+        return ()
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    h = cv2.calcHist([hsv], [0, 1], None, [8, 8], [0, 180, 0, 256])
+    cv2.normalize(h, h)
+    return tuple(float(v) for v in h.flatten())
 
 
 def audit_video(video: Path, args: argparse.Namespace) -> dict:
     print(f"\n=== {video.name} ===")
     fps = read_video_fps(str(video))
 
-    print("[1/3] product-facing detector ...")
-    prod_traces, fw, fh = _collect_traces(
+    print("[1/4] product-facing detector ...")
+    prod_traces, fw, fh, best = _collect_traces(
         _cfg(args.product_weights, args.product_conf, args.imgsz, args.rotation, args.device),
-        video, args.max_frames)
+        video, args.max_frames, capture_best=True)
     print(f"      {len(prod_traces)} product tracks  (frame {fw}x{fh})")
 
-    print("[2/3] price-tag detector ...")
-    tag_traces, fw2, fh2 = _collect_traces(
+    print("[2/4] price-tag detector ...")
+    tag_traces, fw2, fh2, _ = _collect_traces(
         _cfg(args.tag_weights, args.tag_conf, args.imgsz, args.rotation, args.device),
         video, args.max_frames)
     fw, fh = fw or fw2, fh or fh2
     print(f"      {len(tag_traces)} price-tag tracks")
 
-    print("[3/3] associate + alerts ...")
-    cfg = AssociationConfig(rotation=args.rotation, persistence_min_frames=args.persistence)
-    res = associate_tracks(tag_traces, prod_traces, frame_w=fw, frame_h=fh,
-                           fps=fps, cfg=cfg)
+    print("[3/4] associate ...")
+    res = associate_tracks(
+        tag_traces, prod_traces, frame_w=fw, frame_h=fh, fps=fps,
+        cfg=AssociationConfig(rotation=args.rotation,
+                              persistence_min_frames=args.persistence))
 
     out_dir = args.outdir / video.stem
     crops_dir = out_dir / "crops"
+    cards_dir = out_dir / "cards"
     crops_dir.mkdir(parents=True, exist_ok=True)
+    cards_dir.mkdir(parents=True, exist_ok=True)
 
     tag_by_id = {t.track_id: t for t in tag_traces}
-    prod_by_id = {p.track_id: p for p in prod_traces}
 
-    # Persistence-gated alert candidates + the frames we must read for crops.
-    cands: list[tuple] = []  # (AlertType, UnmatchedTrack, source_trace)
-    for u in res.unmatched_price_tags:
-        if u.persistent:
-            cands.append((AlertType.OUT_OF_STOCK, u, tag_by_id[u.track_id]))
-    for u in res.unmatched_products:
-        if u.persistent:
-            cands.append((AlertType.MISSING_PRICE_TAG, u, prod_by_id[u.track_id]))
+    # --- frames needed for appearance + card images + evidence crops --------
+    need = {f for s, f, b in best.values()}
+    persistent_oos = [u for u in res.unmatched_price_tags if u.persistent]
+    for u in persistent_oos:
+        fr = sorted(tag_by_id[u.track_id].boxes)
+        need.add(fr[len(fr) // 2])
+    frames = _grab_frames(video, need)
 
-    wanted = {_mid_frame(list(src.boxes)) for _t, _u, src in cands}
-    frames = _grab_frames(video, wanted)
+    appearance: dict[int, tuple] = {}
+    for tid, (s, f, b) in best.items():
+        fr = frames.get(f)
+        if fr is not None:
+            appearance[tid] = _hist(_crop(fr, b))
 
+    print("[4/4] cards + group-level alerts ...")
+    card_set = build_card_set(
+        prod_traces, frame_w=fw, frame_h=fh, fps=fps, video_id=video.stem,
+        appearance=appearance or None,
+        best_track=lambda tid: best.get(tid, (0.0,))[0],
+        cfg=CardConfig(rotation=args.rotation))
+
+    # Save one best-crop image per card; fill ProductCard.best_crop.
+    cards = []
+    for c in card_set.cards:
+        rel = None
+        b = best.get(c.product_track_id)
+        if b is not None and (fr := frames.get(b[1])) is not None:
+            crop = _crop(fr, b[2])
+            if crop is not None and cv2.imwrite(str(cards_dir / f"{c.card_id}.jpg"), crop):
+                rel = f"cards/{c.card_id}.jpg"
+        cards.append(dataclasses.replace(c, best_crop=rel))
+    card_by_id = {c.card_id: c for c in cards}
+
+    # --- alerts -----------------------------------------------------------
     alerts: list[ShelfAlert] = []
-    for atype, u, src in cands:
-        fi = _mid_frame(list(src.boxes))
-        crop_rel = None
-        frame = frames.get(fi)
-        # box at that frame (real) falls back to the median representative box
-        bbox = src.boxes.get(fi, u.representative_bbox)
-        aid = f"{'oos' if atype is AlertType.OUT_OF_STOCK else 'notag'}_{video.stem}_{u.track_id:04d}"
-        if frame is not None and _save_crop(frame, bbox, crops_dir / f"{aid}.jpg"):
-            crop_rel = f"crops/{aid}.jpg"
+    for u in persistent_oos:
+        fr_list = sorted(tag_by_id[u.track_id].boxes)
+        fi = fr_list[len(fr_list) // 2]
+        bbox = tag_by_id[u.track_id].boxes.get(fi, u.representative_bbox)
+        aid = f"oos_{video.stem}_{u.track_id:04d}"
+        rel = None
+        if (fr := frames.get(fi)) is not None and (cp := _crop(fr, bbox)) is not None:
+            if cv2.imwrite(str(crops_dir / f"{aid}.jpg"), cp):
+                rel = f"crops/{aid}.jpg"
         alerts.append(ShelfAlert(
-            id=aid, type=atype, severity="high", video_id=video.stem,
-            timestamp_s=fi / (fps if fps > 1e-6 else 1.0), frame_idx=fi,
-            bbox_xyxy=bbox, track_id=u.track_id, evidence_crop=crop_rel,
-            first_seen_s=u.first_s, last_seen_s=u.last_s,
-            persistence_frames=u.n_frames,
-        ))
+            id=aid, type=AlertType.OUT_OF_STOCK, severity="high",
+            video_id=video.stem, timestamp_s=fi / (fps if fps > 1e-6 else 1.0),
+            frame_idx=fi, bbox_xyxy=bbox, track_id=u.track_id,
+            evidence_crop=rel, first_seen_s=u.first_s, last_seen_s=u.last_s,
+            persistence_frames=u.n_frames))
+
+    # MISSING_PRICE_TAG is now per *card* (group), with a group persistence gate.
+    member_frames = {
+        c.card_id: len({f for tid in card_set.card_members[c.card_id]
+                        for t in prod_traces if t.track_id == tid for f in t.boxes})
+        for c in cards
+    }
+    missing_cards = regroup_missing_price_tag(res, card_set)
+    filtered_cards = 0
+    for cid in missing_cards:
+        c = card_by_id[cid]
+        if member_frames[cid] < args.persistence:
+            filtered_cards += 1
+            continue
+        aid = f"notag_{video.stem}_{cid.split('_')[-1]}"
+        rb = best.get(c.product_track_id)  # (sharpness, frame_idx, bbox)
+        a_fi = rb[1] if rb else -1
+        a_bbox = rb[2] if rb else (0.0, 0.0, 0.0, 0.0)
+        a_ts = (a_fi / fps) if (rb and fps > 1e-6) else (c.seen_from_s or 0.0)
+        alerts.append(ShelfAlert(
+            id=aid, type=AlertType.MISSING_PRICE_TAG, severity="high",
+            video_id=video.stem,
+            timestamp_s=a_ts, frame_idx=a_fi,
+            bbox_xyxy=a_bbox, track_id=c.product_track_id,
+            evidence_crop=c.best_crop,
+            product={"card_id": cid, "facing_count": c.facing_count,
+                     "member_track_ids": list(card_set.card_members[cid])},
+            first_seen_s=c.seen_from_s, last_seen_s=c.seen_to_s,
+            persistence_frames=member_frames[cid]))
 
     n_oos = sum(a.type is AlertType.OUT_OF_STOCK for a in alerts)
     n_notag = sum(a.type is AlertType.MISSING_PRICE_TAG for a in alerts)
@@ -189,35 +261,40 @@ def audit_video(video: Path, args: argparse.Namespace) -> dict:
     summary = {
         "n_out_of_stock": n_oos,
         "n_missing_price_tag": n_notag,
+        "n_product_cards": len(cards),
         "n_relations_ok": n_ok,
         "n_relations_ambiguous": len(res.relations) - n_ok,
         "n_product_tracks": len(prod_traces),
         "n_price_tag_tracks": len(tag_traces),
-        "filtered_non_persistent": (
-            sum(not u.persistent for u in res.unmatched_price_tags)
-            + sum(not u.persistent for u in res.unmatched_products)
-        ),
-        "est_lost_revenue_rub": None,  # P3: needs recognized prices
+        "missing_tag_facing_level_would_be": len(
+            [t for t in prod_traces if t.track_id not in {
+                int(r.product_group_id.split("_")[-1])
+                for r in res.relations
+                if r.status == "ok" and r.product_group_id}]),
+        "filtered_non_persistent_tags": sum(
+            not u.persistent for u in res.unmatched_price_tags),
+        "filtered_non_persistent_cards": filtered_cards,
+        "est_lost_revenue_rub": None,  # integration-time (real OCR)
     }
     audit = ShelfAudit(
         video_id=video.stem, fps=fps, summary=summary,
-        relations=res.relations, alerts=tuple(alerts),
+        relations=res.relations, alerts=tuple(alerts), cards=tuple(cards),
         metadata={
             "product_weights": str(args.product_weights),
             "tag_weights": str(args.tag_weights),
             "product_conf": args.product_conf, "tag_conf": args.tag_conf,
             "rotation": args.rotation, "max_frames": args.max_frames,
             "persistence_min_frames": args.persistence,
-            "note": "detector-only pass; CSV/submission path untouched",
-        },
-    )
+            "note": "detector-only; CSV/submission path untouched; "
+                    "card price/name/barcode filled at integration (real OCR)",
+        })
     (out_dir / "audit.json").write_text(
         json.dumps(audit.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "alerts.json").write_text(
         json.dumps([a.to_dict() for a in alerts], ensure_ascii=False, indent=2),
         encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    print(f"      wrote {len(alerts)} alerts -> {out_dir}")
+    print(f"      {len(alerts)} alerts, {len(cards)} cards -> {out_dir}")
     return {"video": video.stem, **summary}
 
 
@@ -226,7 +303,6 @@ def main() -> int:
     for w in (args.product_weights, args.tag_weights):
         if not w.exists():
             raise SystemExit(f"Missing checkpoint: {w}")
-
     if args.all:
         videos = sorted(VIDEO_DIR.glob("*.mp4"))
     elif args.video:

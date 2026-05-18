@@ -13,6 +13,12 @@ from .associate import (
     UnmatchedTrack,
     associate_tracks,
 )
+from .cards import (
+    CardConfig,
+    CardSet,
+    build_card_set,
+    regroup_missing_price_tag,
+)
 from .grouping import GroupingConfig, group_facings
 from .matcher import MatchingConfig, match_price_tags
 from .pipeline import build_shelf_state, build_shelf_state_from_pipeline_outputs, price_tag_from_final_tag
@@ -49,6 +55,10 @@ __all__ = (
     "TrackTrace",
     "UnmatchedTrack",
     "associate_tracks",
+    "CardConfig",
+    "CardSet",
+    "build_card_set",
+    "regroup_missing_price_tag",
     "AlertType",
     "ProductCard",
     "ShelfAlert",

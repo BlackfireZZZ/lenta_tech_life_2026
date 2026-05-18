@@ -204,13 +204,27 @@ Probe: `scripts/shelf_audit_p0_probe.py`.
 
 ## 8. Product card / catalog builder (option 3)
 
-- **Identity = product `track_id`** (primary; free from BoT-SORT). One card per
-  product track; `facing_count` = max simultaneous sibling facings in a frame
-  (cheap, no embedding needed).
-- **Best crop**: across the track's frames pick the sharpest (reuse the
-  Tenengrad/Laplacian sharpness already used by the price-tag rectifier) and
-  largest, well inside the frame. Save to `cards/`.
-- **Tag info**: from the associated `FinalTag` (price/loyalty/name/barcode).
+**Implemented base-only (`shelf_analytics/cards.py`).** Sibling *facing* tracks
+(one per bottle) are collapsed into one **product card** so alerts/UI are
+product-level — this is the fix for the P2 over-alerting. Grouping is
+union-find over track pairs that are, in CCW-upright space: on the same shelf
+band, horizontally adjacent (gap ≤ N·width), contemporaneous (frame ranges
+within N), and (when available) colour-histogram similar. Pure-Python +
+deterministic; cv2 colour-hist is computed by the runner and *injected* (keeps
+`cards.py` testable, off the CSV path). `regroup_missing_price_tag` flags a card
+only if **no** member facing is in an `ok` relation. Verified on `25_12-20`
+(25-frame cap): 31 facing tracks → 11 cards, missing-tag **28 facing-level → 4
+group-level**.
+
+- **Identity** = card group of product tracks; representative = highest
+  best-crop sharpness; `facing_count` = members in the group.
+- **Best crop**: sharpest (Laplacian-variance) crop per track, saved to
+  `cards/<card_id>.jpg`. *UI polish (P5):* crops are in original (90°-rotated)
+  space — rotate upright for display.
+- **Tag info (price/loyalty/name/barcode), catalog reconcile, est-lost-revenue
+  — DEFERRED to integration:** filled from the real recognition pipeline
+  (`FinalTag`) when the heavy OCR stack is installed at merge time; card fields
+  are `None` until then by design. Owner decision 2026-05-18.
 - **Catalog canonicalisation**: feed `(barcode, name)` to the existing
   `catalog.reconcile` (db_hack.csv) → canonical name; fill-only, GT-safe policy
   (memory `catalog-reconciliation-worktree`).
@@ -268,9 +282,14 @@ backend is out of time, a static fixture view still demos fully.
   the unit a product, not a facing) and **(b)** full-length runs so tags &
   products co-occur — both are P3/P4. Full all-5 length needs the user's GPU
   (CPU ≈ hours/video at imgsz 1280); folded into P4.
-- **P3 — Product cards + catalog (1 day).** Best-crop + tag-info + catalog
-  reconcile; cards written. *Exit:* `cards/` gallery JSON correct; barcode/name
-  canonicalised.
+- **P3 — Product cards. ✅ DONE (base-only); enrichment deferred.**
+  `shelf_analytics/cards.py` (`build_card_set` + `regroup_missing_price_tag`),
+  wired into the runner with cv2 best-crop + colour-hist appearance. **Fixes
+  the P2 over-alerting**: on `25_12-20` (25-frame cap) 31 facing tracks → 11
+  product cards, missing-tag 28 (facing) → 4 (group); alerts now product-level
+  and carry frame/bbox + card evidence; total alerts 23 → 6. 7 card tests +
+  the rest green (23 total). **Deferred to integration** (owner decision): card
+  price/name/barcode via real OCR `FinalTag`, catalog reconcile, est-revenue.
 - **P4 — Validation & tuning (½ day).** Qualitative review on the 5 videos;
   tune `conf` / score thresholds / persistence K; compute counts + a defensible
   est-lost-revenue formula. *Exit:* low obvious false-alarm rate; honest
