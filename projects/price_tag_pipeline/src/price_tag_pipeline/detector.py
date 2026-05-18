@@ -489,6 +489,80 @@ def resolve_detector_model_path(model_path: str) -> str:
     return hf_hub_download(repo_id=repo_id, filename=filename)
 
 
+def _assign_iou_track_ids(
+    boxes_xyxy: list[tuple[int, int, int, int]],
+    tracks: list[tuple[int, tuple[int, int, int, int], int]],
+    next_tid: int,
+    frame_idx: int,
+    max_age: int = 15,
+    iou_gate: float = 0.3,
+) -> tuple[list[int], list[tuple[int, tuple[int, int, int, int], int]], int]:
+    """Assign stable-enough IDs when Ultralytics returns boxes without tracker IDs."""
+    out: list[int] = []
+    assigned: set[int] = set()
+    for bbox in boxes_xyxy:
+        best_j = -1
+        best_iou = 0.0
+        for j, (tid, tb, last_seen) in enumerate(tracks):
+            if frame_idx - last_seen > max_age or j in assigned:
+                continue
+            iou = _bbox_iou(bbox, tb)
+            if iou > best_iou:
+                best_iou = iou
+                best_j = j
+        if best_j >= 0 and best_iou >= iou_gate:
+            tid, _, _ = tracks[best_j]
+            tracks[best_j] = (tid, bbox, frame_idx)
+            assigned.add(best_j)
+            out.append(tid)
+        else:
+            tid = next_tid
+            next_tid += 1
+            tracks.append((tid, bbox, frame_idx))
+            assigned.add(len(tracks) - 1)
+            out.append(tid)
+    tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
+    return out, tracks, next_tid
+
+
+def resolve_detector_model_path(model_path: str) -> str:
+    """Resolve a detector model path understood by runtime configs.
+
+    Supported forms:
+    - local path or Ultralytics model name, passed through unchanged;
+    - ``hf://owner/repo/path/in/repo.pt``, downloaded through Hugging Face Hub.
+
+    The default production configs use OpenFoodFacts'
+    ``hf://openfoodfacts/price-tag-detection/weights/best.pt`` model so a fresh
+    checkout has a real detector before we fine-tune our own checkpoint.
+    """
+    raw = str(model_path).strip()
+    if not raw.startswith(HF_MODEL_PREFIX):
+        return raw
+
+    spec = raw[len(HF_MODEL_PREFIX):].strip("/")
+    parts = spec.split("/", 2)
+    if len(parts) != 3 or not all(parts):
+        raise ValueError(
+            "HF detector URI must look like "
+            "hf://owner/repo/path/to/file.pt, got: "
+            f"{model_path!r}"
+        )
+    repo_id = f"{parts[0]}/{parts[1]}"
+    filename = parts[2]
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "Detector model_path uses hf:// but huggingface-hub is not installed. "
+            "Install projects/price_tag_pipeline/requirements/base.txt or set "
+            "detector.model_path to a local checkpoint."
+        ) from exc
+
+    return hf_hub_download(repo_id=repo_id, filename=filename)
+
+
 # ---------------------------------------------------------------------------
 # RF-DETR (Roboflow) — stub
 # ---------------------------------------------------------------------------

@@ -299,4 +299,6 @@ friends_labels/
 cvat_seeds_friends/
 cvat_seeds_frames/
 cvat_frames/
+cvat_video_frames/
+cvat_seeds_video/
 cvat_exports/
