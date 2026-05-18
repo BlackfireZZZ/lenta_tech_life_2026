@@ -293,7 +293,6 @@ All under `projects/price_tag_pipeline/scripts/`, run with the venv python.
 | `cvat_prepare_task.py` | alt | print the bare `price_tag` label spec / task steps |
 | `cvat_strip_attributes.py` | fix | strip attributes off the live label (kills details panel) |
 | `train_detector_yolo.py` | — | fine-tune the OFF detector on our data (`experiments/finetune_openfoodfacts.yaml`) |
-| `cvat_video_frames_task.py` / `cvat_export_seed.py` | legacy | old organizer-hint / interpolation-seed flows (see appendix) |
 
 Pure XML build/parse is cv2-free and unit-tested (`tests/test_cvat.py`,
 `tests/test_frame_sampling.py`, `tests/test_detector_model_path.py`).
@@ -339,21 +338,15 @@ Backup (stop CVAT first):
 
 ---
 
-## Appendix — how tracking works (legacy video-task flow)
+## Appendix — why image tasks, not tracking
 
-The current flow uses **image tasks** (no tracking) because we sample every
-2 s. The old `cvat_export_seed.py` + `cvat_bootstrap.py` flow created
-**video tasks** (interpolation mode); kept only when you need cross-track
-ground truth:
-
-* Draw a box, press `N` → a **Track** + a **keyframe**.
-* Move/resize it on a later frame → that frame auto-becomes a keyframe;
-  CVAT **linearly interpolates** between. Two keyframes cover a smooth pan.
-* Toggle **Outside** when the tag leaves view — same Track, don't start a
-  new one.
-* Each Track id = one physical tag across its whole pass. `cvat_import.py
-  --video` writes it as a `track_id` column → free, exact ground truth for
-  cross-track dedup. Export: **"CVAT for video 1.1"**.
+CVAT also has a *video/interpolation* mode (a **Track** = one box
+interpolated across keyframes, with a stable id per physical object). We
+**deliberately don't use it here**: we sample one frame every 2 s, so
+there's nothing to interpolate, and our approach is tracking-by-detection —
+the detector is the lever, no track-id ground truth is needed. Hence plain
+**image tasks** with detector pre-boxes. The interpolation-seed scripts were
+removed to keep the branch to the one flow this guide describes.
 
 ---
 
