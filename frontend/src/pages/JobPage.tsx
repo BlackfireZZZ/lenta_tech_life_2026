@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -6,7 +13,8 @@ import {
   ChevronRight,
   Crop,
   Download,
-  Film,
+  Pause,
+  Play,
 } from "lucide-react";
 import {
   jobsApi,
@@ -22,11 +30,36 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Summary } from "@/components/job/Summary";
 import { TagsTable } from "@/components/job/TagsTable";
-import { TagFields } from "@/components/job/TagFields";
-import { colorMeta, completeness, PASS_THRESHOLD, tagLabel } from "@/lib/tags";
+import {
+  colorMeta,
+  completeness,
+  FIELD_GROUPS,
+  fieldState,
+  PASS_THRESHOLD,
+  tagLabel,
+} from "@/lib/tags";
 import { cn, formatTimestamp } from "@/lib/utils";
 
 const POLL_MS = 1200;
+
+// Tags whose best-frame timestamps fall within this window are treated as
+// "the same frame" (so a busy shelf moment is one group of many boxes).
+const FRAME_BUCKET_MS = 200;
+
+// Shown big in the hero strip — everything else folds into the detail
+// groups, so the panel is never one endless column (the rest of the
+// FIELD_GROUPS rows skip these keys to avoid repetition).
+const HERO_KEYS = [
+  "price_default",
+  "price_card",
+  "barcode",
+  "id_sku",
+] as const;
+const HIDDEN_FROM_GROUPS = new Set<string>([
+  "product_name",
+  "color",
+  ...HERO_KEYS,
+]);
 
 export default function JobPage() {
   const { id = "" } = useParams();
@@ -39,7 +72,6 @@ export default function JobPage() {
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
-
     const tick = async () => {
       try {
         const j = await jobsApi.get(id);
@@ -84,7 +116,7 @@ export default function JobPage() {
   if (!pred) return <ReviewSkeleton />;
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-12">
       <Header job={job} count={pred.tags.length} csvHref={jobsApi.csvUrl(id)} />
       <Summary data={pred} />
       <Reviewer id={id} pred={pred} selected={selected} onSelect={setSelected} />
@@ -101,11 +133,11 @@ export default function JobPage() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Per-tag reviewer — one tag at a time. The shelf frame with *only* this tag
-// highlighted (everything else dimmed), the exact crop the OCR saw, and the
-// recognized fields. Step with the slider, ‹ ›, arrow keys or the filmstrip.
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Reviewer — one navigation model: the video's own timeline. Markers on the
+// track are the tags; the playhead/selection is always derived from the
+// frame on screen, so the overlay box can never go stale.
+// ===========================================================================
 
 function Reviewer({
   id,
@@ -119,310 +151,609 @@ function Reviewer({
   onSelect: (index: number) => void;
 }) {
   const order = pred.tags;
-  const pos = Math.max(
-    0,
-    order.findIndex((t) => t.index === selected),
-  );
+  const pos = Math.max(0, order.findIndex((t) => t.index === selected));
   const tag = order[pos] ?? order[0];
 
-  const go = useCallback(
-    (next: number) => {
-      const clamped = Math.min(order.length - 1, Math.max(0, next));
-      onSelect(order[clamped].index);
-    },
+  // "One frame" = tags whose best-frame falls in the same short time bucket.
+  // The aggregator's per-tag best-frame timestamps cluster but rarely match
+  // to the ms, so an exact-equality grouping would wrongly show every shelf
+  // tag as a singleton. A tolerance bucket means a busy shelf frame is one
+  // group with however MANY boxes it really has — the overlay + the in-frame
+  // switcher below are written to scale to any count, not just 2–3.
+  const frameKey = useCallback(
+    (t: TagPrediction) => Math.round(t.frame_timestamp / FRAME_BUCKET_MS),
+    [],
+  );
+  const framesByKey = useMemo(() => {
+    const m = new Map<number, TagPrediction[]>();
+    for (const t of order) {
+      const k = Math.round(t.frame_timestamp / FRAME_BUCKET_MS);
+      const arr = m.get(k) ?? [];
+      arr.push(t);
+      m.set(k, arr);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.bbox.x1 - b.bbox.x1);
+    return m;
+  }, [order]);
+  const mates = framesByKey.get(frameKey(tag)) ?? [tag];
+  const boxPos = Math.max(0, mates.findIndex((t) => t.index === tag.index));
+
+  const goTag = useCallback(
+    (next: number) =>
+      onSelect(order[Math.min(order.length - 1, Math.max(0, next))].index),
     [order, onSelect],
   );
 
-  // Arrow-key stepping (ignore while typing in an input/slider).
+  // ←/→ step between tags (never scrolls the page — no scrollIntoView/focus).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        go(pos - 1);
+        goTag(pos - 1);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        go(pos + 1);
+        goTag(pos + 1);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, pos]);
+  }, [goTag, pos]);
 
   const score = completeness(tag, pred.substantive_fields);
   const pass = score >= PASS_THRESHOLD;
 
   return (
-    <Card feature>
-      <div className="flex flex-col gap-1 border-b border-stone-border p-6 pb-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-caption uppercase tracking-[0.12em] text-steel-gray">
-              Проверка ценников
-            </p>
-            <h2 className="mt-1 truncate font-display text-heading font-medium text-slate-text">
+    <Card feature className="overflow-hidden">
+      {/* Header — eyebrow + product, tag counter + step. NO slider here:
+          the timeline under the video is the one and only scrubber. */}
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-stone-border p-6">
+        <div className="min-w-0">
+          <p className="text-caption uppercase tracking-[0.12em] text-steel-gray">
+            Проверка ценников
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <h2 className="truncate font-display text-heading font-medium text-slate-text">
               {tagLabel(tag)}
             </h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => go(pos - 1)}
-              disabled={pos === 0}
-              title="Предыдущий (←)"
-            >
-              <ChevronLeft /> Назад
-            </Button>
-            <span className="min-w-[5.5rem] text-center font-display text-heading-sm tabular-nums text-slate-text">
-              {pos + 1}{" "}
-              <span className="text-ash-gray">/ {order.length}</span>
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => go(pos + 1)}
-              disabled={pos === order.length - 1}
-              title="Следующий (→)"
-            >
-              Вперёд <ChevronRight />
-            </Button>
-          </div>
-        </div>
-        {/* Scrubber across all tags */}
-        <input
-          type="range"
-          min={0}
-          max={order.length - 1}
-          value={pos}
-          onChange={(e) => go(Number(e.target.value))}
-          aria-label="Перемотка по ценникам"
-          className="mt-4 h-1.5 w-full cursor-pointer appearance-none rounded-pill bg-stone-border accent-chartwell-blue"
-        />
-      </div>
-
-      <div className="grid gap-6 p-6 lg:grid-cols-[1.15fr_1fr]">
-        <FramePanel id={id} tag={tag} />
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center gap-2">
             <Badge variant={pass ? "success" : "warning"}>
-              Полнота {Math.round(score * 100)}%
+              {Math.round(score * 100)}% полнота
             </Badge>
-            <span className="text-caption text-steel-gray">
-              {pass
-                ? "проходит порог 80%"
-                : "ниже порога 80% (task.md §5.1)"}
-            </span>
           </div>
-          <TagFields tag={tag} />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goTag(pos - 1)}
+            disabled={pos === 0}
+            title="Предыдущий ценник (←)"
+          >
+            <ChevronLeft /> Назад
+          </Button>
+          <span className="min-w-[4.5rem] text-center font-display text-heading-sm tabular-nums text-slate-text">
+            {pos + 1} <span className="text-ash-gray">/ {order.length}</span>
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goTag(pos + 1)}
+            disabled={pos === order.length - 1}
+            title="Следующий ценник (→)"
+          >
+            Вперёд <ChevronRight />
+          </Button>
         </div>
       </div>
 
-      <Filmstrip
-        tags={order}
-        substantive={pred.substantive_fields}
-        pos={pos}
-        onPick={go}
-      />
+      <div className="grid items-start gap-6 p-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <VideoStage
+          id={id}
+          pred={pred}
+          tag={tag}
+          mates={mates}
+          frameKey={frameKey}
+          onSelect={onSelect}
+        />
+        <DataPanel tag={tag} mates={mates} boxPos={boxPos} onSelect={onSelect} />
+      </div>
     </Card>
   );
 }
 
-// The shelf frame seeked to this tag's best moment, with everything *except*
-// this tag dimmed (a 9999px shadow clipped by the container) so the eye lands
-// straight on it — plus the exact crop the recognizer received.
-function FramePanel({ id, tag }: { id: string; tag: TagPrediction }) {
+// --- Video + its timeline (the only time-navigation control) --------------
+
+function VideoStage({
+  id,
+  pred,
+  tag,
+  mates,
+  frameKey,
+  onSelect,
+}: {
+  id: string;
+  pred: JobPredictions;
+  tag: TagPrediction;
+  mates: TagPrediction[];
+  frameKey: (t: TagPrediction) => number;
+  onSelect: (index: number) => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [cur, setCur] = useState(0);
+  const [dur, setDur] = useState(0);
   const [cropFailed, setCropFailed] = useState(false);
+
+  const order = pred.tags;
+
+  const timeOf = useCallback(
+    (t: TagPrediction) =>
+      Number.isFinite(dur) && dur > 0
+        ? t.t_frac * dur
+        : t.frame_timestamp / 1000,
+    [dur],
+  );
+
+  const nearestTag = useCallback(
+    (frac: number) => {
+      let best = order[0];
+      let bd = Infinity;
+      for (const t of order) {
+        const d = Math.abs(t.t_frac - frac);
+        if (d < bd) {
+          bd = d;
+          best = t;
+        }
+      }
+      return best;
+    },
+    [order],
+  );
 
   const drawCrop = useCallback(() => {
     const v = videoRef.current;
     const c = canvasRef.current;
-    if (!v || !c || !v.videoWidth || !v.videoHeight) return;
+    if (!v || !c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, c.width, c.height); // never show the previous tag
+    if (!v.videoWidth || !v.videoHeight) return;
     const { x1, y1, x2, y2 } = tag.bbox;
     const sx = x1 * v.videoWidth;
     const sy = y1 * v.videoHeight;
     const sw = Math.max(1, (x2 - x1) * v.videoWidth);
     const sh = Math.max(1, (y2 - y1) * v.videoHeight);
-    const W = 560;
+    const W = 520;
     c.width = W;
-    c.height = Math.round((W * sh) / sw);
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
+    c.height = Math.max(1, Math.round((W * sh) / sw));
     try {
       ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
       setCropFailed(false);
     } catch {
-      setCropFailed(true); // cross-origin taint — only in a misconfigured deploy
+      setCropFailed(true); // cross-origin taint — only in a broken deploy
     }
   }, [tag.bbox]);
 
-  // Seek the uploaded clip to this tag's moment. The mock can't know the real
-  // clip length, so it gives a fraction; multiply by the real duration
-  // (frame_timestamp stays the graded ms value, shown as-is).
+  // Park the clip on the selected tag's frame (an explicit pick always
+  // pauses + seeks, so the frame and the data panel stay in lock-step).
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !ready) return;
-    const dur = v.duration;
-    const t = Number.isFinite(dur) ? tag.t_frac * dur : tag.frame_timestamp / 1000;
-    v.currentTime = Math.min(Number.isFinite(dur) ? dur - 0.05 : t, Math.max(0, t));
-  }, [tag, ready]);
+    v.pause();
+    const t = timeOf(tag);
+    v.currentTime = Math.min(
+      Number.isFinite(dur) && dur > 0 ? dur - 0.04 : t,
+      Math.max(0, t),
+    );
+  }, [tag, ready, dur, timeOf]);
 
-  const m = colorMeta(tag.color);
+  // The frame on screen is the source of truth: after any seek/pause, snap
+  // the selection to the tag at that moment — unless we're still on the same
+  // frame (then keep the chosen box among its mates). This is what makes a
+  // stale overlay impossible.
+  const syncToFrame = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !dur) return;
+    const near = nearestTag(v.currentTime / dur);
+    // Only re-select when we've moved to a different frame; staying on the
+    // same busy frame keeps whichever of its many boxes the user picked.
+    if (frameKey(near) !== frameKey(tag)) onSelect(near.index);
+    drawCrop();
+  }, [dur, nearestTag, onSelect, frameKey, tag, drawCrop]);
+
+  const seekToFrac = useCallback(
+    (frac: number) => {
+      const v = videoRef.current;
+      if (!v || !dur) return;
+      v.currentTime = Math.min(dur - 0.04, Math.max(0, frac * dur));
+    },
+    [dur],
+  );
+
+  const onTrackPointer = useCallback(
+    (e: ReactPointerEvent) => {
+      const el = trackRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      seekToFrac((e.clientX - r.left) / r.width);
+    },
+    [seekToFrac],
+  );
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) void v.play();
+    else v.pause();
+  }, []);
+
+  const boxesVisible = ready && !playing && !scrubbing;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
-          <Film className="size-3.5" /> Где на полке · кадр{" "}
-          {formatTimestamp(tag.frame_timestamp)}
-        </p>
-        <div className="relative overflow-hidden rounded-input bg-ghost-ink">
-          <video
-            ref={videoRef}
-            src={jobsApi.videoUrl(id)}
-            crossOrigin="anonymous"
-            controls
-            playsInline
-            preload="auto"
-            className="block max-h-[440px] w-full object-contain"
-            onLoadedMetadata={() => setReady(true)}
-            onSeeked={drawCrop}
-          />
-          {/* Single focus box — the 9999px box-shadow dims everything outside
-              it, so exactly one tag is in question (no box soup). */}
-          <div
-            className="pointer-events-none absolute rounded-[3px] border-2 border-chartwell-blue"
-            style={{
-              left: `${tag.bbox.x1 * 100}%`,
-              top: `${tag.bbox.y1 * 100}%`,
-              width: `${(tag.bbox.x2 - tag.bbox.x1) * 100}%`,
-              height: `${(tag.bbox.y2 - tag.bbox.y1) * 100}%`,
-              boxShadow: "0 0 0 9999px rgba(15, 23, 42, 0.55)",
-            }}
-          />
+    <div className="flex flex-col gap-3">
+      {/* The wrapper shrink-wraps the <video> (w-fit) so the % overlay maps
+          to the real video pixels — no object-contain letterbox drift even
+          for a tall portrait clip with many boxes. */}
+      <div className="mx-auto flex w-full justify-center">
+        <div className="relative w-fit overflow-hidden rounded-input bg-ghost-ink">
+        <video
+          ref={videoRef}
+          src={jobsApi.videoUrl(id)}
+          crossOrigin="anonymous"
+          playsInline
+          preload="auto"
+          className="block max-h-[60vh] max-w-full"
+          onLoadedMetadata={(e) => {
+            setDur(e.currentTarget.duration || 0);
+            setReady(true);
+          }}
+          onLoadedData={drawCrop}
+          onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
+          onSeeked={() => {
+            if (!scrubbing) syncToFrame();
+          }}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onClick={togglePlay}
+        />
+
+        {/* Boxes for THIS frame only. Active one is focused via a clipped
+            9999px shadow (everything else dims); its mates are thin
+            outlines you can click to switch boxes within the frame. */}
+        {boxesVisible &&
+          mates.map((m) => {
+            const active = m.index === tag.index;
+            return (
+              <button
+                key={m.index}
+                type="button"
+                title={tagLabel(m)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(m.index);
+                }}
+                className={cn(
+                  "absolute rounded-[3px] transition-colors",
+                  active
+                    ? "border-2 border-chartwell-blue"
+                    : "border border-cloud-white/70 hover:border-cloud-white",
+                )}
+                style={{
+                  left: `${m.bbox.x1 * 100}%`,
+                  top: `${m.bbox.y1 * 100}%`,
+                  width: `${(m.bbox.x2 - m.bbox.x1) * 100}%`,
+                  height: `${(m.bbox.y2 - m.bbox.y1) * 100}%`,
+                  boxShadow: active
+                    ? "0 0 0 9999px rgba(12, 10, 9, 0.55)"
+                    : undefined,
+                }}
+              />
+            );
+          })}
+
+        {playing && (
+          <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
+            Воспроизведение — рамки скрыты
+          </div>
+        )}
         </div>
       </div>
 
-      <div>
+      {/* The timeline IS the scrubber. Markers = tags, coloured by tag type;
+          the active tag's marker is the blue one. Click a marker to jump to
+          that ценник; click/drag the bar to move through the clip. */}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={togglePlay}
+          title={playing ? "Пауза" : "Воспроизвести"}
+          className="grid size-9 shrink-0 place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:bg-canvas-fog"
+        >
+          {playing ? (
+            <Pause className="size-4" />
+          ) : (
+            <Play className="size-4" />
+          )}
+        </button>
+        <div
+          ref={trackRef}
+          onPointerDown={(e) => {
+            (e.target as HTMLElement).setPointerCapture(e.pointerId);
+            setScrubbing(true);
+            onTrackPointer(e);
+          }}
+          onPointerMove={(e) => scrubbing && onTrackPointer(e)}
+          onPointerUp={(e) => {
+            (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+            setScrubbing(false);
+            syncToFrame();
+          }}
+          className="relative h-9 grow cursor-pointer select-none"
+        >
+          {/* rail */}
+          <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-pill bg-stone-border" />
+          {/* played */}
+          <div
+            className="absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-pill bg-chartwell-blue/70"
+            style={{ width: `${dur ? (cur / dur) * 100 : 0}%` }}
+          />
+          {/* tag markers */}
+          {order.map((t) => {
+            const active = t.index === tag.index;
+            const m = colorMeta(t.color);
+            return (
+              <button
+                key={t.index}
+                type="button"
+                title={`${tagLabel(t)} · ${formatTimestamp(t.frame_timestamp)}`}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(t.index);
+                }}
+                className={cn(
+                  "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border transition-all",
+                  active
+                    ? "z-10 size-3.5 border-cloud-white bg-chartwell-blue"
+                    : "size-2.5 border-cloud-white",
+                )}
+                style={{
+                  left: `${t.t_frac * 100}%`,
+                  background: active ? undefined : m.swatch,
+                  boxShadow: `0 0 0 1px ${active ? "#3ba6f1" : m.ring}`,
+                }}
+              />
+            );
+          })}
+          {/* playhead */}
+          <div
+            className="pointer-events-none absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-chartwell-blue bg-cloud-white shadow-subtle"
+            style={{ left: `${dur ? (cur / dur) * 100 : 0}%` }}
+          />
+        </div>
+        <span className="shrink-0 font-mono text-[12px] tabular-nums text-ash-gray">
+          {clock(cur)} / {clock(dur)}
+        </span>
+      </div>
+      <p className="text-caption text-steel-gray">
+        Точки на дорожке — ценники (цвет = тип). Клик по точке открывает
+        ценник; перетаскивание — перемотка видео.
+      </p>
+
+      {/* The crop the recognizer actually received. */}
+      <div className="mt-2">
         <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
           <Crop className="size-3.5" /> Что увидел распознаватель
         </p>
-        <div className="flex flex-col items-start gap-3">
-          <div className="overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
-            <canvas ref={canvasRef} className="block max-h-[240px] max-w-full" />
-          </div>
-          {cropFailed && (
-            <p className="text-caption text-amber-700">
-              Кроп недоступен: видео отдаётся с другого источника без CORS.
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-2 text-caption text-ash-gray">
-            <Badge variant="info">{formatTimestamp(tag.frame_timestamp)}</Badge>
-            <span>
-              лучший кадр · таймкод{" "}
-              <span className="font-mono text-slate-text">
-                {tag.frame_timestamp}
-              </span>{" "}
-              мс
-            </span>
-            <span
-              className="inline-flex items-center gap-1.5 rounded-pill border border-stone-border bg-canvas-fog px-2 py-0.5 text-slate-text"
-              title={m.label}
-            >
-              <span
-                className="size-2.5 rounded-full"
-                style={{ background: m.swatch, boxShadow: `0 0 0 1px ${m.ring}` }}
-              />
-              {m.label}
-            </span>
-          </div>
+        <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
+          <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
         </div>
+        {cropFailed && (
+          <p className="mt-2 text-caption text-amber-700">
+            Кроп недоступен: видео отдаётся с другого источника без CORS.
+          </p>
+        )}
       </div>
     </div>
   );
 }
 
-// Compact navigation rail — one tile per tag, tinted by its colour, ringed by
-// pass/fail, current one lifted. Click jumps; horizontally scrollable.
-function Filmstrip({
-  tags,
-  substantive,
-  pos,
-  onPick,
+// --- Recognized data — hero facts + folded detail groups ------------------
+
+function DataPanel({
+  tag,
+  mates,
+  boxPos,
+  onSelect,
 }: {
-  tags: TagPrediction[];
-  substantive: string[];
-  pos: number;
-  onPick: (pos: number) => void;
+  tag: TagPrediction;
+  mates: TagPrediction[];
+  boxPos: number;
+  onSelect: (index: number) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  // Keep the active tile in view as you step.
-  useEffect(() => {
-    const el = ref.current?.children[pos] as HTMLElement | undefined;
-    el?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
-  }, [pos]);
-
-  const tiles = useMemo(
-    () =>
-      tags.map((t, i) => {
-        const m = colorMeta(t.color);
-        const pass = completeness(t, substantive) >= PASS_THRESHOLD;
-        return { t, i, m, pass };
-      }),
-    [tags, substantive],
-  );
-
+  const cm = colorMeta(tag.color);
   return (
-    <div
-      ref={ref}
-      className="flex gap-2 overflow-x-auto border-t border-stone-border p-4"
-    >
-      {tiles.map(({ t, i, m, pass }) => {
-        const active = i === pos;
-        return (
-          <button
-            key={t.index}
-            type="button"
-            onClick={() => onPick(i)}
-            title={tagLabel(t)}
-            className={cn(
-              "relative flex shrink-0 flex-col items-center gap-1 rounded-input border px-3 py-2 transition-colors",
-              active
-                ? "border-chartwell-blue bg-chartwell-blue/10"
-                : "border-stone-border bg-cloud-white hover:bg-canvas-fog",
-            )}
+    <div className="flex flex-col gap-5">
+      {/* Boxes-in-one-frame switcher (only when this frame holds several). */}
+      {mates.length > 1 && (
+        <div className="flex items-center justify-between rounded-input border border-stone-border bg-canvas-fog px-3 py-2">
+          <span className="text-caption text-ash-gray">
+            В этом кадре несколько ценников
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              title="Предыдущий бокс в кадре"
+              onClick={() =>
+                onSelect(mates[(boxPos - 1 + mates.length) % mates.length].index)
+              }
+              className="grid size-7 place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text hover:bg-canvas-fog"
+            >
+              <ChevronLeft className="size-3.5" />
+            </button>
+            <span className="text-[12px] tabular-nums text-slate-text">
+              бокс {boxPos + 1} / {mates.length}
+            </span>
+            <button
+              type="button"
+              title="Следующий бокс в кадре"
+              onClick={() => onSelect(mates[(boxPos + 1) % mates.length].index)}
+              className="grid size-7 place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text hover:bg-canvas-fog"
+            >
+              <ChevronRight className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hero — the few things that matter, read at a glance. */}
+      <div className="rounded-card border border-stone-border bg-canvas-fog p-4">
+        <div className="flex items-center justify-between gap-3">
+          <span
+            className="inline-flex items-center gap-1.5 text-[13px] text-slate-text"
+            title={cm.label}
           >
             <span
               className="size-3 rounded-full"
-              style={{ background: m.swatch, boxShadow: `0 0 0 1px ${m.ring}` }}
+              style={{ background: cm.swatch, boxShadow: `0 0 0 1px ${cm.ring}` }}
             />
-            <span
-              className={cn(
-                "text-[12px] tabular-nums",
-                active ? "text-chartwell-blue" : "text-ash-gray",
-              )}
+            {cm.label}
+          </span>
+          <span className="text-caption text-ash-gray">
+            кадр {formatTimestamp(tag.frame_timestamp)}
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4">
+          <HeroStat label="Цена без карты" value={tag.fields.price_default} suffix="₽" />
+          <HeroStat label="Цена по карте" value={tag.fields.price_card} suffix="₽" />
+          <HeroStat label="Штрихкод" value={tag.fields.barcode} mono />
+          <HeroStat label="Артикул (SKU)" value={tag.fields.id_sku} mono />
+        </div>
+      </div>
+
+      {/* Detail groups — empty groups collapse so the panel never becomes a
+          giant column (QR-код is almost always "нет данных"). */}
+      <div className="flex flex-col gap-3">
+        {FIELD_GROUPS.map((group) => {
+          const rows = group.fields.filter(
+            (f) => !HIDDEN_FROM_GROUPS.has(f.key),
+          );
+          if (!rows.length) return null;
+          const filled = rows.filter(
+            (f) => fieldState(tag.fields[f.key]) === "value",
+          ).length;
+          return (
+            <details
+              key={group.title}
+              open={filled > 0}
+              className="group overflow-hidden rounded-input border border-stone-border"
             >
-              {i + 1}
-            </span>
-            <span
-              className={cn(
-                "h-1 w-6 rounded-pill",
-                pass ? "bg-chartwell-blue" : "bg-amber-400",
-              )}
-            />
-          </button>
-        );
-      })}
+              <summary className="flex cursor-pointer list-none items-center justify-between bg-cloud-white px-3 py-2 text-caption font-medium uppercase tracking-[0.12em] text-steel-gray">
+                <span>{group.title}</span>
+                <span className="flex items-center gap-2 normal-case tracking-normal">
+                  <span className="text-[12px] text-ash-gray">
+                    {filled > 0 ? `${filled} значений` : "нет данных"}
+                  </span>
+                  <ChevronRight className="size-3.5 text-steel-gray transition-transform group-open:rotate-90" />
+                </span>
+              </summary>
+              <dl className="grid grid-cols-1 gap-px bg-stone-border sm:grid-cols-2">
+                {rows.map(({ key, label }) => (
+                  <div
+                    key={key}
+                    className="flex items-baseline justify-between gap-3 bg-cloud-white px-3 py-2"
+                  >
+                    <dt className="shrink-0 text-[13px] text-ash-gray">
+                      {label}
+                    </dt>
+                    <dd className="min-w-0 text-right">
+                      <FieldValue field={key} value={tag.fields[key]} />
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
+function HeroStat({
+  label,
+  value,
+  suffix,
+  mono,
+}: {
+  label: string;
+  value: string | undefined;
+  suffix?: string;
+  mono?: boolean;
+}) {
+  const state = fieldState(value);
+  return (
+    <div className="min-w-0">
+      <p className="text-caption text-ash-gray">{label}</p>
+      {state === "value" ? (
+        <p
+          className={cn(
+            "mt-1 truncate font-display text-heading-sm font-medium text-slate-text",
+            mono && "font-mono tabular-nums",
+          )}
+        >
+          {value}
+          {suffix && <span className="ml-1 text-[13px] text-ash-gray">{suffix}</span>}
+        </p>
+      ) : (
+        <p className="mt-1 text-[13px] text-steel-gray">
+          {state === "absent" ? "нет на ценнике" : "не распознано"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FieldValue({ field, value }: { field: string; value: string | undefined }) {
+  const state = fieldState(value);
+  if (state === "absent")
+    return (
+      <Badge variant="neutral" className="font-normal">
+        нет на ценнике
+      </Badge>
+    );
+  if (state === "unrecognized")
+    return (
+      <Badge variant="warning" className="font-normal">
+        не распознано
+      </Badge>
+    );
+  const mono =
+    field === "barcode" || field.includes("qr") || field === "id_sku";
+  return (
+    <span
+      className={cn(
+        "break-words text-[13px] text-slate-text",
+        mono && "font-mono tabular-nums",
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
+function clock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const s = Math.floor(sec % 60);
+  return `${Math.floor(sec / 60)}:${s.toString().padStart(2, "0")}`;
+}
+
+// ===========================================================================
 
 function Header({
   job,
@@ -502,14 +833,14 @@ function Processing({ job }: { job: Job | null }) {
 
 function ReviewSkeleton() {
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-12">
       <Skeleton className="h-12 w-72" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <Skeleton key={i} className="h-28" />
         ))}
       </div>
-      <Skeleton className="h-[520px]" />
+      <Skeleton className="h-[560px]" />
     </div>
   );
 }
