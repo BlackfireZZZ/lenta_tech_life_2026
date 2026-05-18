@@ -287,6 +287,24 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
 
     cfg = load_config(cfg_path)
     cfg, weights_src = _resolve_local_weights(cfg)
+
+    # Smoother progress bar. The pipeline emits a ProgressEvent every
+    # runtime.log_every_n_frames frames; balanced.yaml uses 50, so on a
+    # few-hundred-frame clip the bar jumps ~10% at a time. This knob is
+    # purely report/log cadence — zero effect on detection/OCR quality — so
+    # the service tightens it (env ML_PROGRESS_EVERY_N, default 10) without
+    # touching the canonical config. NOTE: fraction is frame-based; OCR/VLM
+    # runs in bursts at track finalization, so equal fraction steps can
+    # still arrive at uneven wall-clock intervals — inherent, not a bug.
+    try:
+        n = int(os.getenv("ML_PROGRESS_EVERY_N", "10") or 0)
+    except ValueError:
+        n = 0
+    if n > 0 and cfg.runtime.log_every_n_frames != n:
+        from dataclasses import replace
+
+        cfg = replace(cfg, runtime=replace(cfg.runtime, log_every_n_frames=n))
+
     tags = PriceTagPipeline(cfg).run(req.video_path, progress=_on_progress)
 
     # task.md §3.4: the released Lenta CSVs use a bare stem as `filename`.

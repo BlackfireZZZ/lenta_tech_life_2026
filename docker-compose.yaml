@@ -58,6 +58,8 @@ services:
       HF_HOME: /models/hf               # HF cache (persists any fallback DL)
       HF_HUB_ENABLE_HF_TRANSFER: "1"    # fast download IF a model is missing
       ML_PIPELINE_CONFIG: projects/price_tag_pipeline/configs/balanced.yaml
+      ML_PROGRESS_EVERY_N: "10"          # progress report cadence (frames);
+                                         # lower = smoother bar, cosmetic only
       CATALOG_CSV: /data/catalog/db_hack.csv   # GT-safe barcode/name repair
       # ML_MOCK unset → real GPU pipeline. Set ML_MOCK=1 to force the mock CSV
       # (boots without GPU/weights — architecture.md §5).
