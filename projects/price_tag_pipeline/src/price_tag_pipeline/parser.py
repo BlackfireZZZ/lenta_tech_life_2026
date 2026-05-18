@@ -318,6 +318,22 @@ def _lenient_json_loads(raw: str) -> Optional[dict]:
 _ABSENT_TOKENS = {"нет", "null", "none", "n/a", "na", "-", "—", "отсутствует"}
 _BARCODE_KEYS = {"barcode", "qr_code_barcode"}
 
+# additional_info is ONLY genuine extra text (price-tag-guide §10 row
+# `additional_info`): sweetness in a rounded box, scale number, promo date
+# range, threshold "от/до/при покупке N", "3=2"/"купи N". Price labels
+# («без карты», «с картой», «₽/шт») and price numbers are NEVER
+# additional_info — the VLM routinely dumps them there. Keep only on signal.
+_AINFO_SIGNAL = (
+    "сух", "сладк", "полусл", "брют", "номер на вес", "акция действ",
+    "при покупке", "удачная упаков", "=", "купи", "плати",
+    " от ", " до ",  # threshold "от N шт/кг" / "до N кг"
+)
+_AINFO_JUNK = (
+    "без карт", "с карт", "по карт", "₽", "руб", "/шт", "/кг", "p/", "р/",
+    "цена", "цены",
+)
+_DATE_RE = re.compile(r"\b\d{2}\.\d{2}\.\d{4}\b")
+
 
 def _norm_extra_field(key: str, value: object) -> object:
     """Normalize one HACK extra field straight off the VLM JSON.
@@ -343,6 +359,16 @@ def _norm_extra_field(key: str, value: object) -> object:
         # A percent is discount_amount, not the third promo PRICE. The VLM
         # routinely duplicates "-44%" here; that is never a valid price.
         return "нет"
+    if key == "additional_info":
+        low = s.lower()
+        has_signal = _DATE_RE.search(s) is not None or any(t in low for t in _AINFO_SIGNAL)
+        if has_signal:
+            return s
+        # No genuine signal: if it's price-label junk or just digits/price
+        # tokens, it is not additional_info → absent.
+        if any(t in low for t in _AINFO_JUNK) or re.fullmatch(r"[\d\s.,:;%/-]+", s):
+            return "нет"
+        return s
     return s
 
 

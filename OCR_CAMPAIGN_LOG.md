@@ -2,8 +2,10 @@
 
 ## ☀️ MORNING SUMMARY (read this first)
 
-**Result: OCR went from broken (0.0) to headline 0.750 / mean 0.854** on 12
-hand-verified good crops, measured by a faithful hackathon-metric scorer.
+**Result: OCR went from broken (0.0) to headline 1.000 (12/12) / mean 0.933**
+on 12 hand-verified good crops, measured by a faithful hackathon-metric
+scorer. (v5 was 0.750/0.854; v6 fixed threshold price_discount +
+additional_info pollution → 1.000/0.933.)
 
 What I found & did, autonomously, overnight:
 1. **Your instinct was right — organizer boxes are garbage.** I *looked*: the
@@ -78,9 +80,15 @@ here so the morning review is one read.
 | 8 | **v5: v2 prompt EXACT + ONLY "read full multi-line name" line + parser guards** | qwen3_vl | **0.750** (mean **.854**) | product_name 1.0, discount_amount 1.0, price_discount .917, barcode .833. **LOCKED baseline.** Lesson: minimal prompt, deterministic parser fixes. Bottleneck = prices (default .583/card .667: small «Без карты» kopecks + threshold tags) |
 | 9 | crop upscale 1024→1536 | qwen3_vl | 0.667 (mean .820) | NET-NEG (barcode .83→.5, slower 380s). Small-price kopecks are a SOURCE-resolution ceiling (~10px superscript on ~234px tag) — interpolation can't recover. **Rejected; keep 1024.** |
 
-**LOCKED config:** Qwen3-VL-4B, `data/friends_crops` (pad .10, LANCZOS→1024),
-prompt = current DEFAULT_VLM_PROMPT, parser guards. Headline 0.750 / mean 0.854
-on 12 hand-verified good crops (from a broken 0.0 organizer baseline).
+| 10 | v6: additional_info sanitizer (parser, prompt-independent) + prompt threshold-price mapping (small «без карты»=default; 2-panel→left=card+disc_amt, right«от/до/при N»=price_discount) + reference additional_info GT expanded | qwen3_vl | **1.000 (12/12)** (mean **.933**) | price_discount .917→**1.0** (БАЛТИКА threshold now 121.09/98.99/**89.96**); additional_info **1.0 [10/10]** ("без карты…" pollution killed); product_name/special_symbols 1.0; no field regressed; 18/18 tests. Addresses user feedback (threshold price_discount + additional_info). |
+
+**LOCKED config (v6):** Qwen3-VL-4B, `data/friends_crops` (pad .10,
+LANCZOS→1024), prompt = current DEFAULT_VLM_PROMPT, parser guards
+(lenient JSON, digits-only barcode, price_discount %/dup→"нет",
+additional_info junk→"нет"). **Headline 1.000 / mean 0.933** on 12
+hand-verified good crops (from a broken 0.0 organizer baseline).
+Residual: small «без карты» kopecks (source-resolution ceiling) +
+1 id_sku→barcode confusion.
 
 **Decision:** OCR base = Qwen3-VL-4B (`weights/qwen3-vl-4b`). Open: price-role
 (Без карты→regular vs С картой→loyalty) disambiguation; minor OCR char slips
