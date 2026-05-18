@@ -265,6 +265,58 @@ def _resolve_local_weights(cfg):
     return cfg, {"detector": det_src, "vlm": vlm_src}
 
 
+# --- Startup warm-up ------------------------------------------------------
+# Loading Qwen3-VL-4B is ~8 GB / tens of seconds. Lazily it happened on the
+# *first crop OCR of the first upload* — the user sat watching a stalled
+# bar. We instead trigger that load at service start (a background thread —
+# see app/main.py), so the model is resident before anyone uploads. The
+# process-wide VLM cache (recognition/ocr.py) makes this a one-time cost
+# shared by every later request, regardless of per-upload rotation (which
+# only touches the cheap detector, never the VLM).
+_warm_state = "cold"  # cold | warming | ready | skipped | error
+
+
+def warm_state() -> str:
+    return _warm_state
+
+
+def warmup() -> None:
+    """Force the heavy VLM load now (idempotent, never raises).
+
+    Drives one decode on a blank frame through the *public* recognition
+    chain — that runs ``_ensure_loaded`` and fills the process VLM cache. A
+    failure just leaves the old lazy path in place for the first real job.
+    """
+    global _warm_state
+    if _mock_forced() or not _probe_real():
+        _warm_state = "skipped"
+        LOGGER.info("warmup skipped (mock/pipeline unavailable)")
+        return
+    try:
+        _warm_state = "warming"
+        from price_tag_pipeline.config import load_config
+        from price_tag_pipeline.recognition.ocr import build_ocr_engine
+
+        cfg = load_config(_config_path())
+        cfg, _ = _resolve_local_weights(cfg)  # use the same (local) VLM
+        engine = build_ocr_engine(cfg.ocr)
+        t0 = time.time()
+        # Load the model directly — robust regardless of chain/decode
+        # heuristics (a blank-image decode can be skipped before the load).
+        ensure = getattr(engine, "_ensure_loaded", None)
+        if callable(ensure):
+            ensure()
+        else:  # engine without an explicit loader → tiny real call
+            import numpy as np
+
+            engine.recognize_all(np.full((600, 800, 3), 255, np.uint8))
+        _warm_state = "ready"
+        LOGGER.info("warmup complete in %.1fs — VLM resident", time.time() - t0)
+    except Exception as exc:  # noqa: BLE001 - never fatal; lazy path remains
+        _warm_state = "error"
+        LOGGER.warning("warmup failed (lazy-load on first job): %s", exc)
+
+
 def run_pipeline(req: ProcessRequest) -> ProcessResponse:
     if _mock_forced() or not _probe_real():
         progress_registry.record(req.job_id, {

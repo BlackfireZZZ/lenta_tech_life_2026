@@ -74,8 +74,10 @@ services:
       # download"). A missing host path → empty dir → treated as absent.
       - ./data/checkpoints/detector/lenta_price_tag_manual_stop_best.pt:/models/local/detector.pt:ro
       - ./weights/qwen3-vl-4b:/models/local/qwen3-vl-4b:ro
-      # Hot ml code (no rebuild for runner changes; mirrors backend's mount).
+      # Hot code (no rebuild for runner/pipeline changes; mirrors backend's
+      # mount). Heavy deps stay in the image — only Python source is overlaid.
       - ./ml/app:/workspace/ml/app
+      - ./projects/price_tag_pipeline/src:/workspace/projects/price_tag_pipeline/src
       # Lenta master catalog (gitignored, ~625k rows). Put db_hack.csv at
       # <worktree>/real_data/db_hack.csv. Read-only; if absent the runner
       # logs and skips reconciliation (the graded run is never affected).
