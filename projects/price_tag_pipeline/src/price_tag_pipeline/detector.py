@@ -140,45 +140,92 @@ class YOLOTrackerDetector(BaseDetector):
         video_path: str,
         fps_override: Optional[float] = None,
     ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
-        fps = float(fps_override) if fps_override else read_video_fps(video_path)
-        LOGGER.info("Using FPS=%.3f for %s", fps, video_path)
+        """Yield (frame_bgr, detections), one upright frame at a time.
 
-        track_kwargs = dict(
-            source=video_path,
-            stream=True,
+        Frames are read with OpenCV and rotated per ``cfg.rotate`` BEFORE
+        detection: the Lenta scan-robot camera is mounted 90° clockwise, so
+        raw clips are sideways landscape and a detector trained on upright
+        tags misses/duplicates badly (this roughly halves recall). We feed the
+        model the rotated frame and run a per-frame ``model.track(persist=…)``
+        loop so detections, track IDs, crops and bboxes all live in the same
+        upright coordinate space. ``model.predict`` + a light IoU tracker is
+        the fallback if ``model.track`` raises.
+        """
+        cv2 = _require_cv2()
+        fps = float(fps_override) if fps_override else read_video_fps(video_path)
+        rot = {
+            "ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
+            "cw": cv2.ROTATE_90_CLOCKWISE,
+        }.get((self.cfg.rotate or "none").lower().strip())
+        LOGGER.info(
+            "Using FPS=%.3f rotate=%s for %s", fps, self.cfg.rotate, video_path
+        )
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+
+        common = dict(
             conf=self.cfg.conf,
             iou=self.cfg.iou,
-            tracker=self._tracker_yaml,
             device=self.cfg.device,
             verbose=False,
-            persist=True,
             imgsz=self.cfg.image_size,
         )
         if self.cfg.classes is not None:
-            track_kwargs["classes"] = self.cfg.classes
+            common["classes"] = self.cfg.classes
 
+        use_predict = False
+        next_tid = 1
+        fb_tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
+        frame_idx = -1
         try:
-            results = self.model.track(**track_kwargs)
-            next_tid = 1
-            fallback_tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
-            for frame_idx, result in enumerate(results):
-                frame = result.orig_img  # do not copy — downstream rectifier copies its slice
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                frame_idx += 1
+                if rot is not None:
+                    frame = cv2.rotate(frame, rot)
+
+                if not use_predict:
+                    try:
+                        # persist=False on frame 0 forces a FRESH tracker even
+                        # if this model object was reused for a prior video.
+                        result = self.model.track(
+                            frame,
+                            persist=frame_idx > 0,
+                            tracker=self._tracker_yaml,
+                            **common,
+                        )[0]
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "model.track() failed (%s); predict()+IoU tracker "
+                            "for the remaining frames.",
+                            exc,
+                        )
+                        use_predict = True
+                if use_predict:
+                    result = self.model.predict(frame, **common)[0]
+
                 boxes = getattr(result, "boxes", None)
                 names = getattr(result, "names", {}) or {}
-
                 if boxes is None or len(boxes) == 0:
                     yield frame, []
                     continue
 
-                ids = getattr(boxes, "id", None)
                 xyxy = boxes.xyxy
                 confs = boxes.conf
                 classes = boxes.cls
-                fallback_ids: list[int] | None = None
+                ids = None if use_predict else getattr(boxes, "id", None)
+                fb_ids: list[int] | None = None
                 if ids is None:
-                    fallback_ids, fallback_tracks, next_tid = _assign_iou_track_ids(
-                        boxes_xyxy=[tuple(int(round(float(v))) for v in row.tolist()) for row in xyxy],
-                        tracks=fallback_tracks,
+                    fb_ids, fb_tracks, next_tid = _assign_iou_track_ids(
+                        boxes_xyxy=[
+                            tuple(int(round(float(v))) for v in row.tolist())
+                            for row in xyxy
+                        ],
+                        tracks=fb_tracks,
                         next_tid=next_tid,
                         frame_idx=frame_idx,
                     )
@@ -188,7 +235,7 @@ class YOLOTrackerDetector(BaseDetector):
                     x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
                     conf = float(confs[i].item()) if confs is not None else 1.0
                     cls_id = int(classes[i].item()) if classes is not None else 0
-                    track_id = int(ids[i].item()) if ids is not None else fallback_ids[i]
+                    track_id = int(ids[i].item()) if ids is not None else fb_ids[i]
                     detections.append(
                         Detection(
                             frame_idx=frame_idx,
@@ -201,96 +248,8 @@ class YOLOTrackerDetector(BaseDetector):
                         )
                     )
                 yield frame, detections
-            return
-        except Exception as exc:
-            LOGGER.warning(
-                "model.track() failed (%s). Falling back to predict()+lightweight IoU tracker.",
-                exc,
-            )
-
-        yield from self._stream_with_predict_fallback(video_path=video_path, fps=fps)
-
-    def _stream_with_predict_fallback(
-        self,
-        video_path: str,
-        fps: float,
-    ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
-        cv2 = _require_cv2()
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open video: {video_path}")
-
-        next_tid = 1
-        # [tid, bbox, last_seen_frame]
-        tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
-        max_age = 15
-        iou_gate = 0.3
-
-        frame_idx = -1
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            frame_idx += 1
-
-            pred = self.model.predict(
-                source=frame,
-                conf=self.cfg.conf,
-                iou=self.cfg.iou,
-                device=self.cfg.device,
-                verbose=False,
-                imgsz=self.cfg.image_size,
-            )
-            result = pred[0]
-            boxes = getattr(result, "boxes", None)
-            names = getattr(result, "names", {}) or {}
-            detections: list[Detection] = []
-            if boxes is not None and len(boxes) > 0:
-                xyxy = boxes.xyxy
-                confs = boxes.conf
-                classes = boxes.cls
-                assigned: set[int] = set()
-                for i in range(len(boxes)):
-                    x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
-                    bbox = (x1, y1, x2, y2)
-                    conf = float(confs[i].item()) if confs is not None else 1.0
-                    cls_id = int(classes[i].item()) if classes is not None else 0
-
-                    best_j = -1
-                    best_iou = 0.0
-                    for j, (tid, tb, last_seen) in enumerate(tracks):
-                        if frame_idx - last_seen > max_age or j in assigned:
-                            continue
-                        iou = _bbox_iou(bbox, tb)
-                        if iou > best_iou:
-                            best_iou = iou
-                            best_j = j
-                    if best_j >= 0 and best_iou >= iou_gate:
-                        tid, _, _ = tracks[best_j]
-                        tracks[best_j] = (tid, bbox, frame_idx)
-                        assigned.add(best_j)
-                        track_id = tid
-                    else:
-                        track_id = next_tid
-                        next_tid += 1
-                        tracks.append((track_id, bbox, frame_idx))
-                        assigned.add(len(tracks) - 1)
-
-                    detections.append(
-                        Detection(
-                            frame_idx=frame_idx,
-                            timestamp_s=frame_idx / fps,
-                            bbox_xyxy=bbox,
-                            confidence=conf,
-                            class_id=cls_id,
-                            class_name=str(names.get(cls_id, cls_id)),
-                            track_id=track_id,
-                        )
-                    )
-            tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
-            yield frame, detections
-
-        cap.release()
+        finally:
+            cap.release()
 
 
 def _assign_iou_track_ids(

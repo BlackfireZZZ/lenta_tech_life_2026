@@ -34,6 +34,11 @@ class DetectorConfig:
     tracker_yaml: str
     open_vocab_labels: tuple[str, ...] = ()
     image_size: int = 1280
+    # The Lenta scan-robot camera is mounted 90° clockwise: clips are stored
+    # 3840×2160 landscape but the shelf/tags are sideways, which wrecks a
+    # detector trained on upright tags. Undo it before detection.
+    # "ccw" (default, the live data) | "cw" | "none".
+    rotate: str = "ccw"
 
 
 @dataclass(frozen=True)
@@ -177,6 +182,7 @@ def _as_detector(node: dict[str, Any]) -> DetectorConfig:
         open_vocab_labels=labels,
         tracker_yaml=str(node["tracker_yaml"]),
         image_size=int(_opt(node, "image_size", 1280)),
+        rotate=str(_opt(node, "rotate", "ccw")).lower().strip(),
     )
 
 

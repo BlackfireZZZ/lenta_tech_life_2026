@@ -70,6 +70,12 @@ def main() -> int:
     p.add_argument(
         "--tracker", default=None, help="override detector.tracker_yaml (path)"
     )
+    p.add_argument(
+        "--weights", default=None, help="override detector.model_path (e.g. fine-tuned best.pt)"
+    )
+    p.add_argument(
+        "--rotate", default=None, help="override detector.rotate (ccw|cw|none)"
+    )
     p.add_argument("--json-out", default=None)
     args = p.parse_args()
 
@@ -124,6 +130,10 @@ def main() -> int:
             det_cfg = dataclasses.replace(det_cfg, device=args.device)
         if args.tracker:
             det_cfg = dataclasses.replace(det_cfg, tracker_yaml=args.tracker)
+        if args.weights:
+            det_cfg = dataclasses.replace(det_cfg, model_path=args.weights)
+        if args.rotate:
+            det_cfg = dataclasses.replace(det_cfg, rotate=args.rotate)
 
         try:
             detector = build_detector(det_cfg)

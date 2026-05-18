@@ -82,6 +82,7 @@ def main() -> int:
     p.add_argument("--max-frames", type=int, default=1200)
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--device", default="0")
+    p.add_argument("--weights", default=None, help="override detector.model_path")
     p.add_argument("--json-out", default="runs/sweep.json")
     args = p.parse_args()
 
@@ -119,6 +120,7 @@ def main() -> int:
             tracker_yaml=str(tcfg),
             image_size=args.imgsz,
             device=args.device,
+            **({"model_path": args.weights} if args.weights else {}),
         )
         agg = {"raw": 0, "qual": 0, "sing_short": 0, "gt": 0}
         per_video: dict[str, dict] = {}
