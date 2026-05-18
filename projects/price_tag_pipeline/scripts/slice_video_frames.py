@@ -42,11 +42,24 @@ LOGGER = logging.getLogger("slice_video_frames")
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".MP4", ".MOV")
 
 
-def _discover(src: Path) -> list[Path]:
-    """Every video under ``src`` (recursive), sorted, stable scene order."""
-    return sorted(
-        p for p in src.rglob("*") if p.is_file() and p.suffix in VIDEO_EXTS
-    )
+def _discover(src: Path, include_unlabeled: bool) -> list[Path]:
+    """Every video under ``src`` (recursive), sorted, stable scene order.
+
+    A ``Unlabeled/`` (case-insensitive) subtree is skipped by default — the
+    organizer set keeps held-out clips there; mixing them in silently would
+    double the work under auto-disambiguated scene names. Opt in with
+    ``--include-unlabeled``.
+    """
+    out = []
+    for p in src.rglob("*"):
+        if not (p.is_file() and p.suffix in VIDEO_EXTS):
+            continue
+        if not include_unlabeled and any(
+            part.lower() == "unlabeled" for part in p.relative_to(src).parts
+        ):
+            continue
+        out.append(p)
+    return sorted(out)
 
 
 def _scene_name(video: Path, taken: set[str]) -> str:
@@ -114,6 +127,8 @@ def main() -> int:
                    help="drop a frame within this normalized gray-diff of the "
                         "last kept one (robot-parked dedup). 0 = keep all")
     p.add_argument("--out", type=Path, default=Path("cvat_video_frames"))
+    p.add_argument("--include-unlabeled", action="store_true",
+                   help="also slice an Unlabeled/ subtree (skipped by default)")
     p.add_argument("--jpeg-quality", type=int, default=95)
     p.add_argument("--log-level", default="INFO")
     a = p.parse_args()
@@ -126,7 +141,7 @@ def main() -> int:
         if not a.src.is_dir():
             LOGGER.error("src not found: %s", a.src.resolve())
             return 1
-        videos = _discover(a.src)
+        videos = _discover(a.src, a.include_unlabeled)
     if not videos:
         LOGGER.error("no videos found")
         return 1
