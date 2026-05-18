@@ -324,3 +324,47 @@ Critical path to a demo = **P0→P4** (CLI + JSON + crops). P5 is upside.
 Fine-tuning the product detector; exact SKU recognition; planogram compliance;
 real push notifications; merging into the scored CSV; per-image
 `build_shelf_state` rework. All deferred or owned elsewhere.
+
+## 14. Testing TODO
+
+P0–P3 + P5-UI are committed but **only verified on a 25-frame CPU cap of one
+video (`25_12-20`) + synthetic unit tests**. Before this is demo-trustworthy:
+
+**Blocking — needs the GPU box (P4):**
+- [ ] `run_shelf_audit.py --all` full-length on all 5 videos (GPU; CPU ≈
+      hours/video). Confirm it finishes and memory stays bounded (best-crop
+      dict + `_grab_frames` set scale with video length).
+- [ ] Eyeball every alert on each video: is each OOS crop really a tag with no
+      product, each missing-tag really a product with no tag? Record the
+      false-alarm rate honestly (no single-anecdote claims — memory
+      `verify-dont-assert`).
+- [ ] Tune on real full runs: `--product-conf` (P0 start 0.30),
+      `--persistence` (vs real track lengths at full fps), associator
+      `min_score`/`ambiguous_margin`/`min_co_frames`, card
+      `min_appearance_sim`(0.75)/`max_gap_ratio`/`band_overlap_min`/
+      `max_frame_gap`. None tuned on real footage yet.
+- [ ] Confirm `to_upright` ccw + tag-below-product holds on **all 5** videos
+      (only `25_12-20` checked) — re-run `shelf_audit_p0_probe.py` per video.
+
+**Should test (base-only, can do without GPU on capped runs):**
+- [ ] Card grouping quality: does colour-hist + geometry wrongly merge
+      different SKUs, or over-split one SKU? Spot-check `card_members`.
+- [ ] Associator on a real multi-tag clip: ambiguous-rate sane, no obvious
+      mis-assignment; `ok` relations point at the right product.
+- [ ] Runner robustness: video with 0 tags / 0 products; bogus/My fps
+      fallback path; a non-`.mp4`; re-run overwrites cleanly.
+- [ ] UI visual QA: `cd frontend && npm run dev` → `/shelf` — layout, card
+      aspect/cropping, empty + error states, broken-image fallback, the
+      multi-video selector once >1 video is in the fixture; quick responsive
+      check. `npm run lint` + `tsc -b` clean.
+- [ ] Windows: Cyrillic-safe paths end-to-end; confirm the rotated detector
+      path (manual cv2 loop) needs no `workers=0` flag in practice.
+
+**Integration-time (when the real big OCR is installed):**
+- [ ] `FinalTag` → card join (by IoU + time, NOT track-id across passes);
+      fill price/name/barcode; catalog reconcile (fill-only, GT-safe);
+      est-lost-revenue formula + sanity.
+- [ ] Swap the UI's static `fetch` for the gateway API; keep the fixture as
+      the offline fallback.
+- [ ] Re-run full pytest + `eval_*` to confirm the scored CSV path is
+      untouched by anything here.
