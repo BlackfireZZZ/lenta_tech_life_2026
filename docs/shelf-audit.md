@@ -241,15 +241,20 @@ For the hackathon, "notify" = the structured `alerts.json` + the UI alerts feed
 (Telegram/email/webhook) is a 20-line adapter over `alerts.json` — documented as
 a trivial extension, **not built** unless asked (avoid scope creep).
 
-## 10. UI surface (optional, last phase)
+## 10. UI surface — ✅ DONE (base-only, static fixture)
 
-Mirror `frontend/src/pages/PipelinePage.tsx` conventions: new
-`ShelfAuditPage.tsx` + route + `api/` method. Two panels: left = alerts feed
-(thumbnail, type, timestamp, jump-to-frame); right = product-card gallery
-(photo, name, price, barcode, facings). Backend/ml are a mocked skeleton
-(`docs/index.md`), so the runner must work **CLI-first** and write static
-`outputs/shelf_audit/...`; the page reads that contract. If wiring the live
-backend is out of time, a static fixture view still demos fully.
+`frontend/src/pages/ShelfAuditPage.tsx` + `api/shelfAudit.ts` + route `/shelf`
++ nav "Аудит полки", mirroring `PipelinePage` conventions (Tailwind tokens,
+`Card`/`Badge`, Russian copy). Backend/ml are a mocked skeleton, so the page
+reads a **static fixture** under `frontend/public/shelf-audit/<video>/` built
+by `scripts/make_shelf_audit_fixture.py` (copies `audit.json`, rotates
+card/evidence crops upright for display, writes a video `index.json`
+selector) — zero-backend jury demo. Layout: hero + 4 stat cards + the
+facing→card collapse note + two panels (left alerts feed with evidence
+thumbnails & timestamps, right product-card gallery). `npm run build` passes
+(tsc clean, `ShelfAuditPage` chunk emitted). Price/name/barcode show a
+"после интеграции OCR" placeholder until enrichment lands. Live-backend wiring
+(swap fetch for the gateway API) is the only integration-time UI task left.
 
 ## 11. Phased plan with exit criteria
 
@@ -295,9 +300,10 @@ backend is out of time, a static fixture view still demos fully.
   est-lost-revenue formula. *Exit:* low obvious false-alarm rate; honest
   numbers (memory `verify-dont-assert`: report failures too, no single-anecdote
   claims).
-- **P5 — Optional embedding merge + UI (1–2 days, stretch).** DINOv2 dedup;
-  `ShelfAuditPage`. *Exit:* cross-pass product merge; jury-facing page or static
-  fixture demo.
+- **P5 — UI ✅ DONE (base-only); embedding dedup deferred.**
+  `ShelfAuditPage` + `api/shelfAudit.ts` + route/nav + fixture builder;
+  `npm run build` passes; static fixture demos fully with no backend/GPU.
+  Optional DINOv2 cross-pass merge still deferred (off critical path).
 
 Critical path to a demo = **P0→P4** (CLI + JSON + crops). P5 is upside.
 

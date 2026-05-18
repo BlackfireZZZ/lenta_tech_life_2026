@@ -1,0 +1,11 @@
+{
+  "videos": [
+    {
+      "id": "25_12-20",
+      "n_alerts": 6,
+      "n_cards": 11,
+      "n_out_of_stock": 2,
+      "n_missing_price_tag": 4
+    }
+  ]
+}
