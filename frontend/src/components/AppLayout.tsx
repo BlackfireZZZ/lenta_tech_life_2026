@@ -1,5 +1,11 @@
-import { Link } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { ScanBarcode } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const NAV = [
+  { to: "/", label: "Загрузить", end: true },
+  { to: "/pipeline", label: "Пайплайн", end: false },
+];
 
 // DESIGN "Layout": the nav bar is full-bleed across the top; the main
 // content is max-width contained and centred over the Canvas Fog page.
@@ -16,9 +22,25 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               Lenta · Распознавание ценников
             </span>
           </Link>
-          <span className="hidden text-caption text-ash-gray sm:block">
-            Полка под контролем · Tech Life 2026
-          </span>
+          <nav className="flex items-center gap-1">
+            {NAV.map(({ to, label, end }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  cn(
+                    "rounded-pill px-3 py-1.5 text-caption font-medium transition-colors",
+                    isActive
+                      ? "bg-sky-tint/40 text-slate-text"
+                      : "text-ash-gray hover:text-slate-text",
+                  )
+                }
+              >
+                {label}
+              </NavLink>
+            ))}
+          </nav>
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-6 py-12">{children}</main>

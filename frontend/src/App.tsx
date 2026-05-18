@@ -9,6 +9,7 @@ import { Spinner } from "@/components/ui/spinner";
 // this flow is anonymous (architecture.md §3.8).
 const UploadPage = lazy(() => import("@/pages/UploadPage"));
 const JobPage = lazy(() => import("@/pages/JobPage"));
+const PipelinePage = lazy(() => import("@/pages/PipelinePage"));
 
 function PageFallback() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/" element={<UploadPage />} />
+              <Route path="/pipeline" element={<PipelinePage />} />
               <Route path="/jobs/:id" element={<JobPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
