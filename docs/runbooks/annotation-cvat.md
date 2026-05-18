@@ -106,14 +106,12 @@ Put the organizers' videos anywhere (e.g. the released set at
 ```
 
 * `--every 2.0` — one frame every 2 seconds (the default; tune freely).
-* **Auto-upright rotation.** The scan robot's camera is mounted 90°
-  clockwise: clips are stored 3840×2160 *landscape* but the shelf is really
-  **vertical** (price tags lie on their side). The slicer rotates each
-  frame counter-clockwise by default (`--rotate ccw`) → upright 2160×3840
-  portrait. This is not cosmetic: the price-tag detector is trained on
-  upright tags and **misses/duplicates badly on sideways frames** — fixing
-  the orientation roughly *doubled* the detector's recall in our run. Use
-  `--rotate none` only if a clip is already upright.
+* **Auto orientation.** Different clips can come from different camera mounts.
+  The slicer now defaults to `--rotate auto`, which keeps raw frames and lets
+  STEP 2 score `none` / `cw` / `ccw` / `180` with the detector per scene. If a
+  different orientation wins, STEP 2 rotates the scene images and clears stale
+  `.txt` labels before writing new boxes. Use explicit `--rotate ccw|cw|180|none`
+  only when you know the whole source folder has one fixed orientation.
 * **Robot-parked de-dup is automatic.** The scan robot often stops; those
   runs of identical frames are dropped (compared against the last *kept*
   frame, so a long pause collapses to one frame, not every Nth).
@@ -335,11 +333,10 @@ Backup (stop CVAT first):
 * **"I don't see any boxes."** You opened the task page, not its **Job**.
   Open the job. Also check label **Opacity** in the right panel; 4K frames
   make ~400 px boxes look tiny at fit-to-screen.
-* **Frames are sideways / boxes look wrong.** STEP 1 must run with
-  `--rotate ccw` (the default) so the robot's 90° mount is undone. If a
-  task already has landscape photos you must **delete the task and re-push**
-  (`--replace` swaps only annotations, not the uploaded images, so portrait
-  boxes on landscape photos won't line up).
+* **Frames are sideways / upside down / boxes look wrong.** Re-run STEP 1 with
+  the default `--rotate auto`, then STEP 2 with `--orientation auto`. If a CVAT
+  task already has wrongly oriented photos, delete that task and re-push it:
+  `--replace` swaps only annotations, not uploaded images.
 * **STEP 2 says `ultralytics not installed`.** Run it on Colab (§3A) or
   `uv pip install --python .venv ultralytics huggingface-hub`.
 * **Colab can't find the frames folder.** Path in CELL 0 must match where
@@ -378,13 +375,10 @@ removed to keep the branch to the one flow this guide describes.
   *kept* frame so static runs collapse to one.
 * **Image tasks, no attributes.** Detector-first; no OCR fields now or
   planned → no per-object details panel. Boxes only.
-* **Auto-rotate frames upright (`--rotate ccw`, default).** The robot rig
-  is mounted 90° CW, so raw frames are sideways and the detector — trained
-  on upright tags — performs poorly on them (the original "boxes look
-  wrong" symptom). Earlier guidance said *don't rotate*, but that was for
-  the deleted organizer-CSV-seed flow (rotating frames there mis-placed the
-  fixed seeds). Seeds now come from the detector run on the **same** rotated
-  frames, so the whole chain is consistent and upright is strictly better.
+* **Detector-driven orientation, not fixed `ccw`.** Some clips are sideways,
+  some are already upright, and some can be inverted. The detector now chooses
+  orientation per scene before labels are written, so images and boxes always
+  share the same geometry.
 * **Photos use a separate raw root** (`data/raw_photos`): `detect_format`
   prefers CSV over YOLO under one root, so mixing would shadow a video CSV.
 * **Pure, Unicode-safe adapters** (`ElementTree` + `cv_io`; cv2 only in CLI
