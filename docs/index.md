@@ -50,6 +50,7 @@ thin pointers here — do not duplicate knowledge into them.
 |---|---|
 | What exactly to build & how it's scored | [hackathon/task.md](./hackathon/task.md), [hackathon/briefing.md](./hackathon/briefing.md) |
 | **App/service architecture (backend + frontend + ML)** | [architecture.md](./architecture.md) |
+| **Full product bring-up (docker-compose, GPU)** | [runbooks/docker-compose.md](./runbooks/docker-compose.md) |
 | **Where each field sits on the tag (OCR)** | [hackathon/price-tag-guide.md](./hackathon/price-tag-guide.md) |
 | Raw organizer decks (heavy — don't open) | [hackathon/source-materials.md](./hackathon/source-materials.md) |
 | Which model / why / training plan | [strategy.md](./strategy.md) |

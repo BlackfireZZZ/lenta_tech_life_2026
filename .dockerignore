@@ -12,6 +12,21 @@ __pycache__
 .ruff_cache
 .mypy_cache
 
+# The ml image builds from the repo ROOT (compose: context: .). Keep that
+# context tiny — only ml/ + projects/price_tag_pipeline/ are actually needed.
+# .claude/ holds git worktrees = recursive full repo copies; not excluding it
+# would blow the build context up by gigabytes.
+.claude/
+**/node_modules
+frontend/dist
+real_data/
+*.mp4
+*.mov
+*.avi
+*.mkv
+.env
+**/.env
+
 # Don't ship dataset or weights into the image — mount them at runtime.
 data/raw/videos/*
 data/raw/frames/*
