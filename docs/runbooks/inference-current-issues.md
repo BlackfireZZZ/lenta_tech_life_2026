@@ -335,3 +335,29 @@ The repository runs, dependencies install, tests pass, and raw zero-shot
 detection can be visualized. The current blocker is model quality, especially
 OCR on small rotated Lenta price tags. The fastest path is not more aggregation
 tuning; it is crop-level OCR validation plus a trained detector checkpoint.
+
+## Update 2026-05-18 — frame orientation was a real detector bug
+
+Root cause found while extending the dataset: the Lenta scan-robot camera is
+mounted **90° clockwise**. Every clip is stored 3840×2160 *landscape* but the
+shelf is actually vertical — price tags lie on their side. The detector is
+trained on **upright** tags and misses/duplicates badly on sideways frames
+(empirically ~2–3× fewer boxes than on the same frames rotated upright).
+
+Fix (this commit): `DetectorConfig.frame_rotation` (`none`|`ccw`|`cw`,
+default `none`). When set, `YOLOTrackerDetector` rotates each frame upright
+**only for inference** and un-projects predictions back to original-frame
+coordinates via `unrotate_box_xyxy` (continuous-edge transform, unit-tested
+in `tests/test_detector_rotation.py`), so the rectifier and every downstream
+consumer see the original frame + original-coord boxes — output contract
+unchanged, detector simply stops failing. The Lenta runtime profiles
+(`balanced`/`fast`/`hq`) set `frame_rotation: ccw`; the rotated path uses the
+deterministic IoU tracker.
+
+Invariant: **the detector must always receive upright frames.** It is a
+config knob (not forced) because already-upright input must NOT be rotated —
+that would break it the other way. Training is unaffected: `frame_rotation`
+lives only in the inference path (`config.py` + `detector.py`); neither
+`train_detector_yolo.py` nor `prepare_data.py` touch rotation, so models
+trained on properly-oriented photos are unchanged and now match the upright
+frames they get at inference.

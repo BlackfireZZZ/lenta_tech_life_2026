@@ -14,6 +14,9 @@ detector:
   classes: null
   tracker_yaml: botsort.yaml
   image_size: 1280
+  frame_rotation: ccw                # robot cam mounted 90° CW: feed the
+                                     # detector upright (boxes un-projected
+                                     # back to original coords).
 
 rectifier:
   padding_ratio: 0.10                 # 0.10 used in the validated friends-crop run

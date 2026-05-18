@@ -133,6 +133,13 @@ class YOLOTrackerDetector(BaseDetector):
         fps = float(fps_override) if fps_override else read_video_fps(video_path)
         LOGGER.info("Using FPS=%.3f for %s", fps, video_path)
 
+        if str(getattr(self.cfg, "frame_rotation", "none")).lower() in ("ccw", "cw"):
+            # Detector is poor on the sideways robot footage; rotate frames
+            # upright ONLY for the model, then un-project boxes so callers
+            # still get the original frame + original-coord detections.
+            yield from self._stream_rotated(video_path=video_path, fps=fps)
+            return
+
         track_kwargs = dict(
             source=video_path,
             stream=True,
@@ -281,6 +288,131 @@ class YOLOTrackerDetector(BaseDetector):
             yield frame, detections
 
         cap.release()
+
+    def _stream_rotated(
+        self,
+        video_path: str,
+        fps: float,
+    ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
+        """Detect on a 90°-rotated frame, yield the ORIGINAL frame + boxes.
+
+        Mirrors :meth:`_stream_with_predict_fallback` (manual decode + the
+        deterministic IoU tracker) but rotates each frame upright for the
+        model only. Boxes are tracked in rotated space (consistent) then
+        un-projected to original-frame coordinates, so ``rectifier`` and
+        every other consumer see exactly what they saw before — just with a
+        detector that no longer fails on sideways tags.
+        """
+        cv2 = _require_cv2()
+        rot = str(self.cfg.frame_rotation).lower()
+        rot_code = (cv2.ROTATE_90_COUNTERCLOCKWISE if rot == "ccw"
+                    else cv2.ROTATE_90_CLOCKWISE)
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+
+        next_tid = 1
+        tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
+        max_age, iou_gate = 15, 0.3
+        frame_idx = -1
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_idx += 1
+            orig_h, orig_w = frame.shape[:2]
+            rotated = cv2.rotate(frame, rot_code)
+
+            pred = self.model.predict(
+                source=rotated, conf=self.cfg.conf, iou=self.cfg.iou,
+                device=self.cfg.device, verbose=False,
+                imgsz=self.cfg.image_size,
+            )
+            result = pred[0]
+            boxes = getattr(result, "boxes", None)
+            names = getattr(result, "names", {}) or {}
+            detections: list[Detection] = []
+            if boxes is not None and len(boxes) > 0:
+                xyxy = boxes.xyxy
+                confs = boxes.conf
+                classes = boxes.cls
+                assigned: set[int] = set()
+                for i in range(len(boxes)):
+                    rb = tuple(float(v) for v in xyxy[i].tolist())
+                    bbox = unrotate_box_xyxy(rb, rot, orig_w, orig_h)
+                    conf = float(confs[i].item()) if confs is not None else 1.0
+                    cls_id = int(classes[i].item()) if classes is not None else 0
+
+                    best_j, best_iou = -1, 0.0
+                    for j, (tid, tb, last_seen) in enumerate(tracks):
+                        if frame_idx - last_seen > max_age or j in assigned:
+                            continue
+                        iou = _bbox_iou(bbox, tb)
+                        if iou > best_iou:
+                            best_iou, best_j = iou, j
+                    if best_j >= 0 and best_iou >= iou_gate:
+                        tid, _, _ = tracks[best_j]
+                        tracks[best_j] = (tid, bbox, frame_idx)
+                        assigned.add(best_j)
+                        track_id = tid
+                    else:
+                        track_id = next_tid
+                        next_tid += 1
+                        tracks.append((track_id, bbox, frame_idx))
+                        assigned.add(len(tracks) - 1)
+
+                    detections.append(
+                        Detection(
+                            frame_idx=frame_idx,
+                            timestamp_s=frame_idx / fps,
+                            bbox_xyxy=bbox,
+                            confidence=conf,
+                            class_id=cls_id,
+                            class_name=str(names.get(cls_id, cls_id)),
+                            track_id=track_id,
+                        )
+                    )
+            tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
+            yield frame, detections
+
+        cap.release()
+
+
+def unrotate_box_xyxy(
+    box_xyxy: tuple[float, float, float, float],
+    rotation: str,
+    orig_w: int,
+    orig_h: int,
+) -> tuple[int, int, int, int]:
+    """Map a box from a 90°-rotated frame back to original-frame pixels.
+
+    ``rotation`` is how the frame was rotated *before* inference (``"ccw"``
+    = ``cv2.ROTATE_90_COUNTERCLOCKWISE``, ``"cw"`` = clockwise).  The
+    rotated image is ``orig_h × orig_w``; this inverts the map and returns
+    an ordered, clamped integer ``(x1, y1, x2, y2)`` in the original
+    ``orig_w × orig_h`` frame.  Box edges are continuous coordinates, so the
+    transform uses the image *size* (not size-1); a full-frame box round-
+    trips exactly.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box_xyxy)
+    r = str(rotation).lower()
+    if r == "ccw":
+        # forward: x_r = y, y_r = orig_w - x  ->  invert:
+        ox1, ox2 = orig_w - y2, orig_w - y1
+        oy1, oy2 = x1, x2
+    elif r == "cw":
+        # forward: x_r = orig_h - y, y_r = x  ->  invert:
+        ox1, ox2 = y1, y2
+        oy1, oy2 = orig_h - x2, orig_h - x1
+    else:
+        ox1, oy1, ox2, oy2 = x1, y1, x2, y2
+    xa, xb = sorted((ox1, ox2))
+    ya, yb = sorted((oy1, oy2))
+    xa = min(max(0.0, xa), float(orig_w))
+    xb = min(max(0.0, xb), float(orig_w))
+    ya = min(max(0.0, ya), float(orig_h))
+    yb = min(max(0.0, yb), float(orig_h))
+    return int(round(xa)), int(round(ya)), int(round(xb)), int(round(yb))
 
 
 def _assign_iou_track_ids(
