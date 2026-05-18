@@ -78,14 +78,19 @@ class OCRConfig:
     min_crop_area_px: int
     min_detection_confidence: float
     top_k_crops_per_track: int = 5
-    # QR/1D-barcode decode is ~ms (vs a heavy VLM OCR call), and a code only
-    # decodes on a few lucky frames of a tag's pass. So sweep the cheap code
-    # decoders over far MORE of the track's best crops than OCR. Must be
-    # >= top_k_crops_per_track to add anything; <=0 means "all buffered".
-    code_decode_top_k: int = 24
+    # Sweep the cheap QR/1D decoders over MORE of the track's best crops than
+    # OCR (>top_k to add anything). <=0 = OFF (default). Benchmarked on the
+    # Lenta footage: NO GT barcode-recall gain (input-bound ~1%, codes barely
+    # decode in motion) while it costs extra decode calls — so off by default
+    # to not waste compute. Raise (e.g. 24) only if a future dataset shows a
+    # win in scripts/eval_code_reading.py.
+    code_decode_top_k: int = 0
     # Level-2: median-fuse this many of the track's sharpest crops into one
-    # denoised image and decode THAT too (codes only). Targets tags where no
-    # single frame decodes. 0 = off (default; enable once benchmarked).
+    # denoised image and decode THAT too (codes only). Benchmarked: also NO
+    # lift on the Lenta footage (motion blur erases the code modules — fusion
+    # can't synthesise unsampled detail). 0 = OFF (default); kept behind the
+    # flag for if capture quality ever improves. See memory
+    # level2-fusion-no-lift-input-bound.
     code_fuse_frames: int = 0
     vlm_model: str = "PaddlePaddle/PaddleOCR-VL"
     vlm_prompt_path: Optional[str] = None

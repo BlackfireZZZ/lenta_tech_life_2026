@@ -234,9 +234,9 @@ class PriceTagPipeline:
         QR/barcode/OCR is the aggregator's weighted voting, not done here.
         """
         k = self.cfg.ocr.top_k_crops_per_track
+        # <=0 → wide code sweep OFF (default; benchmarked no GT lift on the
+        # Lenta footage). Pass-2 below only runs when code_k > k.
         code_k = self.cfg.ocr.code_decode_top_k
-        if code_k <= 0:
-            code_k = 1 << 30  # "all buffered"
 
         def _commit(entry, result) -> None:
             self._audit(track_id, entry.crop.frame_idx, result)
