@@ -118,9 +118,9 @@ class YOLOTrackerDetector(BaseDetector):
         # (useful for tests of parser/aggregator on a CI box without GPU deps).
         from ultralytics import YOLO  # type: ignore
 
-        # Resolve eagerly (before the model load / possible download) so a
-        # misconfigured tracker fails fast, not silently mid-stream on stock
-        # defaults.
+        # Resolve eagerly (before model load) so a misconfigured tracker fails
+        # fast, and a bare `botsort.yaml` upgrades to the project's TUNED file
+        # instead of Ultralytics' silently-ignored stock defaults.
         self._tracker_yaml = resolve_tracker_yaml(self.cfg.tracker_yaml)
         LOGGER.info("Tracker config: %s", self._tracker_yaml)
         self._YOLO = YOLO
@@ -140,27 +140,186 @@ class YOLOTrackerDetector(BaseDetector):
         video_path: str,
         fps_override: Optional[float] = None,
     ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
-        """Yield (frame_bgr, detections), one upright frame at a time.
+        fps = float(fps_override) if fps_override else read_video_fps(video_path)
+        LOGGER.info("Using FPS=%.3f for %s", fps, video_path)
 
-        Frames are read with OpenCV and rotated per ``cfg.rotate`` BEFORE
-        detection: the Lenta scan-robot camera is mounted 90° clockwise, so
-        raw clips are sideways landscape and a detector trained on upright
-        tags misses/duplicates badly (this roughly halves recall). We feed the
-        model the rotated frame and run a per-frame ``model.track(persist=…)``
-        loop so detections, track IDs, crops and bboxes all live in the same
-        upright coordinate space. ``model.predict`` + a light IoU tracker is
-        the fallback if ``model.track`` raises.
+        if str(getattr(self.cfg, "frame_rotation", "none")).lower() in ("ccw", "cw"):
+            # Detector is poor on the sideways robot footage; rotate frames
+            # upright ONLY for the model, then un-project boxes so callers
+            # still get the original frame + original-coord detections.
+            yield from self._stream_rotated(video_path=video_path, fps=fps)
+            return
+
+        track_kwargs = dict(
+            source=video_path,
+            stream=True,
+            conf=self.cfg.conf,
+            iou=self.cfg.iou,
+            tracker=self._tracker_yaml,
+            device=self.cfg.device,
+            verbose=False,
+            persist=True,
+            imgsz=self.cfg.image_size,
+        )
+        if self.cfg.classes is not None:
+            track_kwargs["classes"] = self.cfg.classes
+
+        try:
+            results = self.model.track(**track_kwargs)
+            next_tid = 1
+            fallback_tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
+            for frame_idx, result in enumerate(results):
+                frame = result.orig_img  # do not copy — downstream rectifier copies its slice
+                boxes = getattr(result, "boxes", None)
+                names = getattr(result, "names", {}) or {}
+
+                if boxes is None or len(boxes) == 0:
+                    yield frame, []
+                    continue
+
+                ids = getattr(boxes, "id", None)
+                xyxy = boxes.xyxy
+                confs = boxes.conf
+                classes = boxes.cls
+                fallback_ids: list[int] | None = None
+                if ids is None:
+                    fallback_ids, fallback_tracks, next_tid = _assign_iou_track_ids(
+                        boxes_xyxy=[tuple(int(round(float(v))) for v in row.tolist()) for row in xyxy],
+                        tracks=fallback_tracks,
+                        next_tid=next_tid,
+                        frame_idx=frame_idx,
+                    )
+
+                detections: list[Detection] = []
+                for i in range(len(boxes)):
+                    x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
+                    conf = float(confs[i].item()) if confs is not None else 1.0
+                    cls_id = int(classes[i].item()) if classes is not None else 0
+                    track_id = int(ids[i].item()) if ids is not None else fallback_ids[i]
+                    detections.append(
+                        Detection(
+                            frame_idx=frame_idx,
+                            timestamp_s=frame_idx / fps,
+                            bbox_xyxy=(x1, y1, x2, y2),
+                            confidence=conf,
+                            class_id=cls_id,
+                            class_name=str(names.get(cls_id, cls_id)),
+                            track_id=track_id,
+                        )
+                    )
+                yield frame, detections
+            return
+        except Exception as exc:
+            LOGGER.warning(
+                "model.track() failed (%s). Falling back to predict()+lightweight IoU tracker.",
+                exc,
+            )
+
+        yield from self._stream_with_predict_fallback(video_path=video_path, fps=fps)
+
+    def _stream_with_predict_fallback(
+        self,
+        video_path: str,
+        fps: float,
+    ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
+        cv2 = _require_cv2()
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+
+        next_tid = 1
+        # [tid, bbox, last_seen_frame]
+        tracks: list[tuple[int, tuple[int, int, int, int], int]] = []
+        max_age = 15
+        iou_gate = 0.3
+
+        frame_idx = -1
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_idx += 1
+
+            pred = self.model.predict(
+                source=frame,
+                conf=self.cfg.conf,
+                iou=self.cfg.iou,
+                device=self.cfg.device,
+                verbose=False,
+                imgsz=self.cfg.image_size,
+            )
+            result = pred[0]
+            boxes = getattr(result, "boxes", None)
+            names = getattr(result, "names", {}) or {}
+            detections: list[Detection] = []
+            if boxes is not None and len(boxes) > 0:
+                xyxy = boxes.xyxy
+                confs = boxes.conf
+                classes = boxes.cls
+                assigned: set[int] = set()
+                for i in range(len(boxes)):
+                    x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
+                    bbox = (x1, y1, x2, y2)
+                    conf = float(confs[i].item()) if confs is not None else 1.0
+                    cls_id = int(classes[i].item()) if classes is not None else 0
+
+                    best_j = -1
+                    best_iou = 0.0
+                    for j, (tid, tb, last_seen) in enumerate(tracks):
+                        if frame_idx - last_seen > max_age or j in assigned:
+                            continue
+                        iou = _bbox_iou(bbox, tb)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_j = j
+                    if best_j >= 0 and best_iou >= iou_gate:
+                        tid, _, _ = tracks[best_j]
+                        tracks[best_j] = (tid, bbox, frame_idx)
+                        assigned.add(best_j)
+                        track_id = tid
+                    else:
+                        track_id = next_tid
+                        next_tid += 1
+                        tracks.append((track_id, bbox, frame_idx))
+                        assigned.add(len(tracks) - 1)
+
+                    detections.append(
+                        Detection(
+                            frame_idx=frame_idx,
+                            timestamp_s=frame_idx / fps,
+                            bbox_xyxy=bbox,
+                            confidence=conf,
+                            class_id=cls_id,
+                            class_name=str(names.get(cls_id, cls_id)),
+                            track_id=track_id,
+                        )
+                    )
+            tracks = [t for t in tracks if frame_idx - t[2] <= max_age]
+            yield frame, detections
+
+        cap.release()
+
+    def _stream_rotated(
+        self,
+        video_path: str,
+        fps: float,
+    ) -> Iterator[tuple[np.ndarray, list[Detection]]]:
+        """Detect+track on a 90°-rotated frame, yield the ORIGINAL frame+boxes.
+
+        The real tuned tracker (Ultralytics BoT-SORT via ``model.track``) runs
+        on the upright frame, so association/CMC happen in the space the
+        detector was trained on and the tuned ``configs/trackers/*.yaml`` (incl.
+        the swept ``new_track_thresh``) actually drives the Lenta pipeline —
+        NOT a primitive predict()+greedy-IoU tracker. Each box is then
+        un-projected to original-frame coordinates so ``rectifier`` and the
+        graded CSV/GT-matching stay in the original space. ``persist`` is reset
+        on frame 0 so each video gets a fresh tracker. ``model.predict`` + the
+        light IoU tracker is the fallback only if ``model.track`` raises.
         """
         cv2 = _require_cv2()
-        fps = float(fps_override) if fps_override else read_video_fps(video_path)
-        rot = {
-            "ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
-            "cw": cv2.ROTATE_90_CLOCKWISE,
-        }.get((self.cfg.rotate or "none").lower().strip())
-        LOGGER.info(
-            "Using FPS=%.3f rotate=%s for %s", fps, self.cfg.rotate, video_path
-        )
-
+        rot = str(self.cfg.frame_rotation).lower()
+        rot_code = (cv2.ROTATE_90_COUNTERCLOCKWISE if rot == "ccw"
+                    else cv2.ROTATE_90_CLOCKWISE)
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
@@ -185,28 +344,26 @@ class YOLOTrackerDetector(BaseDetector):
                 if not ok:
                     break
                 frame_idx += 1
-                if rot is not None:
-                    frame = cv2.rotate(frame, rot)
+                orig_h, orig_w = frame.shape[:2]
+                rotated = cv2.rotate(frame, rot_code)
 
                 if not use_predict:
                     try:
-                        # persist=False on frame 0 forces a FRESH tracker even
-                        # if this model object was reused for a prior video.
                         result = self.model.track(
-                            frame,
+                            rotated,
                             persist=frame_idx > 0,
                             tracker=self._tracker_yaml,
                             **common,
                         )[0]
                     except Exception as exc:
                         LOGGER.warning(
-                            "model.track() failed (%s); predict()+IoU tracker "
-                            "for the remaining frames.",
+                            "model.track() failed (%s) in rotated stream; "
+                            "predict()+IoU tracker for the remaining frames.",
                             exc,
                         )
                         use_predict = True
                 if use_predict:
-                    result = self.model.predict(frame, **common)[0]
+                    result = self.model.predict(rotated, **common)[0]
 
                 boxes = getattr(result, "boxes", None)
                 names = getattr(result, "names", {}) or {}
@@ -217,14 +374,19 @@ class YOLOTrackerDetector(BaseDetector):
                 xyxy = boxes.xyxy
                 confs = boxes.conf
                 classes = boxes.cls
+                # Un-project each rotated-space box to original-frame coords.
+                orig_boxes = [
+                    unrotate_box_xyxy(
+                        tuple(float(v) for v in xyxy[i].tolist()),
+                        rot, orig_w, orig_h,
+                    )
+                    for i in range(len(boxes))
+                ]
                 ids = None if use_predict else getattr(boxes, "id", None)
                 fb_ids: list[int] | None = None
                 if ids is None:
                     fb_ids, fb_tracks, next_tid = _assign_iou_track_ids(
-                        boxes_xyxy=[
-                            tuple(int(round(float(v))) for v in row.tolist())
-                            for row in xyxy
-                        ],
+                        boxes_xyxy=orig_boxes,
                         tracks=fb_tracks,
                         next_tid=next_tid,
                         frame_idx=frame_idx,
@@ -232,7 +394,6 @@ class YOLOTrackerDetector(BaseDetector):
 
                 detections: list[Detection] = []
                 for i in range(len(boxes)):
-                    x1, y1, x2, y2 = (int(round(float(v))) for v in xyxy[i].tolist())
                     conf = float(confs[i].item()) if confs is not None else 1.0
                     cls_id = int(classes[i].item()) if classes is not None else 0
                     track_id = int(ids[i].item()) if ids is not None else fb_ids[i]
@@ -240,7 +401,7 @@ class YOLOTrackerDetector(BaseDetector):
                         Detection(
                             frame_idx=frame_idx,
                             timestamp_s=frame_idx / fps,
-                            bbox_xyxy=(x1, y1, x2, y2),
+                            bbox_xyxy=orig_boxes[i],
                             confidence=conf,
                             class_id=cls_id,
                             class_name=str(names.get(cls_id, cls_id)),
@@ -250,6 +411,45 @@ class YOLOTrackerDetector(BaseDetector):
                 yield frame, detections
         finally:
             cap.release()
+
+        cap.release()
+
+
+def unrotate_box_xyxy(
+    box_xyxy: tuple[float, float, float, float],
+    rotation: str,
+    orig_w: int,
+    orig_h: int,
+) -> tuple[int, int, int, int]:
+    """Map a box from a 90°-rotated frame back to original-frame pixels.
+
+    ``rotation`` is how the frame was rotated *before* inference (``"ccw"``
+    = ``cv2.ROTATE_90_COUNTERCLOCKWISE``, ``"cw"`` = clockwise).  The
+    rotated image is ``orig_h × orig_w``; this inverts the map and returns
+    an ordered, clamped integer ``(x1, y1, x2, y2)`` in the original
+    ``orig_w × orig_h`` frame.  Box edges are continuous coordinates, so the
+    transform uses the image *size* (not size-1); a full-frame box round-
+    trips exactly.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box_xyxy)
+    r = str(rotation).lower()
+    if r == "ccw":
+        # forward: x_r = y, y_r = orig_w - x  ->  invert:
+        ox1, ox2 = orig_w - y2, orig_w - y1
+        oy1, oy2 = x1, x2
+    elif r == "cw":
+        # forward: x_r = orig_h - y, y_r = x  ->  invert:
+        ox1, ox2 = y1, y2
+        oy1, oy2 = orig_h - x2, orig_h - x1
+    else:
+        ox1, oy1, ox2, oy2 = x1, y1, x2, y2
+    xa, xb = sorted((ox1, ox2))
+    ya, yb = sorted((oy1, oy2))
+    xa = min(max(0.0, xa), float(orig_w))
+    xb = min(max(0.0, xb), float(orig_w))
+    ya = min(max(0.0, ya), float(orig_h))
+    yb = min(max(0.0, yb), float(orig_h))
+    return int(round(xa)), int(round(ya)), int(round(xb)), int(round(yb))
 
 
 def _assign_iou_track_ids(
@@ -329,10 +529,8 @@ def resolve_detector_model_path(model_path: str) -> str:
 def _project_trackers_dir() -> Optional[Path]:
     """``projects/price_tag_pipeline/configs/trackers`` derived from this file.
 
-    ``detector.py`` lives at ``<proj>/src/price_tag_pipeline/detector.py`` for
-    an editable install, so the project root is ``parents[2]``. Returns ``None``
-    when the package is installed non-editably (no sibling ``configs/``), in
-    which case resolution falls back to CWD-relative lookup.
+    Returns ``None`` for a non-editable install (no sibling ``configs/``),
+    where resolution falls back to CWD-relative lookup.
     """
     candidate = Path(__file__).resolve().parents[2] / "configs" / "trackers"
     return candidate if candidate.is_dir() else None
@@ -341,22 +539,13 @@ def _project_trackers_dir() -> Optional[Path]:
 def resolve_tracker_yaml(tracker_yaml: str) -> str:
     """Resolve the tracker config to an absolute path Ultralytics will load.
 
-    The bug this fixes: a bare value like ``botsort.yaml`` makes Ultralytics
-    load *its own* bundled config and silently ignore the project's tuned
-    tracker, so every tracker-tuning change is a no-op. We resolve project /
-    relative paths to an absolute path so the tuned config actually takes
-    effect.
-
-    Resolution order:
-    1. Existing path (absolute, or relative to CWD) → absolute path.
-    2. Existing path relative to the project root → absolute path.
-    3. Bare ``<name>.yaml`` matching a file under ``configs/trackers/`` → that
-       tuned file (so a profile that still says just ``botsort.yaml`` upgrades
-       to the tuned one instead of Ultralytics' stock defaults).
-    4. A bare Ultralytics builtin with no project match → passed through with a
-       loud warning (stock, untuned — a tuning regression worth surfacing).
-    5. Anything else missing → ``FileNotFoundError`` (fail fast, not silently
-       fall back to stock).
+    A bare ``botsort.yaml`` makes Ultralytics load its *own* bundled config
+    and silently ignore the project's tuned tracker — so every tracker-tuning
+    change is a no-op. Resolution order: existing path (abs / CWD-relative) →
+    project-root-relative → bare ``<name>.yaml`` matching ``configs/trackers/``
+    (upgrades a bare builtin name to the TUNED file) → a bare Ultralytics
+    builtin with no project match passes through with a loud warning → else
+    ``FileNotFoundError`` (fail fast, never silent stock fallback).
     """
     raw = str(tracker_yaml).strip()
     if not raw:
@@ -380,9 +569,9 @@ def resolve_tracker_yaml(tracker_yaml: str) -> str:
     if raw in ULTRALYTICS_BUILTIN_TRACKERS:
         LOGGER.warning(
             "tracker_yaml=%r resolved to Ultralytics' STOCK bundled config "
-            "(no matching file under configs/trackers/). The tracker is "
-            "running UNTUNED for this moving-camera scenario. Point "
-            "detector.tracker_yaml at configs/trackers/%s.",
+            "(no matching file under configs/trackers/) — the tracker is "
+            "running UNTUNED. Point detector.tracker_yaml at "
+            "configs/trackers/%s.",
             raw, raw,
         )
         return raw

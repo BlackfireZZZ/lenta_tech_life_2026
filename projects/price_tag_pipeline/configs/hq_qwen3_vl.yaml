@@ -1,10 +1,12 @@
 # HQ profile — Qwen3-VL (Alibaba)
 # 201 languages incl Russian, 256K context, well-supported LoRA fine-tuning.
-# Default model id below = 8B dense. Switch to 32B-Instruct or 235B-A22B MoE
-# for top quality if you have the VRAM.
+# Default = 4B-Instruct: the VALIDATED OCR winner of the worktree-ocr campaign
+# (OCR_CAMPAIGN_LOG.md, 2026-05-18; headline 0.750 / mean 0.854 on hand-
+# verified good-box crops, ~8.5GB VRAM, fits a 4070 Ti). Switch to 8B/32B for
+# more quality if you have the VRAM.
 #
-# Requires: pip install transformers accelerate torch
-# 8B fits on a 4070 Ti at bf16. For 32B+ rent an A100/H100.
+# Requires: pip install transformers accelerate torch  (transformers 5.x:
+# the engine loads via AutoModelForImageTextToText.)
 
 runtime:
   profile_name: hq_qwen3vl
@@ -15,7 +17,7 @@ runtime:
 
 detector:
   backend: yolo
-  model_path: data/checkpoints/detector/best.pt   # fine-tuned (upright-trained); see DetectorConfig.rotate
+  model_path: data/checkpoints/detector/best.pt   # fine-tuned, upright-trained (frame_rotation: ccw)
   conf: 0.20
   iou: 0.50
   device: null
@@ -32,9 +34,9 @@ rectifier:
 
 ocr:
   backend: qwen3_vl
-  vlm_model: Qwen/Qwen3-VL-8B-Instruct
+  vlm_model: Qwen/Qwen3-VL-4B-Instruct  # offline alt: local dir weights/qwen3-vl-4b
   vlm_prompt_path: null
-  vlm_max_new_tokens: 512
+  vlm_max_new_tokens: 640
   vlm_temperature: 0.0
   min_frames_between_ocr_per_track: 3
   min_sharpness: 28.0

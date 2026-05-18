@@ -66,49 +66,28 @@ LOGGER = logging.getLogger(__name__)
 # Default JSON-schema prompt for VLM engines
 # ---------------------------------------------------------------------------
 
-DEFAULT_VLM_PROMPT = """You are reading a Russian supermarket price tag from the Lenta retail chain.
-Extract structured fields and respond with ONLY a single JSON object — no commentary, no markdown fences.
+DEFAULT_VLM_PROMPT = """Прочитай ценник магазина «Лента» (русский) на фото и верни ТОЛЬКО один JSON-объект. Без пояснений, без ```.
 
-Required JSON keys (use null if a field is not visible or you are uncertain):
-{
-  "regular_price": "number with two decimals (rubles.kopecks) or null",
-  "loyalty_price": "number with two decimals (card / discount price) or null",
-  "product_name": "product name in Russian, exactly as printed, or null",
-  "barcode": "visible EAN/GTIN barcode number or null",
-  "price_discount": "discount amount in rubles or null",
-  "discount_amount": "discount percent or amount as printed or null",
-  "id_sku": "SKU/article id or null",
-  "print_datetime": "price tag print date/time or null",
-  "code": "shelf/zone code or null",
-  "additional_info": "other printed info that may matter or null",
-  "color": "dominant tag color, e.g. yellow/white/red/green, or null",
-  "special_symbols": "layout/special marker type if visible, e.g. promo, card, wholesale, or null",
-  "weight_value": "number or null",
-  "weight_unit": "one of: кг, г, л, мл, шт, or null",
-  "price_per_unit_value": "number or null",
-  "price_per_unit_unit": "string like 'руб/кг' or null",
-  "qr_code_barcode": "barcode from QR payload or null",
-  "price1_qr": "QR price1/p1 or null",
-  "price2_qr": "QR price2/p2 or null",
-  "price3_qr": "QR price3/p3 or null",
-  "price4_qr": "QR price4/p4 or null",
-  "wholesale_level_1_count": "QR wholesaleLevel1Count/wL1C or null",
-  "wholesale_level_1_price": "QR wholesaleLevel1Price/wL1P or null",
-  "wholesale_level_2_count": "QR wholesaleLevel2Count/wL2C or null",
-  "wholesale_level_2_price": "QR wholesaleLevel2Price/wL2P or null",
-  "action_price_qr": "QR actionPrice/aP or null",
-  "action_code_qr": "QR actionCode/aC or null",
-  "promo_flag": "true if the tag visually marks a promotion (yellow/red highlight, words АКЦИЯ, СКИДКА, ПО КАРТЕ, -NN%), false otherwise",
-  "currency": "RUB"
-}
+Правила значений (ВАЖНО):
+- Поле НЕ напечатано на ценнике → строка "нет".
+- Поле есть, но ты не можешь его уверенно прочитать → null.
+- Никогда не выдумывай. Копируй текст ровно как напечатано.
+- product_name — прочитай НАЗВАНИЕ ЦЕЛИКОМ: блок сверху из 2–5 строк, склей все строки в одну через пробел. НЕ обрывай на первой строке/первом слове.
+- Цена с подписью «без карты» (часто маленькая сверху) = regular_price — ВСЕГДА, даже если ниже есть крупные акционные цены. Цена «С картой»/«По карте» = loyalty_price.
+- Маленькие верхние две цифры у цены — копейки: 114⁹⁹ → 114.99; 299⁰⁰ → 299.00.
+- discount_amount — метка скидки как напечатана: "-43%" или "-286₽" (в круге/куполе/панели). Нет метки → "нет".
+- Если внизу ДВЕ акционные цены рядом: левая («с картой по акции») = loyalty_price, её −% = discount_amount; правая (подпись «от/до/при покупке N шт/кг», больший −%) = price_discount. Одна такая цена с подписью «по карте от/до/при покупке N» → price_discount. Иначе price_discount = "нет".
+- barcode — цифры под штрих-кодом (можно с пробелами).
+- id_sku — маленький цифровой артикул внизу. code — складской код вида 06_062 003. print_datetime — ДД.ММ.ГГГГ ЧЧ:ММ.
+- Поля qr_* и wholesale_*/action_* берутся из QR-кода, который ты прочитать не можешь → ставь "нет", кроме случая когда то же значение напечатано текстом.
+- color — цвет тела ценника словом: white/yellow/green/red.
+- special_symbols — одиночная буква в кружке внизу: Ш, К или Л; иначе "нет".
+- additional_info — ТОЛЬКО доп.текст: «Сухое»/«Полусладкое» (в рамке под названием), «номер на весах N», «Акция действует с…по…», порог «от/до/при покупке N», «3=2». НИКОГДА не подписи или числа цен («без карты», «₽/шт», суммы). Нет такого текста → "нет".
 
-Disambiguation rules:
-- The LARGER printed price is usually the loyalty/card price.
-- A crossed-out, smaller, or grey price is the regular price.
-- If only one price is shown and the tag has promo highlights, that price is the loyalty price.
-- Numbers are roubles. Two-digit superscripts after a price are kopecks.
+Верни РОВНО эти ключи:
+{"product_name","regular_price","loyalty_price","price_discount","barcode","discount_amount","id_sku","print_datetime","code","additional_info","color","special_symbols","weight_value","weight_unit","price_per_unit_value","price_per_unit_unit","qr_code_barcode","price1_qr","price2_qr","price3_qr","price4_qr","wholesale_level_1_count","wholesale_level_1_price","wholesale_level_2_count","wholesale_level_2_price","action_price_qr","action_code_qr","promo_flag","currency"}
 
-Do not invent. If unsure, output null for that field."""
+product_name — на русском как напечатано. weight_unit ∈ {кг,г,л,мл,шт,"нет"}. promo_flag — true если есть жёлтый/красный фон, «АКЦИЯ», «СКИДКА», «-NN%», иначе false. currency всегда "RUB"."""
 
 
 # JSON Schema for guided decoding (vLLM / SGLang `guided_json` / Outlines).
@@ -469,22 +448,46 @@ class TransformersVLMEngine(BaseOCREngine):
         if self._model is not None:
             return
         try:
-            from transformers import AutoModelForCausalLM, AutoProcessor  # type: ignore
+            import transformers  # type: ignore
+            from transformers import AutoProcessor  # type: ignore
         except ImportError as e:
             raise RuntimeError(
                 "transformers is required. Install: pip install transformers accelerate torch"
             ) from e
         import torch  # type: ignore
 
-        load_kwargs = dict(self.DEFAULT_LOAD_KWARGS)
-        if load_kwargs.get("torch_dtype") == "auto":
-            load_kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-
-        LOGGER.info("Loading VLM %s with kwargs=%s", self.model_id, load_kwargs)
+        cuda = torch.cuda.is_available()
+        dtype = torch.bfloat16 if cuda else torch.float32
         self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        self._model = AutoModelForCausalLM.from_pretrained(self.model_id, **load_kwargs)
+
+        # Modern open VLMs (GLM-OCR, Qwen3-VL, HunyuanOCR, ...) are
+        # *ForConditionalGeneration / image-text-to-text — NOT plain causal
+        # LMs. Try the unified auto-class first, degrade gracefully.
+        last_err: Exception | None = None
+        for cls_name in (
+            "AutoModelForImageTextToText",
+            "AutoModelForVision2Seq",
+            "AutoModelForCausalLM",
+        ):
+            cls = getattr(transformers, cls_name, None)
+            if cls is None:
+                continue
+            try:
+                LOGGER.info("Loading VLM %s via %s", self.model_id, cls_name)
+                self._model = cls.from_pretrained(
+                    self.model_id,
+                    trust_remote_code=True,
+                    dtype=dtype,
+                    device_map="cuda" if cuda else None,
+                )
+                break
+            except Exception as e:  # noqa: BLE001 — try the next loader
+                last_err = e
+                LOGGER.warning("  %s failed: %s", cls_name, str(e)[:200])
+        if self._model is None:
+            raise RuntimeError(f"Could not load {self.model_id}: {last_err}")
         self._model.eval()
-        if self.device and load_kwargs.get("device_map") is None:
+        if self.device and not cuda:
             self._model = self._model.to(self.device)
 
     # ------------------------- overridable hooks ------------------------ #
@@ -498,40 +501,27 @@ class TransformersVLMEngine(BaseOCREngine):
             ],
         }]
 
-    def _build_inputs(self, image: np.ndarray) -> tuple[dict, int]:
-        """Return (model_inputs, prompt_token_len). Override per model family."""
-        pil = _bgr_to_pil(image)
-        messages = self._build_messages(self.prompt, pil)
-        # Apply chat template.
-        text = self._processor.apply_chat_template(  # type: ignore[union-attr]
-            messages, tokenize=False, add_generation_prompt=True,
-        )
-        inputs = self._processor(  # type: ignore[union-attr]
-            text=[text], images=[pil], return_tensors="pt", padding=True,
-        )
-        # Move to the model's device.
-        target_device = next(self._model.parameters()).device  # type: ignore[union-attr]
-        inputs = {k: v.to(target_device) if hasattr(v, "to") else v for k, v in inputs.items()}
-        prompt_len = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
-        return inputs, prompt_len
-
-    def _decode(self, generated_ids, inputs: dict, prompt_len: int) -> str:
-        # Strip the prompt by slicing the first prompt_len tokens off.
-        if "input_ids" in inputs and prompt_len > 0:
-            trimmed = generated_ids[:, prompt_len:]
-        else:
-            trimmed = generated_ids
-        return self._processor.batch_decode(  # type: ignore[union-attr]
-            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False,
-        )[0]
-
     # ------------------------------ run --------------------------------- #
 
     def recognize(self, image: np.ndarray) -> OCRResult:
         self._ensure_loaded()
         import torch  # type: ignore
 
-        inputs, prompt_len = self._build_inputs(image)
+        pil = _bgr_to_pil(image)
+        messages = self._build_messages(self.prompt, pil)
+        # transformers 5.x unified path: the processor's chat template does
+        # text+image tokenization in one call (tokenize=True, return_dict).
+        inputs = self._processor.apply_chat_template(  # type: ignore[union-attr]
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        dev = self._model.device  # type: ignore[union-attr]
+        inputs = {k: (v.to(dev) if hasattr(v, "to") else v) for k, v in inputs.items()}
+        prompt_len = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
+
         gen_kwargs = dict(max_new_tokens=self.max_new_tokens)
         if self.temperature > 0:
             gen_kwargs.update(do_sample=True, temperature=self.temperature)
@@ -540,10 +530,12 @@ class TransformersVLMEngine(BaseOCREngine):
 
         with torch.no_grad():
             generated_ids = self._model.generate(**inputs, **gen_kwargs)  # type: ignore[union-attr]
-        text = self._decode(generated_ids, inputs, prompt_len).strip()
-        # Strip leading "```json" code fences that some models emit despite prompting.
-        text = _strip_json_fence(text)
-        return OCRResult(text=text, confidence=0.9, backend=self.backend_name)
+        trimmed = generated_ids[:, prompt_len:] if prompt_len else generated_ids
+        text = self._processor.batch_decode(  # type: ignore[union-attr]
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False,
+        )[0].strip()
+        # Strip leading "```json" fences some models emit despite prompting.
+        return OCRResult(text=_strip_json_fence(text), confidence=0.9, backend=self.backend_name)
 
 
 def _strip_json_fence(text: str) -> str:
@@ -608,7 +600,7 @@ class HunyuanOCREngine(TransformersVLMEngine):
 
     backend_name = "hunyuan_ocr"
 
-    def __init__(self, model_id: str = "Tencent-Hunyuan/HunyuanOCR", **kwargs):
+    def __init__(self, model_id: str = "tencent/HunyuanOCR", **kwargs):
         super().__init__(model_id=model_id, **kwargs)
 
 

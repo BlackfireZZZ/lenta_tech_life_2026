@@ -229,6 +229,9 @@ __marimo__/
 # Untouched organizer dataset (~600 MB) — local source of truth, never committed.
 # Stage it into data/raw via scripts/ingest_real_data.py.
 real_data/
+# Friend-provided raw phone photos / videos / candidate boxes used to develop
+# and evaluate the QR/barcode reader — large local data, never committed.
+friends_labels/
 data/raw/videos/*
 data/raw/unlabeled_videos/*
 data/raw/annotations/*
@@ -242,6 +245,10 @@ data/checkpoints/**/*.onnx
 data/checkpoints/**/*.engine
 data/checkpoints/**/*.bin
 data/checkpoints/**/*.safetensors
+# Full HF model bundles also ship tokenizer/config/vocab files next to the
+# weights — ignore the entire bundle dir so nothing model-related is committed.
+data/checkpoints/detector/**
+data/checkpoints/vlm/**
 
 # Keep directory structure but not contents
 !data/raw/videos/.gitkeep
@@ -262,3 +269,32 @@ runs/
 
 # Project virtualenv
 .venv-lenta/
+
+# OCR campaign artifacts — large/generated, never commit (OCR_CAMPAIGN_LOG.md).
+# NOTE: .gitignore has no inline comments — keep patterns on their own lines.
+# weights/ = 13 GB assembled VLM checkpoints; raw_photos/ = user photos+labels;
+# friends_crops *.jpg = 1166 regenerable crops (export_friends_crops.py).
+weights/
+raw_photos/
+data/friends_crops_1536/
+data/friends_crops/*.jpg
+data/friends_crops/gallery.html
+# but DO keep the small, hand-verified scoreboard + manifest:
+!data/friends_crops/reference.jsonl
+!data/friends_crops/manifest.jsonl
+
+# CVAT annotation — derived artifacts (regenerable via scripts/cvat_*.py)
+cvat_label_spec.json
+
+# CVAT import roots (same policy as data/raw, data/processed)
+data/raw_photos/
+data/processed_photos/
+data/raw_det/
+data/processed_det/
+
+# External / friend-provided raw datasets + their CVAT seeds (heavy, like real_data/)
+friends_labels/
+cvat_seeds_friends/
+cvat_video_frames/
+cvat_seeds_video/
+cvat_exports/

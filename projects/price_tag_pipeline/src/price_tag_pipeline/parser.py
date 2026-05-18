@@ -264,6 +264,114 @@ def _extract_barcode(text: str) -> Optional[str]:
     return None
 
 
+def _lenient_json_loads(raw: str) -> Optional[dict]:
+    """Parse VLM 'JSON' that is often slightly malformed.
+
+    Small OCR-VLMs routinely emit: ```json fences, unquoted keys
+    (``product_name: "x"``), trailing commas, smart quotes, prose around the
+    object. Strict ``json.loads`` then throws away an otherwise-correct read,
+    so the chain silently degrades to the crude text parser. Recover instead.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s.strip())
+    i, j = s.find("{"), s.rfind("}")
+    if i == -1 or j == -1 or j <= i:
+        return None
+    s = s[i : j + 1]
+    s = s.translate({0x201C: 34, 0x201D: 34, 0x2018: 39, 0x2019: 39})
+    for attempt in range(4):
+        try:
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            if attempt == 0:  # quote bare keys
+                s = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)', r'\1"\2"\3', s)
+            elif attempt == 1:  # drop trailing commas
+                s = re.sub(r',(\s*[}\]])', r'\1', s)
+            elif attempt == 2:  # single- to double-quoted values
+                s = re.sub(r":\s*'([^']*)'", r': "\1"', s)
+            else:
+                break
+    # Last resort: scrape "key": value pairs (string | number | null).
+    out: dict[str, object] = {}
+    for m in re.finditer(
+        r'["\']?([A-Za-z_][A-Za-z0-9_]*)["\']?\s*:\s*'
+        r'(?:"([^"]*)"|\'([^\']*)\'|(-?\d+(?:\.\d+)?)|(null|true|false))',
+        s,
+    ):
+        key = m.group(1)
+        if m.group(2) is not None:
+            out[key] = m.group(2)
+        elif m.group(3) is not None:
+            out[key] = m.group(3)
+        elif m.group(4) is not None:
+            out[key] = float(m.group(4)) if "." in m.group(4) else int(m.group(4))
+        else:
+            out[key] = {"null": None, "true": True, "false": False}[m.group(5)]
+    return out or None
+
+
+_ABSENT_TOKENS = {"нет", "null", "none", "n/a", "na", "-", "—", "отсутствует"}
+_BARCODE_KEYS = {"barcode", "qr_code_barcode"}
+
+# additional_info is ONLY genuine extra text (price-tag-guide §10 row
+# `additional_info`): sweetness in a rounded box, scale number, promo date
+# range, threshold "от/до/при покупке N", "3=2"/"купи N". Price labels
+# («без карты», «с картой», «₽/шт») and price numbers are NEVER
+# additional_info — the VLM routinely dumps them there. Keep only on signal.
+_AINFO_SIGNAL = (
+    "сух", "сладк", "полусл", "брют", "номер на вес", "акция действ",
+    "при покупке", "удачная упаков", "=", "купи", "плати",
+    " от ", " до ",  # threshold "от N шт/кг" / "до N кг"
+)
+_AINFO_JUNK = (
+    "без карт", "с карт", "по карт", "₽", "руб", "/шт", "/кг", "p/", "р/",
+    "цена", "цены",
+)
+_DATE_RE = re.compile(r"\b\d{2}\.\d{2}\.\d{4}\b")
+
+
+def _norm_extra_field(key: str, value: object) -> object:
+    """Normalize one HACK extra field straight off the VLM JSON.
+
+    - empty/absent tokens collapse to "нет" (task §5.3: absent → "нет";
+      the VLM is prompted to say "нет", but also emits null/""/"-").
+    - barcode / qr_code_barcode: keep digits only — the model reads the
+      number correctly but with grouping spaces ("4 607124 143901"); the
+      graded scorer compares barcodes as exact strings, so a perfect read
+      otherwise scores 0. Drop reads shorter than a plausible GTIN.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.lower() in _ABSENT_TOKENS:
+        return "нет"
+    if key in _BARCODE_KEYS:
+        digits = re.sub(r"\D", "", s)
+        return digits if len(digits) >= 6 else None
+    if key == "price_discount" and "%" in s:
+        # A percent is discount_amount, not the third promo PRICE. The VLM
+        # routinely duplicates "-44%" here; that is never a valid price.
+        return "нет"
+    if key == "additional_info":
+        low = s.lower()
+        has_signal = _DATE_RE.search(s) is not None or any(t in low for t in _AINFO_SIGNAL)
+        if has_signal:
+            return s
+        # No genuine signal: if it's price-label junk or just digits/price
+        # tokens, it is not additional_info → absent.
+        if any(t in low for t in _AINFO_JUNK) or re.fullmatch(r"[\d\s.,:;%/-]+", s):
+            return "нет"
+        return s
+    return s
+
+
 @dataclass(frozen=True)
 class TagParser:
     cfg: ParserConfig
@@ -323,10 +431,7 @@ class TagParser:
 
     def parse_vlm_json(self, raw_json: str, vlm_confidence: float, backend: str = "vlm") -> ParsedTag:
         """Parse a JSON string from a VLM. Falls back to text parsing on failure."""
-        try:
-            obj = json.loads(raw_json)
-        except (json.JSONDecodeError, TypeError):
-            return self.parse_text(raw_json, ocr_confidence=vlm_confidence, backend=backend)
+        obj = _lenient_json_loads(raw_json)
         if not isinstance(obj, dict):
             return self.parse_text(raw_json, ocr_confidence=vlm_confidence, backend=backend)
 
@@ -352,11 +457,17 @@ class TagParser:
         extra_fields: dict[str, object] = {}
         extra_confidences: dict[str, float] = {}
         for key in HACK_EXTRA_FIELDS:
-            value = obj.get(key)
+            value = _norm_extra_field(key, obj.get(key))
             if value in (None, ""):
                 continue
             extra_fields[key] = value
             extra_confidences[key] = vlm_confidence
+
+        # price_discount is a PRICE; if the VLM echoed discount_amount into it
+        # (same token), it is not a third promo price → absent.
+        pd = extra_fields.get("price_discount")
+        if pd is not None and pd != "нет" and str(pd) == str(extra_fields.get("discount_amount", "")):
+            extra_fields["price_discount"] = "нет"
 
         return ParsedTag(
             regular_price=regular,

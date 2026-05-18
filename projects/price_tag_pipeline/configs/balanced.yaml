@@ -7,23 +7,32 @@ runtime:
 
 detector:
   backend: yolo
-  model_path: data/checkpoints/detector/best.pt   # fine-tuned (upright-trained); see DetectorConfig.rotate
+  model_path: data/checkpoints/detector/best.pt   # fine-tuned, upright-trained (frame_rotation: ccw)
   conf: 0.25
   iou: 0.50
   device: null
   classes: null
   tracker_yaml: configs/trackers/botsort.yaml         # CMC helps because the robot moves
   image_size: 1280
+  frame_rotation: ccw                # robot cam mounted 90° CW: feed the
+                                     # detector upright (boxes un-projected
+                                     # back to original coords).
 
 rectifier:
-  padding_ratio: 0.06
+  padding_ratio: 0.10                 # 0.10 used in the validated friends-crop run
   clahe_clip_limit: 2.5
   clahe_tile_grid_size: 8
   rotate_vertical_tags: true
   keep_color: true
 
 ocr:
-  backend: paddle
+  # Validated OCR winner — worktree-ocr campaign (OCR_CAMPAIGN_LOG.md,
+  # 2026-05-18). Heavy (~8.5GB VRAM, GPU); for a light CPU profile use
+  # backend: paddle. The prompt + parser robustness are in code.
+  backend: qwen3_vl
+  vlm_model: Qwen/Qwen3-VL-4B-Instruct  # offline alt: local dir weights/qwen3-vl-4b
+  vlm_max_new_tokens: 640
+  vlm_temperature: 0.0
   paddleocr_lang: ru
   min_frames_between_ocr_per_track: 5
   min_sharpness: 35.0

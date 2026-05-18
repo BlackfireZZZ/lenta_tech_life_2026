@@ -21,7 +21,7 @@ runtime:
 
 detector:
   backend: yolo
-  model_path: data/checkpoints/detector/best.pt   # fine-tuned (upright-trained); see DetectorConfig.rotate
+  model_path: data/checkpoints/detector/best.pt   # fine-tuned, upright-trained (frame_rotation: ccw)
   conf: 0.20
   iou: 0.50
   device: null

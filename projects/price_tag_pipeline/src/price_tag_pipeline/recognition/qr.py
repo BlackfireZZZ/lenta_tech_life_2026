@@ -1,18 +1,27 @@
-"""QR extraction for Lenta price-tag crops.
+"""QR / DataMatrix extraction for Lenta price-tag crops.
 
-This module is deliberately dependency-light:
-- OpenCV QRCodeDetector is always attempted.
-- pyzbar is used when available for extra QR robustness.
+This is the **first link** of the recognition chain (QR → barcode → OCR) and
+the thin :class:`CropDecoder` adapter around the robust decode engine in
+:mod:`price_tag_pipeline.recognition.qr_engine` (decoder ensemble + escalating
+classical preprocessing cascade + doc-informed layout-ROI localiser; no ML).
 
-The output is a ParsedTag carrying hackathon CSV fields in `extra_fields`.
+Reality on real Lenta tags (measured — see ``scripts/eval_qr.py``): the small
+square 2D code is a **DataMatrix** (often an opaque short code like
+``1010500``), but some tags carry a real **QR** with a URL-query payload
+``barcode=460...&price1=...&price4=...``. Both are handled here:
 
-.. note:: **Baseline, not the final reader.** The "ultimate" QR reader
-   (rotation/perspective-robust localization, multi-scale retry) is being
-   built on a *separate branch* and will be dropped in here behind the
-   :class:`~price_tag_pipeline.recognition.base.CropDecoder` interface.
-   Keep ``QRDecoder.decode`` returning ``list[RecognitionResult]`` and do
-   **not** change the chain merge policy. See ``docs/recognition-pipeline.md``.
-   1D barcodes now live in :mod:`price_tag_pipeline.recognition.barcode`.
+* structured QR  → many CSV fields via the alias table (:func:`parse_qr_payload`)
+* opaque 2D code → surfaced raw under the **non-graded** ``datamatrix_raw``
+  scratch key, never fabricated into a graded field
+
+The 1D product barcode (GS1 DataBar / Code-128 / EAN) is decoded by the same
+engine but emitted by :mod:`.barcode` — this module emits only 2D-derived
+fields. Per-field reconciliation across QR/barcode/OCR is the aggregator's job
+(see ``docs/recognition-pipeline.md``); not done here.
+
+Keeps the frozen seam: ``QRDecoder.decode`` returns ``list[RecognitionResult]``
+and never raises; ``QRCodeExtractor`` / ``parse_qr_payload`` stay the public
+surface (``recognition.__init__`` and ``tests/test_qr.py`` import them).
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import numpy as np
 
 from ..types import ParsedTag
 from .base import CropDecoder, RecognitionResult, parsed_is_empty
+from .qr_engine import decode_crop
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,48 +85,94 @@ _PRICE_FIELDS = {
     "action_price_qr",
 }
 
+# A bare payload that is just GTIN-length digits is a 1D barcode value, not a
+# k=v blob. EAN-8 / UPC-A(12) / EAN-13 / GTIN-14. The previous baseline ran
+# such a payload through the JSON/URL/kv parser only, which silently dropped
+# it (a GTIN is none of those shapes) — losing the single most important
+# field. Map it straight to qr_code_barcode instead.
+_GTIN_RE = re.compile(r"^\s*(\d{8}|\d{12,14})\s*$")
+
 
 @dataclass
 class QRCodeExtractor:
+    """Decode a crop's 2D codes and turn them into a :class:`ParsedTag`.
+
+    ``confidence`` is the ceiling for fields recovered from a structured QR
+    (the chain echoes it into the audit trail and the aggregator's voting).
+    """
+
     confidence: float = 0.97
 
     def decode_payloads(self, image_bgr: np.ndarray) -> list[str]:
-        payloads: list[str] = []
-        payloads.extend(_decode_opencv_qr(image_bgr))
-        payloads.extend(_decode_pyzbar(image_bgr))
-        # Stable de-dup while preserving decoder order.
+        """Raw 2D payload strings on the crop (back-compat surface)."""
         seen: set[str] = set()
         out: list[str] = []
-        for payload in payloads:
-            payload = payload.strip()
-            if payload and payload not in seen:
-                seen.add(payload)
-                out.append(payload)
+        for sym in decode_crop(image_bgr):
+            if sym.kind != "2d":
+                continue
+            t = sym.text.strip()
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
         return out
 
     def extract(self, image_bgr: np.ndarray) -> ParsedTag:
         extra_fields: dict[str, Any] = {}
-        for payload in self.decode_payloads(image_bgr):
-            extra_fields.update(parse_qr_payload(payload))
+        extra_confidences: dict[str, float] = {}
+
+        def _put(field: str, value: Any, conf: float) -> None:
+            if value in (None, ""):
+                return
+            if field not in extra_fields or conf > extra_confidences.get(field, 0.0):
+                extra_fields[field] = value
+                extra_confidences[field] = conf
+
+        for sym in decode_crop(image_bgr):
+            if sym.kind != "2d":
+                continue  # 1D barcode is the BarcodeDecoder's job
+            parsed = parse_qr_payload(sym.text)
+            if parsed:
+                for k, v in parsed.items():
+                    _put(k, v, sym.confidence * self.confidence)
+            else:
+                # Opaque DataMatrix (e.g. "1010500"): keep it raw under a
+                # non-graded scratch key so the signal isn't lost, without
+                # fabricating a graded field from a guess.
+                _put("datamatrix_raw", sym.text.strip(), sym.confidence)
+
         if not extra_fields:
             return ParsedTag(backend="qr", raw_text=None)
-        if "qr_code_barcode" in extra_fields:
-            # The visible barcode field and the QR barcode often represent the
-            # same product GTIN; filling both increases useful CSV coverage.
-            extra_fields.setdefault("barcode", extra_fields["qr_code_barcode"])
+
+        # The QR `b` field and the visible barcode are usually the same GTIN;
+        # cross-filling both maximises useful CSV coverage (the aggregator
+        # still reconciles against the dedicated BarcodeDecoder reading).
+        if "qr_code_barcode" in extra_fields and "barcode" not in extra_fields:
+            _put("barcode", extra_fields["qr_code_barcode"],
+                 extra_confidences["qr_code_barcode"] * 0.9)
+
         return ParsedTag(
             backend="qr",
             raw_text=json.dumps(extra_fields, ensure_ascii=False),
             extra_fields=extra_fields,
-            extra_confidences={k: self.confidence for k in extra_fields},
+            extra_confidences=extra_confidences,
         )
 
 
 def parse_qr_payload(payload: str) -> dict[str, Any]:
-    """Parse common Lenta QR payload shapes into hackathon CSV fields."""
+    """Parse common Lenta QR payload shapes into hackathon CSV fields.
+
+    Order: a bare GTIN (1D value encoded in a 2D code), then JSON, URL-query,
+    then ``k=v`` / ``k:v`` blobs. Unknown keys are dropped; known keys are
+    normalised through :data:`_ALIASES`.
+    """
     raw = payload.strip()
     if not raw:
         return {}
+
+    m = _GTIN_RE.match(raw)
+    if m:
+        return {"qr_code_barcode": m.group(1)}
+
     data: dict[str, Any] = {}
     try:
         obj = json.loads(raw)
@@ -151,42 +207,6 @@ def parse_qr_payload(payload: str) -> dict[str, Any]:
     return normalized
 
 
-def _decode_opencv_qr(image_bgr: np.ndarray) -> list[str]:
-    try:
-        import cv2  # type: ignore
-    except ImportError:
-        return []
-    detector = cv2.QRCodeDetector()
-    out: list[str] = []
-    try:
-        ok, decoded, _, _ = detector.detectAndDecodeMulti(image_bgr)
-        if ok:
-            out.extend([s for s in decoded if s])
-    except Exception:
-        LOGGER.debug("OpenCV detectAndDecodeMulti failed", exc_info=True)
-    try:
-        decoded, _, _ = detector.detectAndDecode(image_bgr)
-        if decoded:
-            out.append(decoded)
-    except Exception:
-        LOGGER.debug("OpenCV detectAndDecode failed", exc_info=True)
-    return out
-
-
-def _decode_pyzbar(image_bgr: np.ndarray) -> list[str]:
-    try:
-        from pyzbar.pyzbar import decode  # type: ignore
-    except Exception:
-        return []
-    try:
-        import cv2  # type: ignore
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
-        return [item.data.decode("utf-8", errors="ignore") for item in decode(gray) if item.data]
-    except Exception:
-        LOGGER.debug("pyzbar decode failed", exc_info=True)
-        return []
-
-
 def _norm_key(key: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(key).strip().lower())
 
@@ -211,10 +231,10 @@ def _normalize_value(field: str, value: object) -> object:
 # ---------------------------------------------------------------------------
 
 class QRDecoder(CropDecoder):
-    """First link of the recognition chain: decode QR payloads on a crop.
+    """First link of the recognition chain: decode 2D payloads on a crop.
 
     Returns at most one :class:`RecognitionResult`. ``found`` is True only
-    when the QR payload produced at least one usable field; an unreadable /
+    when a 2D payload produced at least one usable field; an unreadable /
     absent QR yields ``[]`` (the chain then relies on barcode + OCR).
     """
 
@@ -224,7 +244,11 @@ class QRDecoder(CropDecoder):
         self._extractor = QRCodeExtractor()
 
     def decode(self, crop_bgr: np.ndarray) -> list[RecognitionResult]:
-        parsed = self._extractor.extract(crop_bgr)
+        try:
+            parsed = self._extractor.extract(crop_bgr)
+        except Exception:  # contract: never raise on a bad crop
+            LOGGER.debug("qr decode failed", exc_info=True)
+            return []
         if parsed_is_empty(parsed):
             return []
         return [

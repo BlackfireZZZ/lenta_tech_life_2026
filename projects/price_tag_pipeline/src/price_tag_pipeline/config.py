@@ -34,11 +34,12 @@ class DetectorConfig:
     tracker_yaml: str
     open_vocab_labels: tuple[str, ...] = ()
     image_size: int = 1280
-    # The Lenta scan-robot camera is mounted 90° clockwise: clips are stored
-    # 3840×2160 landscape but the shelf/tags are sideways, which wrecks a
-    # detector trained on upright tags. Undo it before detection.
-    # "ccw" (default, the live data) | "cw" | "none".
-    rotate: str = "ccw"
+    # 90° frame rotation applied ONLY for model inference; predictions are
+    # un-projected back to original-frame coords so the rest of the pipeline
+    # is unchanged. The Lenta scan-robot cam is mounted 90° CW (footage is
+    # sideways → the price-tag detector misses badly), so the Lenta runtime
+    # profiles set this to "ccw". "none" (default) keeps legacy behavior.
+    frame_rotation: str = "none"  # none | ccw | cw
 
 
 @dataclass(frozen=True)
@@ -182,7 +183,7 @@ def _as_detector(node: dict[str, Any]) -> DetectorConfig:
         open_vocab_labels=labels,
         tracker_yaml=str(node["tracker_yaml"]),
         image_size=int(_opt(node, "image_size", 1280)),
-        rotate=str(_opt(node, "rotate", "ccw")).lower().strip(),
+        frame_rotation=str(_opt(node, "frame_rotation", "none")).lower(),
     )
 
 
