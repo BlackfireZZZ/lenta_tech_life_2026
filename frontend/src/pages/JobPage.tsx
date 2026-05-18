@@ -33,12 +33,13 @@ import { TagsTable } from "@/components/job/TagsTable";
 import {
   colorMeta,
   completeness,
+  displayValue,
   FIELD_GROUPS,
   fieldState,
   PASS_THRESHOLD,
   tagLabel,
 } from "@/lib/tags";
-import { cn, formatTimestamp } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 const POLL_MS = 1200;
 
@@ -108,25 +109,42 @@ export default function JobPage() {
     };
   }, [job?.status, pred, id]);
 
+  // Only surface tags we're confident in — a half-read ценник is noise to a
+  // reviewer, not data. The downloaded CSV still contains every row (it is
+  // the deliverable); the on-screen review just hides the unreliable ones.
+  const view = useMemo(() => {
+    if (!pred) return null;
+    const good = pred.tags.filter(
+      (t) => completeness(t, pred.substantive_fields) >= PASS_THRESHOLD,
+    );
+    return { ...pred, tags: good.length ? good : pred.tags };
+  }, [pred]);
+
+  useEffect(() => {
+    if (view && !view.tags.some((t) => t.index === selected)) {
+      setSelected(view.tags[0]?.index ?? 0);
+    }
+  }, [view, selected]);
+
   if (error) return <ErrorCard message={error} />;
   if (job?.status === "failed")
     return <ErrorCard message={job.error || "Обработка завершилась с ошибкой."} />;
   if (!job || job.status === "queued" || job.status === "running")
     return <Processing job={job} />;
-  if (!pred) return <ReviewSkeleton />;
+  if (!pred || !view) return <ReviewSkeleton />;
 
   return (
     <div className="flex flex-col gap-12">
-      <Header job={job} count={pred.tags.length} csvHref={jobsApi.csvUrl(id)} />
-      <Summary data={pred} />
-      <Reviewer id={id} pred={pred} selected={selected} onSelect={setSelected} />
+      <Header job={job} count={view.tags.length} csvHref={jobsApi.csvUrl(id)} />
+      <Summary data={view} />
+      <Reviewer id={id} pred={view} selected={selected} onSelect={setSelected} />
 
       <Card>
         <CardHeader>
-          <CardTitle>Таблица · все {pred.tags.length} ценников</CardTitle>
+          <CardTitle>Все ценники</CardTitle>
         </CardHeader>
         <CardContent>
-          <TagsTable data={pred} selected={selected} onSelect={setSelected} />
+          <TagsTable data={view} selected={selected} onSelect={setSelected} />
         </CardContent>
       </Card>
     </div>
@@ -201,26 +219,18 @@ function Reviewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [goTag, pos]);
 
-  const score = completeness(tag, pred.substantive_fields);
-  const pass = score >= PASS_THRESHOLD;
-
   return (
     <Card feature className="overflow-hidden">
-      {/* Header — eyebrow + product, tag counter + step. NO slider here:
-          the timeline under the video is the one and only scrubber. */}
+      {/* Header — product name + which ценник of how many. No internal
+          metrics: the timeline under the video is the one scrubber. */}
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-stone-border p-6">
         <div className="min-w-0">
           <p className="text-caption uppercase tracking-[0.12em] text-steel-gray">
             Проверка ценников
           </p>
-          <div className="mt-1 flex flex-wrap items-center gap-3">
-            <h2 className="truncate font-display text-heading font-medium text-slate-text">
-              {tagLabel(tag)}
-            </h2>
-            <Badge variant={pass ? "success" : "warning"}>
-              {Math.round(score * 100)}% полнота
-            </Badge>
-          </div>
+          <h2 className="mt-1 truncate font-display text-heading font-medium text-slate-text">
+            {tagLabel(tag)}
+          </h2>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -441,7 +451,7 @@ function VideoStage({
                   "absolute rounded-[3px] transition-colors",
                   active
                     ? "border-2 border-chartwell-blue"
-                    : "border border-cloud-white/70 hover:border-cloud-white",
+                    : "cursor-pointer border border-cloud-white/70 hover:border-2 hover:border-chartwell-blue",
                 )}
                 style={{
                   left: `${m.bbox.x1 * 100}%`,
@@ -464,15 +474,14 @@ function VideoStage({
         </div>
       </div>
 
-      {/* The timeline IS the scrubber. Markers = tags, coloured by tag type;
-          the active tag's marker is the blue one. Click a marker to jump to
-          that ценник; click/drag the bar to move through the clip. */}
+      {/* The timeline IS the scrubber: each dot is a ценник, the blue one is
+          open. Click a dot to open it; drag the bar to move through video. */}
       <div className="flex items-center gap-3">
         <button
           type="button"
           onClick={togglePlay}
           title={playing ? "Пауза" : "Воспроизвести"}
-          className="grid size-9 shrink-0 place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:bg-canvas-fog"
+          className="grid size-9 shrink-0 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
         >
           {playing ? (
             <Pause className="size-4" />
@@ -502,31 +511,27 @@ function VideoStage({
             className="absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-pill bg-chartwell-blue/70"
             style={{ width: `${dur ? (cur / dur) * 100 : 0}%` }}
           />
-          {/* tag markers */}
+          {/* one dot per ценник; the open one is blue, the rest are
+              neutral and grow on hover so they read as clickable */}
           {order.map((t) => {
             const active = t.index === tag.index;
-            const m = colorMeta(t.color);
             return (
               <button
                 key={t.index}
                 type="button"
-                title={`${tagLabel(t)} · ${formatTimestamp(t.frame_timestamp)}`}
+                title={tagLabel(t)}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelect(t.index);
                 }}
                 className={cn(
-                  "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border transition-all",
+                  "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-2 border-cloud-white transition-all",
                   active
-                    ? "z-10 size-3.5 border-cloud-white bg-chartwell-blue"
-                    : "size-2.5 border-cloud-white",
+                    ? "z-10 size-4 bg-chartwell-blue"
+                    : "size-2.5 bg-steel-gray hover:size-3.5 hover:bg-slate-text",
                 )}
-                style={{
-                  left: `${t.t_frac * 100}%`,
-                  background: active ? undefined : m.swatch,
-                  boxShadow: `0 0 0 1px ${active ? "#3ba6f1" : m.ring}`,
-                }}
+                style={{ left: `${t.t_frac * 100}%` }}
               />
             );
           })}
@@ -541,21 +546,21 @@ function VideoStage({
         </span>
       </div>
       <p className="text-caption text-steel-gray">
-        Точки на дорожке — ценники (цвет = тип). Клик по точке открывает
-        ценник; перетаскивание — перемотка видео.
+        Нажмите на точку, чтобы открыть ценник. Тяните дорожку, чтобы
+        перемотать видео.
       </p>
 
-      {/* The crop the recognizer actually received. */}
+      {/* The cropped tag image. */}
       <div className="mt-2">
         <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
-          <Crop className="size-3.5" /> Что увидел распознаватель
+          <Crop className="size-3.5" /> Изображение ценника
         </p>
         <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
           <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
         </div>
         {cropFailed && (
           <p className="mt-2 text-caption text-amber-700">
-            Кроп недоступен: видео отдаётся с другого источника без CORS.
+            Не удалось показать изображение ценника.
           </p>
         )}
       </div>
@@ -588,22 +593,22 @@ function DataPanel({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              title="Предыдущий бокс в кадре"
+              title="Предыдущий ценник в кадре"
               onClick={() =>
                 onSelect(mates[(boxPos - 1 + mates.length) % mates.length].index)
               }
-              className="grid size-7 place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text hover:bg-canvas-fog"
+              className="grid size-7 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
             >
               <ChevronLeft className="size-3.5" />
             </button>
             <span className="text-[12px] tabular-nums text-slate-text">
-              бокс {boxPos + 1} / {mates.length}
+              {boxPos + 1} из {mates.length}
             </span>
             <button
               type="button"
-              title="Следующий бокс в кадре"
+              title="Следующий ценник в кадре"
               onClick={() => onSelect(mates[(boxPos + 1) % mates.length].index)}
-              className="grid size-7 place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text hover:bg-canvas-fog"
+              className="grid size-7 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
             >
               <ChevronRight className="size-3.5" />
             </button>
@@ -613,22 +618,12 @@ function DataPanel({
 
       {/* Hero — the few things that matter, read at a glance. */}
       <div className="rounded-card border border-stone-border bg-canvas-fog p-4">
-        <div className="flex items-center justify-between gap-3">
-          <span
-            className="inline-flex items-center gap-1.5 text-[13px] text-slate-text"
-            title={cm.label}
-          >
-            <span
-              className="size-3 rounded-full"
-              style={{ background: cm.swatch, boxShadow: `0 0 0 1px ${cm.ring}` }}
-            />
+        {tag.color.toLowerCase() !== "white" && (
+          <Badge variant="accent" className="mb-3">
             {cm.label}
-          </span>
-          <span className="text-caption text-ash-gray">
-            кадр {formatTimestamp(tag.frame_timestamp)}
-          </span>
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4">
+          </Badge>
+        )}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-4">
           <HeroStat label="Цена без карты" value={tag.fields.price_default} suffix="₽" />
           <HeroStat label="Цена по карте" value={tag.fields.price_card} suffix="₽" />
           <HeroStat label="Штрихкод" value={tag.fields.barcode} mono />
@@ -742,7 +737,7 @@ function FieldValue({ field, value }: { field: string; value: string | undefined
         mono && "font-mono tabular-nums",
       )}
     >
-      {value}
+      {displayValue(field, value ?? "")}
     </span>
   );
 }
