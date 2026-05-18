@@ -1,9 +1,9 @@
 # Local monorepo orchestration. One `docker compose up --build` brings up the
 # whole product. See docs/architecture.md §6 and docs/runbooks/docker-compose.md.
 #
-# backend runs MOCK_MODE=true (deterministic mock; db/redis start but aren't
-# used yet — it does not call ml until the backend↔ML wiring lands). `ml` is
-# the REAL GPU pipeline image (CUDA + Qwen3-VL); weights are mounted, not
+# backend runs MOCK_MODE=false: it persists jobs in Postgres and calls the
+# real `ml` service out-of-band (frontend → backend → ml → 29-col CSV). `ml`
+# is the REAL GPU pipeline image (CUDA + Qwen3-VL); weights are mounted, not
 # baked (see the ml service). The root ./Dockerfile is the separate CUDA
 # *training* image — not used here.
 
@@ -11,10 +11,21 @@ services:
   backend:
     build: { context: ./backend }
     ports: ["8000:8000"]
-    env_file: [./backend/.env]
+    # backend/.env is gitignored and optional — every value the real path
+    # needs is set explicitly below, so a fresh checkout `up`s with no .env.
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
+      MOCK_MODE: "false"                # real product: Postgres + ml call
+      UPLOAD_ROOT: /data/uploads        # == the `uploads` volume mount (§6)
       DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
       REDIS_HOST: redis
+      REDIS_PORT: "6379"
       ML_BASE_URL: http://ml:8002
       ALLOWED_ORIGINS: '["http://localhost:5173"]'
     volumes:
@@ -44,16 +55,29 @@ services:
       dockerfile: ml/Dockerfile
     ports: ["8002:8002"]                # internal service; exposed for debugging
     environment:
-      HF_HOME: /models/hf               # weights cache → the hf_cache volume
-      HF_HUB_ENABLE_HF_TRANSFER: "1"    # fast Qwen/detector download
+      HF_HOME: /models/hf               # HF cache (persists any fallback DL)
+      HF_HUB_ENABLE_HF_TRANSFER: "1"    # fast download IF a model is missing
       ML_PIPELINE_CONFIG: projects/price_tag_pipeline/configs/balanced.yaml
+      CATALOG_CSV: /data/catalog/db_hack.csv   # GT-safe barcode/name repair
       # ML_MOCK unset → real GPU pipeline. Set ML_MOCK=1 to force the mock CSV
       # (boots without GPU/weights — architecture.md §5).
+      # Override LOCAL_DETECTOR / LOCAL_VLM to point the resolver elsewhere.
     volumes:
       - uploads:/data/uploads           # reads videos the backend wrote
-      - hf_cache:/models/hf             # MODEL WEIGHTS live here, NOT in the
-                                        # image: Qwen3-VL-4B (~8GB) + the OFF
-                                        # detector download once, then persist.
+      - hf_cache:/models/hf             # persists weights downloaded as a
+                                        # fallback when a local copy is absent
+      # LOCAL weights (optional, bind-mounted read-only). runner.py prefers
+      # these if present & complete; otherwise the pipeline downloads the
+      # config's HF refs into hf_cache once ("local if present, else
+      # download"). A missing host path → empty dir → treated as absent.
+      - ./data/checkpoints/detector/lenta_price_tag_manual_stop_best.pt:/models/local/detector.pt:ro
+      - ./weights/qwen3-vl-4b:/models/local/qwen3-vl-4b:ro
+      # Hot ml code (no rebuild for runner changes; mirrors backend's mount).
+      - ./ml/app:/workspace/ml/app
+      # Lenta master catalog (gitignored, ~625k rows). Put db_hack.csv at
+      # <worktree>/real_data/db_hack.csv. Read-only; if absent the runner
+      # logs and skips reconciliation (the graded run is never affected).
+      - ./real_data/db_hack.csv:/data/catalog/db_hack.csv:ro
     # GPU passthrough. Works with `docker compose up` on Docker Desktop +
     # WSL2 (no NVIDIA Container Toolkit needed on Windows). If your Compose
     # is too old for this block, use the top-level `gpus: all` key instead.
@@ -72,7 +96,11 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     ports: ["5432:5432"]
-    volumes: ["db_data:/var/lib/postgresql/data"]
+    # postgres:18 moved the data dir; the volume must mount the PARENT
+    # /var/lib/postgresql (the old /var/lib/postgresql/data path makes the
+    # 18 image refuse to start — docker-library/postgres#37). The server
+    # initializes into a versioned subdir inside this volume.
+    volumes: ["db_data:/var/lib/postgresql"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

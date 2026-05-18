@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     ML_BASE_URL: str = "http://ml:8002"
     ML_TIMEOUT_SECONDS: float = 600.0
 
+    # Shared video handoff dir. docker-compose mounts the `uploads` volume at
+    # this same path in both `backend` and `ml`, so the absolute path the
+    # gateway writes is exactly the path the ML service reads
+    # (docs/architecture.md §6). Falls back to a temp dir if not writable.
+    UPLOAD_ROOT: str = "/data/uploads"
+
     @property
     def DATABASE_URL(self) -> str:
         return (

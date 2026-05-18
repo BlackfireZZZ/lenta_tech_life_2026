@@ -10,6 +10,7 @@ DB / cache / auth wiring is documented and stubbed (see the placeholder
 modules under ``app/db``, ``app/cache``, ``app/core``).
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -20,10 +21,38 @@ from app.core.config import settings
 from app.core.logger import logger
 
 
+async def _init_db_with_retry(attempts: int = 10, delay: float = 2.0) -> None:
+    """Bring the schema up, tolerating a Postgres that is a beat behind.
+
+    docker-compose `depends_on: db: service_healthy` usually means the DB is
+    ready, but pool warm-up can still race on a cold `up`; retry a few times
+    before giving up loudly.
+    """
+    from app.db.session import init_models, ping
+
+    last: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            await ping()
+            await init_models()
+            return
+        except Exception as exc:  # noqa: BLE001 - want the loud final raise
+            last = exc
+            logger.warning("DB not ready (attempt %d/%d): %s", i, attempts, exc)
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"Postgres unreachable after {attempts} attempts") from last
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Real impl: ping Postgres + Redis here (see docs/architecture.md §3.3).
-    logger.info("%s v%s starting (MOCK mode=%s)", settings.APP_NAME, settings.APP_VERSION, settings.MOCK_MODE)
+    logger.info(
+        "%s v%s starting (MOCK_MODE=%s)",
+        settings.APP_NAME, settings.APP_VERSION, settings.MOCK_MODE,
+    )
+    # MOCK_MODE keeps the gateway standalone (no Postgres). The real product
+    # path needs the schema before the first request.
+    if not settings.MOCK_MODE:
+        await _init_db_with_retry()
     yield
     logger.info("shutting down")
 

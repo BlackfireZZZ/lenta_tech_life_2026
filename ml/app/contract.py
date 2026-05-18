@@ -10,6 +10,10 @@ from pydantic import BaseModel
 class ProcessRequest(BaseModel):
     video_path: str  # path/URI this service can read
     job_id: str  # gateway job id, for correlation/logging
+    # Original upload name; its bare stem is the graded CSV `filename` cell.
+    # "" → fall back to the video_path stem (backward compat). See the
+    # backend mirror for why this is required for correct GT matching.
+    filename: str = ""
 
 
 class ProcessResponse(BaseModel):

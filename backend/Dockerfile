@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml ./
 RUN uv pip install --system --no-cache \
         fastapi "uvicorn[standard]" pydantic pydantic-settings \
-        python-multipart httpx
+        python-multipart httpx \
+        "sqlalchemy[asyncio]>=2" asyncpg "redis>=5"
 
 COPY app ./app
 COPY scripts ./scripts
