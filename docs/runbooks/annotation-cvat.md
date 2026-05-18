@@ -51,9 +51,12 @@ laptop. If your laptop *does* have a usable GPU you can run STEP 2 locally
 You need: **Docker Desktop** (running), **git**, and this repo checked out.
 All commands assume:
 
-* **cwd = this worktree:** `cd .../.claude/worktrees/annotation`
-* **the worktree venv** for python: `.venv/Scripts/python.exe`
-  (uv-managed; project rule: never global pip). On Linux/Mac it's
+* **cwd = repo root**: `cd /path/to/lenta_tech_life_2026`
+* **Python = the repo venv**, never global pip:
+  * Windows: `.venv/Scripts/python.exe`
+  * macOS/Linux: `.venv/bin/python`
+  The commands below use the Windows path because the annotation helper was
+  written for a friend's Windows laptop; on macOS/Linux replace it with
   `.venv/bin/python`.
 * Replace **`***`** with the CVAT admin password (ask the repo owner; it is
   *not* written in any committed file).
@@ -84,9 +87,10 @@ cd ../..                        # back to the worktree root for everything else
   * `cd third_party/cvat && docker compose up -d` — resume
 * **NEVER** `docker compose down -v` — `-v` wipes every annotation volume.
 
-Submodule clone failed on a flaky network? Shallow + pinned:
-`git -c http.version=HTTP/1.1 clone --depth 1 --branch v2.64.0 https://github.com/cvat-ai/cvat third_party/cvat`
-then `git submodule add --force https://github.com/cvat-ai/cvat third_party/cvat`.
+If `third_party/cvat` is empty after clone, initialize the submodule:
+`git submodule update --init --depth 1 third_party/cvat`. If that fails on a
+flaky network, retry with:
+`git -c http.version=HTTP/1.1 submodule update --init --depth 1 third_party/cvat`.
 
 ---
 
