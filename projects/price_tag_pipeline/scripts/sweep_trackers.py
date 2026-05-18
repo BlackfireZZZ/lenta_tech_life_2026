@@ -57,18 +57,28 @@ def _gt_count(p: Path) -> int:
 
 
 def _candidates() -> list[tuple[str, dict]]:
-    """One-factor-at-a-time grid around the shipped tuned base."""
+    """Grid aimed at the UNDER-segmentation regime exposed by the
+    orientation fix: with good weights + upright frames the tracker glues one
+    ID across many tags as the shelf pans (12 tracks for 71 GT tags, a
+    1747-frame track on an 89 s clip). We want tracks to END when a tag
+    leaves and a NEW id when the next enters — i.e. less sticky: smaller
+    track_buffer, higher new_track_thresh, lower match_thresh.
+    """
     grid: list[tuple[str, dict]] = [("base", {})]
-    for v in (30, 45, 90, 120):
+    for v in (5, 10, 15, 20, 30):
         grid.append((f"buffer{v}", {"track_buffer": v}))
-    for v in (0.40, 0.50, 0.70):
+    for v in (0.70, 0.80, 0.90):
         grid.append((f"new{v}", {"new_track_thresh": v}))
-    for v in (0.35, 0.60):
-        grid.append((f"high{v}", {"track_high_thresh": v}))
-    for v in (0.70, 0.90):
+    for v in (0.50, 0.60, 0.70):
         grid.append((f"match{v}", {"match_thresh": v}))
-    for v in ("ecc", "none"):
-        grid.append((f"gmc-{v}", {"gmc_method": v}))
+    for v in (0.60, 0.75):
+        grid.append((f"high{v}", {"track_high_thresh": v}))
+    grid.append(("split-aggr",
+                 {"track_buffer": 10, "new_track_thresh": 0.8,
+                  "match_thresh": 0.6}))
+    grid.append(("split-mid",
+                 {"track_buffer": 15, "new_track_thresh": 0.75,
+                  "match_thresh": 0.7}))
     return grid
 
 
@@ -167,25 +177,29 @@ def main() -> int:
         row = {"name": name, "override": override, **agg,
                "secs": round(time.time() - t0, 1), "per_video": per_video}
         results.append(row)
+        row["gap"] = abs(agg["qual"] - agg["gt"])
         LOGGER.info(
-            "%-12s raw=%-4d qual=%-4d sing+short=%-4d gt=%-4d (%.0fs) %s",
-            name, agg["raw"], agg["qual"], agg["sing_short"], agg["gt"],
-            row["secs"], override,
+            "%-12s raw=%-4d qual=%-4d gap=%-4d sing+short=%-4d gt=%-4d (%.0fs) %s",
+            name, agg["raw"], agg["qual"], row["gap"], agg["sing_short"],
+            agg["gt"], row["secs"], override,
         )
 
-    # Rank: among configs whose qualified-track coverage stays >=90% of the
-    # best observed (no over-merge / recall collapse), fewest fragmented
-    # tracks wins; tie-break fewest raw tracks.
-    qmax = max((r["qual"] for r in results), default=1) or 1
-    eligible = [r for r in results if r["qual"] >= 0.90 * qmax]
-    ranked = sorted(eligible, key=lambda r: (r["sing_short"], r["raw"]))
-    LOGGER.info("\n=== RANK (qualified within 90%% of best=%d) ===", qmax)
+    # Objective: one track per physical tag → qualified ≈ n_gt. The
+    # orientation fix flipped the failure from over- to UNDER-segmentation
+    # (sticky IDs gluing many tags into a few mega-tracks), so we minimise
+    # |qualified − n_gt| (the gap to one-track-per-tag), tie-break by fewer
+    # singleton/short tracks (don't trade gluing for pure churn). Proxy, not
+    # MOTA — detector recall caps the achievable qual, so the gap floors at
+    # whatever recall allows; we pick the config that gets CLOSEST.
+    ranked = sorted(results, key=lambda r: (r["gap"], r["sing_short"]))
+    LOGGER.info("\n=== RANK by |qual - n_gt| (target gap → 0) ===")
     for r in ranked[:8]:
-        LOGGER.info("  %-12s sing+short=%-4d raw=%-4d qual=%-4d %s",
-                    r["name"], r["sing_short"], r["raw"], r["qual"],
-                    r["override"])
+        LOGGER.info("  %-12s gap=%-4d qual=%-4d raw=%-4d sing+short=%-4d %s",
+                    r["name"], r["gap"], r["qual"], r["raw"],
+                    r["sing_short"], r["override"])
     best = ranked[0] if ranked else results[0]
-    LOGGER.info("WINNER: %s %s", best["name"], best["override"])
+    LOGGER.info("WINNER: %s %s (qual=%d vs gt=%d)",
+                best["name"], best["override"], best["qual"], best["gt"])
 
     out = Path(args.json_out)
     out.parent.mkdir(parents=True, exist_ok=True)
