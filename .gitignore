@@ -16,6 +16,12 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The Python `lib/` rule above is a directory-name match, so it ALSO eats
+# the frontend's hand-written source utilities (frontend/src/lib/*.ts:
+# cn / formatBytes / tag helpers / FIELD_GROUPS). Those are tracked source,
+# not a Python build artifact — re-include them (last match wins).
+!frontend/src/lib/
+!frontend/src/lib/**
 parts/
 sdist/
 var/
