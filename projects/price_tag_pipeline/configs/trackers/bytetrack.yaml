@@ -11,9 +11,10 @@
 
 tracker_type: bytetrack
 
-# Start tracks only from confident detections — suppress ghost tracks from
-# blurry mid-pan boxes that become duplicate CSV rows.
-new_track_thresh: 0.6
+# Start tracks only from confident detections. Same data-driven value as the
+# primary botsort.yaml (see its comment): 0.82 un-sticks ID-gluing across a
+# pan without over-fragmenting. THE dominant lever on this detector/data.
+new_track_thresh: 0.82
 
 # Cleaner first-stage association; keep low-score second-stage recovery so a
 # motion-blur dip does not fragment a track.
