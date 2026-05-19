@@ -18,7 +18,15 @@ import json
 import shutil
 from pathlib import Path
 
+import sys
+
 import cv2
+
+# Unicode-safe still-image I/O — cv2.imread/imwrite silently fail (None/False)
+# on non-ASCII paths, and the build machine sits under a Cyrillic Windows
+# username. Resolve the pipeline package the same way the other scripts do.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from price_tag_pipeline.cv_io import imread as cv_imread, imwrite as cv_imwrite  # noqa: E402
 
 MAIN_TREE = Path("E:/Hackatons/lenta_tech_life_2026")
 DEFAULT_SRC = MAIN_TREE / "outputs/shelf_audit"
@@ -27,13 +35,12 @@ DEFAULT_DST = (MAIN_TREE / ".claude/worktrees/shelf-analytics"
 
 
 def _rotate_upright(src: Path, dst: Path) -> bool:
-    img = cv2.imread(str(src))
+    img = cv_imread(str(src))
     if img is None:
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     # Robot cam is 90° CW → rotate CCW to display upright.
-    cv2.imwrite(str(dst), cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE))
-    return True
+    return cv_imwrite(str(dst), cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE))
 
 
 def _copy_video(video_dir: Path, dst_root: Path) -> dict | None:

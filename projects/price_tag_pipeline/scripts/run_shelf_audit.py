@@ -26,6 +26,7 @@ from pathlib import Path
 
 import cv2
 
+from price_tag_pipeline.cv_io import imwrite as cv_imwrite  # Unicode-safe; cv2.imwrite silently fails on non-ASCII output dirs
 from price_tag_pipeline.config import DetectorConfig
 from price_tag_pipeline.detector import build_detector, read_video_fps
 from price_tag_pipeline.shelf_analytics import (
@@ -203,7 +204,7 @@ def audit_video(video: Path, args: argparse.Namespace) -> dict:
         b = best.get(c.product_track_id)
         if b is not None and (fr := frames.get(b[1])) is not None:
             crop = _crop(fr, b[2])
-            if crop is not None and cv2.imwrite(str(cards_dir / f"{c.card_id}.jpg"), crop):
+            if crop is not None and cv_imwrite(str(cards_dir / f"{c.card_id}.jpg"), crop):
                 rel = f"cards/{c.card_id}.jpg"
         cards.append(dataclasses.replace(c, best_crop=rel))
     card_by_id = {c.card_id: c for c in cards}
@@ -217,7 +218,7 @@ def audit_video(video: Path, args: argparse.Namespace) -> dict:
         aid = f"oos_{video.stem}_{u.track_id:04d}"
         rel = None
         if (fr := frames.get(fi)) is not None and (cp := _crop(fr, bbox)) is not None:
-            if cv2.imwrite(str(crops_dir / f"{aid}.jpg"), cp):
+            if cv_imwrite(str(crops_dir / f"{aid}.jpg"), cp):
                 rel = f"crops/{aid}.jpg"
         alerts.append(ShelfAlert(
             id=aid, type=AlertType.OUT_OF_STOCK, severity="high",

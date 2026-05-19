@@ -26,6 +26,7 @@ from pathlib import Path
 import cv2
 
 from price_tag_pipeline.config import DetectorConfig
+from price_tag_pipeline.cv_io import imwrite as cv_imwrite  # Unicode-safe; cv2.imwrite silently fails on non-ASCII output dirs
 from price_tag_pipeline.detector import build_detector
 from price_tag_pipeline.types import Detection
 
@@ -189,7 +190,7 @@ def main() -> int:
             _draw(frame, prods, (0, 200, 0), "P")
             _draw(frame, tags, (200, 0, 200), "T")
             path = outdir / f"frame_{fi:05d}.jpg"
-            cv2.imwrite(str(path), frame)
+            cv_imwrite(str(path), frame)
             dumped.append(path.name)
 
     summary = {
