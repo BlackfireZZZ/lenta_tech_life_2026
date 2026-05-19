@@ -74,7 +74,7 @@ def main() -> int:
         "--weights", default=None, help="override detector.model_path (e.g. fine-tuned best.pt)"
     )
     p.add_argument(
-        "--rotate", default=None, help="override detector.rotate (ccw|cw|none)"
+        "--rotate", default=None, help="override detector.frame_rotation (ccw|cw|none)"
     )
     p.add_argument("--json-out", default=None)
     args = p.parse_args()
@@ -133,7 +133,7 @@ def main() -> int:
         if args.weights:
             det_cfg = dataclasses.replace(det_cfg, model_path=args.weights)
         if args.rotate:
-            det_cfg = dataclasses.replace(det_cfg, rotate=args.rotate)
+            det_cfg = dataclasses.replace(det_cfg, frame_rotation=args.rotate)
 
         try:
             detector = build_detector(det_cfg)
