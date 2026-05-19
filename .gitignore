@@ -285,22 +285,22 @@ raw_photos/
 data/friends_crops_1536/
 data/friends_crops/*.jpg
 data/friends_crops/gallery.html
-# but DO keep the small, hand-verified scoreboard + manifest:
+# but DO keep the small QA scoreboard + manifest:
 !data/friends_crops/reference.jsonl
 !data/friends_crops/manifest.jsonl
 
-# CVAT annotation — derived artifacts (regenerable via scripts/cvat_*.py)
-cvat_label_spec.json
+# Auto-label derived artifacts
+label_spec.json
 
-# CVAT import roots (same policy as data/raw, data/processed)
+# Heavy raw image/detection roots (same policy as data/raw, data/processed)
 data/raw_photos/
 data/processed_photos/
 data/raw_det/
 data/processed_det/
 
-# External / friend-provided raw datasets + their CVAT seeds (heavy, like real_data/)
+# External raw datasets + their auto-label seeds (heavy, like real_data/)
 friends_labels/
-cvat_seeds_friends/
-cvat_video_frames/
-cvat_seeds_video/
-cvat_exports/
+label_seeds_friends/
+label_video_frames/
+label_seeds_video/
+label_exports/

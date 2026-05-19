@@ -6,8 +6,8 @@ product_name, weight, price-per-unit, promo_flag).
 
 For the documentation map start at [`index.md`](./index.md). The official task
 spec is [`hackathon/task.md`](./hackathon/task.md) and the strategic chat intel
-is [`hackathon/briefing.md`](./hackathon/briefing.md). For our analysis of the
-original scaffold and the rewrite rationale, see [`analysis.md`](./analysis.md).
+is [`hackathon/briefing.md`](./internal/briefing.md). For our analysis of the
+original scaffold and the rewrite rationale, see [`analysis.md`](./internal/analysis.md).
 For the model-selection and training strategy, see [`strategy.md`](./strategy.md).
 
 ## Directory layout

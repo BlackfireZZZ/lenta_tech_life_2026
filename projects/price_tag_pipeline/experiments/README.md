@@ -34,5 +34,5 @@ experiment is reviewable as one small file and reproducible by one command.
   with its own seam — see [`docs/recognition-pipeline.md`](../../../docs/recognition-pipeline.md).
   Detector experiments do not touch it.
 - Full rationale, augmentations that worked, and the camera profile:
-  [`docs/detector-finetuning-report.md`](../../../docs/detector-finetuning-report.md)
-  and [`docs/data/external-detector-training-plan.md`](../../../docs/data/external-detector-training-plan.md).
+  [`docs/detector-finetuning-report.md`](../../../docs/internal/detector-finetuning-report.md)
+  and [`docs/data/external-detector-training-plan.md`](../../../docs/internal/external-detector-training-plan.md).

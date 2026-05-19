@@ -1,6 +1,6 @@
 # Lenta Tech Life Hackathon Runbook
 
-This is the practical runbook for `feature/full-autonomous-demo`.
+This is the practical runbook for the model on `main`.
 
 The target flow is:
 
@@ -18,16 +18,20 @@ robot video
 
 Recommended Python: 3.11 or 3.12.
 
+No global `pip` — use a `uv`-managed `.venv` (project rule):
+
 ```bash
 git clone git@github.com:BlackfireZZZ/lenta_tech_life_2026.git
-cd lenta_tech_life_2026
-git switch feature/full-autonomous-demo
+cd lenta_tech_life_2026          # main is the canonical branch
 
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-pip install -r projects/price_tag_pipeline/requirements/demo.txt
+uv venv --python 3.12 .venv
+UV_HTTP_TIMEOUT=600 uv pip install -p .venv/Scripts/python.exe \
+  -r projects/price_tag_pipeline/requirements/demo.txt
 ```
+
+Then invoke `.venv/Scripts/python.exe` (or activate the venv first). See
+[venv-setup.md](./venv-setup.md) for the full setup and `import cv2`
+troubleshooting.
 
 If `pyzbar` complains about `zbar`, the pipeline still runs with OpenCV QR
 decoding. Install system zbar only when you want stronger 1D barcode decoding.

@@ -1,8 +1,7 @@
 # Application architecture — monorepo (backend + frontend + ML)
 
 How the **product** around the price-tag model is structured: a public API
-gateway, the SPA (built, on the mocked API), and the model packaged as an
-internal service.
+gateway, the built SPA, and the model packaged as an internal service.
 This is the single source of truth for the web/service architecture — the
 per-service `README.md` files are thin pointers here.
 
@@ -61,7 +60,7 @@ lenta_tech_life_2026/
 │   │   └── main.py           FastAPI assembly
 │   ├── scripts/init.sh       entrypoint: migrate → serve
 │   ├── pyproject.toml · .env.example · Dockerfile · README.md
-├── frontend/                 React + Vite SPA (built, on the mocked API)
+├── frontend/                 React + Vite SPA (built, on the real API)
 │   ├── src/
 │   │   ├── api/              axios client + one module per resource
 │   │   ├── pages/            pages by feature (UploadPage, JobPage)

@@ -4,7 +4,7 @@
 
 > **⚠️ Update (2026-05-17). The assumptions in §10 are now resolved** against the
 > official task and the organizers' chat. Read [`hackathon/task.md`](./hackathon/task.md)
-> (formal spec) and [`hackathon/briefing.md`](./hackathon/briefing.md) (metric
+> (formal spec) and [`hackathon/briefing.md`](./internal/briefing.md) (metric
 > deep-dive + strategy) **first** — they override guesses in this document.
 > The biggest deltas: (1) the output schema is **29 CSV columns / 30 fields**
 > (18 tag + 11 QR), not the 9-field schema in §3.2; (2) the metric is *"≥80% of
@@ -387,7 +387,7 @@ For RF-DETR + VLM LoRA: rent **1× A100 80GB** for ~24h. Otherwise local 4070 Ti
 
 The seven original assumptions are no longer open. Source of truth:
 [`hackathon/task.md`](./hackathon/task.md) and
-[`hackathon/briefing.md`](./hackathon/briefing.md). Mapping below; "Δ" = the
+[`hackathon/briefing.md`](./internal/briefing.md). Mapping below; "Δ" = the
 strategic change this forces.
 
 | # | Original assumption | Resolved answer | Δ for this strategy |
@@ -398,7 +398,7 @@ strategic change this forces.
 | 4 | Rent A100 for training | Allowed for **training only**. **Cloud APIs / external online services are banned at inference** (task.md §10). Lightweight + `rknn int8` is explicitly rewarded. | Train heavy (RF-DETR / VLM LoRA) off-box if needed, but the **shipped inference pipeline must run fully local**. Add a lightweight edge profile (YOLO-n/s) for the on-robot scenario the organizers are weighing (briefing §8.2). |
 | 5 | Metric weights fields equally | **Two-stage**: (A) match row→GT by **barcode** (primary key) else `frame_timestamp+bbox` with tolerances; (B) tag "recognized" iff ≥**80%** of *substantive* fields correct. Technical fields (`filename`, `frame_timestamp`, bbox) are **not scored**. | **Barcode recognition is now P0** — it is the matching key, not just a field. Duplicates actively hurt the score → cross-track dedup is critical. Plan QR as **11 separately-counted fields** (worst case). |
 | 6 | Inference is per-video | Confirmed — **one CSV, one row per unique tag**. Submit **one** timestamp per tag (the best-recognition frame); time tolerance covers it. | Matches current pipeline + `export_hack_csv.py`. Keep the top-K-sharpest "best frame" selection (§4.2). |
-| 7 | Pretrained weights allowed | **Yes**, any open-license model deployable locally. Manual labeling allowed for *training* only, never at inference, and must be disclosed in the README. | Proceed with DINOv2/COCO/PaddleOCR-VL pretrained checkpoints. Document every labeled/external dataset in the README (mandatory, task.md §7). |
+| 7 | Pretrained weights allowed | **Yes**, any open-license model deployable locally. Training-time data prep (external datasets, open-source-model auto-labeling, synthetic) is allowed; no cloud/online services at inference; everything must be disclosed in the README. | Proceed with DINOv2/COCO/PaddleOCR-VL pretrained checkpoints. Document every external / auto-labeled / synthetic dataset in the README (mandatory, task.md §7). |
 
 **Net effect on the plan:** the architecture in §1 is still right, but (a) the
 extraction schema must grow to 29 columns incl. `color`/`special_symbols`,
@@ -435,7 +435,7 @@ Once you confirm or override the above:
 > "maturity of approach", "scalability", and "applicability in the business
 > process", and the task's own business framing is *shelf-compliance
 > automation* ([`hackathon/task.md`](./hackathon/task.md) §1,
-> [`hackathon/briefing.md`](./hackathon/briefing.md) §7–8). Do not let this
+> [`hackathon/briefing.md`](./internal/briefing.md) §7–8). Do not let this
 > displace core work.
 
 **Idea.** On top of per-tag recognition, emit a lightweight **shelf-analytics
@@ -448,7 +448,7 @@ business outcome Lenta described (faster shelf audits, digital monitoring).
 frame. Counting visible facings is mostly an aggregation head on top of
 existing detections + the tracker, not a new model. Gap/OOS is a small extra
 detector. The data backing exists — see
-[`data/datasets-research.md`](./data/datasets-research.md): **Locount** §4.4
+[`data/datasets-research.md`](./internal/datasets-research.md): **Locount** §4.4
 (localization + counting), **SKU-110K** §4.1 (dense facing detection),
 **Gap Detection / ROSCH** §4.7/§4.15 (OOS), and the modular MVP architecture
 §6/§8. Honest scoping (from that research): a single RGB pass gives

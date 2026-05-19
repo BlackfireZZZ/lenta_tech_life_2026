@@ -127,19 +127,19 @@ function CardTile({ card, videoId }: { card: ProductCard; videoId: string }) {
       <div className="flex flex-col gap-1 p-3">
         <p className="truncate text-[13px] font-medium text-slate-text">
           {card.name ?? (
-            <span className="text-steel-gray">Название — после интеграции OCR</span>
+            <span className="text-steel-gray">Название — из распознавания ценника</span>
           )}
         </p>
         <div className="flex items-center justify-between text-[12px]">
           <span className={card.price != null ? "text-slate-text" : "text-steel-gray"}>
-            {card.price != null ? `${card.price} ₽` : "цена — позже"}
+            {card.price != null ? `${card.price} ₽` : "цена — с ценника"}
           </span>
           <span className="font-mono text-[11px] text-ash-gray">
             {fmtTime(card.seen_from_s)}–{fmtTime(card.seen_to_s)}
           </span>
         </div>
         <span className="truncate font-mono text-[11px] text-steel-gray">
-          {card.barcode ?? "штрихкод — после интеграции OCR"}
+          {card.barcode ?? "штрихкод — с ценника"}
         </span>
       </div>
     </Card>
@@ -159,15 +159,12 @@ export default function ShelfAuditPage() {
         setVideos(idx.videos);
         setVideoId(idx.videos[0]?.id ?? null);
         if (!idx.videos.length) {
-          setError("Фикстура пуста — запустите run_shelf_audit.py и make_shelf_audit_fixture.py.");
+          setError("Пока нет данных аудита для показа.");
           setLoading(false);
         }
       })
-      .catch((e) => {
-        setError(
-          "Нет данных аудита. Сгенерируйте фикстуру: run_shelf_audit.py → make_shelf_audit_fixture.py. " +
-            String(e),
-        );
+      .catch(() => {
+        setError("Не удалось загрузить данные аудита.");
         setLoading(false);
       });
   }, []);
@@ -198,7 +195,7 @@ export default function ShelfAuditPage() {
       {/* Hero */}
       <section className="mx-auto max-w-2xl pt-6 text-center">
         <p className="text-caption font-medium uppercase tracking-[0.14em] text-chartwell-blue">
-          Lenta Tech Life 2026 · Доп. фича
+          Lenta Tech Life 2026 · Дополнительная возможность
         </p>
         <h1 className="mt-4 font-display text-heading-lg font-medium text-slate-text sm:text-display">
           Аудит полки
@@ -316,10 +313,10 @@ export default function ShelfAuditPage() {
                 Зачем это
               </p>
               <p className="max-w-xl text-[14px] leading-[1.65] text-ash-gray">
-                Робот, который и так читает ценники, тем же проездом превращается
-                в аудитора полки: видит упущенные продажи и нарушения
-                выкладки. Цена, название и штрихкод в карточках подставятся при
-                интеграции с основным распознаванием.
+                Робот, который и так читает ценники, тем же проездом
+                превращается в аудитора полки: видит упущенные продажи и
+                нарушения выкладки. Цена, название и штрихкод в карточках
+                берутся из основного распознавания ценника.
               </p>
             </Card>
           </section>

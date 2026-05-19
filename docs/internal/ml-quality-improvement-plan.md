@@ -13,8 +13,8 @@ when another stage looks strong in isolation.
 
 This document is the execution plan. It combines the current local findings,
 the stage-by-stage critique, and the external/synthetic dataset strategy from
-[`data/datasets.md`](./data/datasets.md) and
-[`data/datasets-research.md`](./data/datasets-research.md).
+[`data/datasets.md`](../data/datasets.md) and
+[`data/datasets-research.md`](./datasets-research.md).
 
 ## 1. Current state
 
@@ -127,7 +127,7 @@ Use:
 - objective: **high recall first**, then reduce false positives.
 
 Commands are maintained in
-[`runbooks/colab-private.md`](./runbooks/colab-private.md).
+[`runbooks/colab-private.md`](./colab-private.md).
 
 Do not train product/package classes into the detector that feeds OCR. Product
 detection can be a separate future model, but the graded OCR pipeline needs
@@ -291,7 +291,7 @@ full crop
 ```
 
 These zones can begin as simple proportional crops. Later they can become
-template-aware using [`hackathon/price-tag-guide.md`](./hackathon/price-tag-guide.md).
+template-aware using [`hackathon/price-tag-guide.md`](../hackathon/price-tag-guide.md).
 
 ### P0.9 Build price OCR ensemble
 
@@ -455,7 +455,7 @@ Policy:
 
 Priority: good for extra detector positives after label QA.
 
-Examples listed in [`data/datasets.md`](./data/datasets.md):
+Examples listed in [`data/datasets.md`](../data/datasets.md):
 
 - CUHK `price-tag-mpq14`;
 - Andra `price-tag`;

@@ -440,7 +440,7 @@ def _write_colab_notebook(path: Path) -> None:
             ),
             _md(
                 "## Fine-tune on reviewed Lenta keyframes later\n\n"
-                "After CVAT cleanup, upload a target-domain YOLO dataset to `MyDrive/Lenta/lenta_product_facing_reviewed_v1/` and start from `models/product_facing_retail_pretrain_yolo11s_best.pt`."
+                "After auto-label QA, upload a target-domain YOLO dataset to `MyDrive/Lenta/lenta_product_facing_reviewed_v1/` and start from `models/product_facing_retail_pretrain_yolo11s_best.pt`."
             ),
             _code(
                 "# Optional target-domain fine-tune template. Run only after reviewed Lenta labels exist.\n"

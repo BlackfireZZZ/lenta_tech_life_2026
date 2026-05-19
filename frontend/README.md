@@ -4,12 +4,14 @@ Upload a shelf video → poll job status → **review** (source video with
 bounding-box overlay, the price-tag crop at its predicted timestamp, the
 recognized fields grouped and labelled) → download the 29-column CSV.
 
-**Status: built (against the mocked gateway).** Tailwind v4 + the project
-design tokens + shadcn-style primitives (`src/components/ui/`), React Router
-with lazy pages, `src/api/` axios seam. Anonymous — no auth. The full target
-architecture (axios auth client, OpenAPI-generated DTOs, layouts) is the
-single source of truth in **[`../docs/architecture.md`](../docs/architecture.md)
-§4** — read it there, don't duplicate it here.
+**Status: built, on the real gateway.** Tailwind v4 + the project design
+tokens + shadcn-style primitives (`src/components/ui/`), React Router with
+lazy pages, `src/api/` axios seam. Anonymous — no auth. In `docker compose`
+it consumes the real backend end to end (upload → live progress → review →
+CSV). The full target architecture (axios auth client, OpenAPI-generated
+DTOs, layouts) is the single source of truth in
+**[`../docs/architecture.md`](../docs/architecture.md) §4** — read it there,
+don't duplicate it here.
 
 ```bash
 cd frontend

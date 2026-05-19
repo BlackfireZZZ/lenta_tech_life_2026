@@ -34,7 +34,7 @@ Clone and switch branch:
 ```bash
 !git clone git@github.com:BlackfireZZZ/lenta_tech_life_2026.git
 %cd lenta_tech_life_2026
-!git switch feature/full-autonomous-demo
+# main is the canonical branch
 ```
 
 If your key has a passphrase, use Colab secrets or `ssh-agent`; for hackathon

@@ -2,7 +2,7 @@
 
 Date: 2026-05-17. Scope: make the **price-tag detector** train on synthetic
 Lenta-style tags plus the external datasets discussed in
-[`datasets.md`](./datasets.md) and [`datasets-research.md`](./datasets-research.md).
+[`datasets.md`](../data/datasets.md) and [`datasets-research.md`](./datasets-research.md).
 
 This document is intentionally practical: what is ready today, what is missing,
 how every dataset should enter the pipeline, and what the training runs should

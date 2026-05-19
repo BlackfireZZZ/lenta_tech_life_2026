@@ -1,10 +1,13 @@
 # External datasets — expanding a 5-video set
 
-The organizer dataset is **5 labeled videos / ~63 annotated frames / ~274 tag
-rows** (see [`layout.md`](./layout.md)). That is far too small to train a detector or an
-OCR head from scratch. This file is the curated shortlist of external data to
-lean on, ordered by expected lift for *our* task (price-tag **detection** +
-**structured field OCR** on Russian retail tags).
+The organizers provide **5 videos with a ground-truth CSV** (~63 frames,
+~274 tag rows — see [`layout.md`](./layout.md)). That is far too small to
+train a detector or an OCR head from scratch. Our quality lever is therefore
+**external open datasets + open-source-model auto-labeling + synthetic
+Lenta-style tags**, then fine-tuning on strong camera-matched augmentations
+— no human-in-the-loop labeling. This file is the curated shortlist of that
+external data, ordered by expected lift for *our* task (price-tag
+**detection** + **structured field OCR** on Russian retail tags).
 
 > Nothing here is auto-downloaded. `scripts/fetch_external_datasets.py` prints
 > the plan and only fetches a target you explicitly pass `--download`, with
@@ -14,7 +17,7 @@ lean on, ordered by expected lift for *our* task (price-tag **detection** +
 > for the robot-shelf domain — products, SKU, price tags, facings/counting,
 > OOS, planogram — plus a recommended modular architecture and a web-found
 > extensions appendix incl. **RusTitW**, **BarBeR**, Cyrillic-OCR synthetics)
-> is in [`datasets-research.md`](./datasets-research.md). Read that for the
+> is in [`datasets-research.md`](../internal/datasets-research.md). Read that for the
 > *why* and for the **killer-feature** (facings/OOS) dataset backing; this
 > file is the actionable shortlist for the core task.
 
@@ -80,7 +83,7 @@ python projects/price_tag_pipeline/scripts/prepare_external_datasets.py build-av
 ```
 
 Current processed-output notes are in
-[`external-dataset-processing-report.md`](./external-dataset-processing-report.md).
+[`external-dataset-processing-report.md`](../internal/external-dataset-processing-report.md).
 
 Sources: [SKU-110K](https://github.com/eg4000/SKU110K_CVPR19),
 [Ultralytics SKU-110K](https://docs.ultralytics.com/datasets/detect/sku-110k/),

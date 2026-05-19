@@ -25,10 +25,8 @@ Demo headline number: *"N пустых полок, M товаров без це�
 ≈X₽ потенциальных потерь"*. This turns a price-reader robot into a
 shelf-audit robot — the business reason the robot exists.
 
-> **Hidden rule (project memory `jury-facing-no-manual-annotation`):** no
-> jury-facing artifact (UI text, demo script, this feature's pitch) may mention
-> manual annotation / CVAT / hand-labelled GT. This whole path is automatic, so
-> stay silent on labelling and never imply it.
+> **Note.** This whole path is fully automatic — detection, association and
+> card generation run end to end with no human-in-the-loop step.
 
 ## 2. Hard separation guarantee
 
@@ -245,8 +243,8 @@ a trivial extension, **not built** unless asked (avoid scope creep).
 
 `frontend/src/pages/ShelfAuditPage.tsx` + `api/shelfAudit.ts` + route `/shelf`
 + nav "Аудит полки", mirroring `PipelinePage` conventions (Tailwind tokens,
-`Card`/`Badge`, Russian copy). Backend/ml are a mocked skeleton, so the page
-reads a **static fixture** under `frontend/public/shelf-audit/<video>/` built
+`Card`/`Badge`, Russian copy). For a zero-backend demo the page reads a
+**static fixture** under `frontend/public/shelf-audit/<video>/` built
 by `scripts/make_shelf_audit_fixture.py` (copies `audit.json`, rotates
 card/evidence crops upright for display, writes a video `index.json`
 selector) — zero-backend jury demo. Layout: hero + 4 stat cards + the

@@ -1,52 +1,176 @@
-# lenta_tech_life_2026
+# Lenta Tech Life 2026 — распознавание ценников
 
-End-to-end price-tag recognition for the **Lenta Tech Life 2026** hackathon:
-a robot drives along Russian supermarket shelves; from its video we detect
-price tags and extract structured fields per tag, emitting one CSV row per
-unique tag behind an upload-video → download-CSV UI.
+Робот едет вдоль полок российского супермаркета и снимает видео. По этому
+видео система **находит каждый ценник, считывает его поля и собирает
+итоговую таблицу** — одна строка на один уникальный ценник. Всё это
+обёрнуто в веб-приложение: загрузил видео → дождался обработки → скачал
+CSV.
 
-## Documentation
+Проект **полностью рабочий и локальный**: ни одного облачного API на этапе
+распознавания (это требование правил конкурса).
 
-All knowledge lives in **[`docs/`](./docs/index.md)** — start at
-**[`docs/index.md`](./docs/index.md)**. AI agents: see
-[`AGENTS.md`](./AGENTS.md).
+---
 
-| | |
-|---|---|
-| Official task, CSV schema, metric | [docs/hackathon/task.md](./docs/hackathon/task.md) |
-| Organizer-chat intel & gotchas | [docs/hackathon/briefing.md](./docs/hackathon/briefing.md) |
-| App/service architecture (backend·frontend·ML) | [docs/architecture.md](./docs/architecture.md) |
-| Model & pipeline strategy | [docs/strategy.md](./docs/strategy.md) |
-| CLI / profiles / backends / output | [docs/pipeline-reference.md](./docs/pipeline-reference.md) |
-| Runbooks (local + Colab) | [docs/runbooks/](./docs/runbooks/local.md) |
-| Data layout & external datasets | [docs/data/layout.md](./docs/data/layout.md) · [docs/data/datasets.md](./docs/data/datasets.md) |
-| Branch map | [docs/branches.md](./docs/branches.md) |
-| Pre-rewrite analysis (historical) | [docs/analysis.md](./docs/analysis.md) |
+## Что внутри
 
-## Layout
+Это монорепозиторий из двух частей:
 
-Monorepo: the **model** (training/experiments/research) lives in
-`projects/price_tag_pipeline/`; the **product** around it is
-`backend/` (API gateway) · `frontend/` (SPA) · `ml/` (deployable service
-wrapping the pipeline) + `docker-compose.yaml`. `backend`/`ml` are a
-**reviewable skeleton** (structure + contracts in place, real logic not
-written yet); the `frontend` is the **built** upload→review→CSV SPA wired
-against that mock. See [`docs/architecture.md`](./docs/architecture.md).
+- **Модель** — `projects/price_tag_pipeline/`: детектор ценников →
+  выравнивание кадра → считывание кодов и OCR → разбор полей →
+  агрегация и склейка дубликатов. Здесь же обучение, эксперименты и тесты.
+- **Продукт вокруг модели** — три сервиса, поднимаются одной командой:
+  - `frontend/` — веб-приложение (React + Vite): загрузка видео, живой
+    прогресс, просмотр результата, скачивание таблицы;
+  - `backend/` — API-шлюз (FastAPI + Postgres + Redis): принимает видео,
+    ставит задачу, отдаёт статус и итоговый CSV;
+  - `ml/` — сервис, который запускает реальный GPU-пайплайн (CUDA +
+    нейросеть Qwen3-VL).
 
-## Quick start
+Связующий контракт между всеми тремя — итоговый **CSV из 29 столбцов**.
+Подробно об архитектуре: [`docs/architecture.md`](./docs/architecture.md).
+
+---
+
+## Быстрый старт
+
+Есть два сценария. Для демонстрации жюри нужен **сценарий A**.
+
+### A. Весь продукт одной командой (рекомендуется)
+
+Поднимает `frontend + backend + ml + Postgres + Redis`.
+
+**Требования:**
+
+- Docker Desktop с бэкендом **WSL2** (не Hyper-V).
+- NVIDIA GPU + свежий драйвер. Больше ничего ставить не нужно — Docker
+  Desktop сам пробрасывает GPU через WSL2 (NVIDIA Container Toolkit на
+  Windows не требуется). Проверено на RTX 4070 Ti; модели Qwen3-VL-4B
+  нужно ~8.5 ГБ видеопамяти.
+- *(Опционально, но желательно)* мастер-каталог Ленты для сверки
+  штрихкодов и названий — положить файл в `real_data/db_hack.csv`. Если
+  файла нет, шаг сверки просто пропускается, итоговая таблица всё равно
+  собирается.
+
+**Запуск:**
 
 ```bash
-# Model — tests need no data, model, or GPU (use a uv-managed .venv).
-pip install -r projects/price_tag_pipeline/requirements.txt
-pytest projects/price_tag_pipeline/tests -v
-
-# Whole product skeleton (mocked: no GPU/DB needed).
 docker compose up --build
-# frontend :5173 · backend :8000 (/docs) · ml :8002
 ```
 
-Model setup, training, inference, CSV export:
-[`docs/pipeline-reference.md`](./docs/pipeline-reference.md) and the
-[runbooks](./docs/runbooks/local.md). Service architecture & build order:
-[`docs/architecture.md`](./docs/architecture.md). `main` is the canonical
-branch.
+Первая сборка долгая (образ `ml` — это CUDA + torch + transformers,
+~10 ГБ; собирается один раз и кэшируется). Веса моделей **в образ не
+зашиты**: при первом реальном запуске они один раз скачиваются в
+постоянный том `hf_cache` (~8 ГБ) и переиспользуются дальше.
+
+**Проверка, что всё поднялось:**
+
+```bash
+curl http://localhost:8002/health        # {"status":"ok","mode":"real"}
+curl http://localhost:8000/api/v1/health
+```
+
+`"mode":"real"` означает, что GPU-пайплайн загрузился. `"mode":"mock"` —
+не загрузилась тяжёлая зависимость, смотрите `docker compose logs ml`.
+
+| Сервис   | Адрес                                   |
+|----------|-----------------------------------------|
+| Веб-приложение | http://localhost:5173             |
+| API + Swagger  | http://localhost:8000 (`/docs`)   |
+| ML-сервис      | http://localhost:8002 (`/health`) |
+
+Дальше откройте **http://localhost:5173**, загрузите видео полки и
+дождитесь результата (на реальном ролике обработка идёт минутами —
+прогресс виден на экране), затем скачайте CSV.
+
+То же самое через API:
+
+```bash
+# 1. загрузить ролик
+curl -sF "video=@/путь/к/clip.mp4" http://localhost:8000/api/v1/jobs
+#    -> {"id":"<job>","status":"queued"}
+# 2. опрашивать статус, пока не "succeeded"
+curl -s http://localhost:8000/api/v1/jobs/<job>
+# 3. скачать итоговую таблицу из 29 столбцов
+curl -s http://localhost:8000/api/v1/jobs/<job>/result.csv -o result.csv
+```
+
+**Без GPU (быстрый старт интерфейса).** Выставьте `ML_MOCK=1` у сервиса
+`ml` в `docker-compose.yaml` — сервис поднимется без моделей и вернёт
+детерминированный тестовый CSV; контракт тот же. Полное руководство и
+диагностика: [`docs/runbooks/docker-compose.md`](./docs/runbooks/docker-compose.md).
+
+### B. Только модель и тесты, локально (без Docker, без GPU)
+
+Тесты модели не требуют ни данных, ни весов, ни GPU. Глобальный `pip`
+**не используется** — окружение ставится через `uv` в локальный `.venv`
+(Python 3.12).
+
+```bash
+# 1. создать окружение для этой рабочей копии
+uv venv --python 3.12 .venv
+
+# 2. поставить зависимости пайплайна
+UV_HTTP_TIMEOUT=600 uv pip install -p .venv/Scripts/python.exe \
+  -r projects/price_tag_pipeline/requirements/base.txt
+
+# 3. прогнать тесты
+.venv/Scripts/python.exe -m pytest projects/price_tag_pipeline/tests -v
+```
+
+`requirements/{ocr,train,dev,demo}.txt` доустанавливаются поверх по мере
+надобности; umbrella-файл `requirements/../requirements.txt` ставит всё
+сразу. Подробнее (и что делать, если `import cv2` падает):
+[`docs/runbooks/venv-setup.md`](./docs/runbooks/venv-setup.md).
+
+---
+
+## Структура репозитория
+
+```
+backend/        API-шлюз (FastAPI + Postgres + Redis) — единственный публичный сервис
+frontend/       веб-приложение (React + Vite + TypeScript)
+ml/             сервис-обёртка над пайплайном (CUDA + Qwen3-VL)
+projects/price_tag_pipeline/   САМА МОДЕЛЬ: пайплайн, обучение, эксперименты, тесты
+docs/           база знаний (начать с docs/index.md)
+docs/internal/  рабочие заметки команды (не продуктовая документация)
+data/           датасеты / чекпойнты (в основном в .gitignore)
+docker-compose.yaml   весь продукт одной командой
+Dockerfile      отдельный CUDA-образ для обучения (в compose не участвует)
+```
+
+---
+
+## Данные и их раскрытие
+
+Размеченный набор от организаторов небольшой (5 видео с официальной
+таблицей-эталоном, ~274 строки ценников). Основной рычаг качества —
+**внешние открытые датасеты + авторазметка open-source моделями**, после
+чего модель дообучается на **сильных аугментациях, подогнанных под
+конкретную камеру робота** (смаз/расфокус/шум/дисторсия объектива),
+плюс отбор сложных негативных примеров. Разметки «руками» в пайплайне
+нет.
+
+Все внешние / авторазмеченные / синтетические датасеты перечислены в
+[`docs/data/datasets.md`](./docs/data/datasets.md) — это обязательное
+требование к оценке. Стратегия модели целиком:
+[`docs/strategy.md`](./docs/strategy.md).
+
+---
+
+## Документация
+
+Вся база знаний — в [`docs/`](./docs/index.md); начните с
+[`docs/index.md`](./docs/index.md).
+
+| Тема | Документ |
+|---|---|
+| Официальная задача, схема CSV, метрика | [docs/hackathon/task.md](./docs/hackathon/task.md) |
+| Где какое поле на ценнике (для OCR) | [docs/hackathon/price-tag-guide.md](./docs/hackathon/price-tag-guide.md) |
+| Архитектура продукта (backend·frontend·ML) | [docs/architecture.md](./docs/architecture.md) |
+| Стратегия модели и пайплайна | [docs/strategy.md](./docs/strategy.md) |
+| Запуск инференса / CLI / профили / вывод | [docs/pipeline-reference.md](./docs/pipeline-reference.md) |
+| Полный подъём продукта (docker compose) | [docs/runbooks/docker-compose.md](./docs/runbooks/docker-compose.md) |
+| Рабочие заметки команды | [docs/internal/](./docs/internal/README.md) |
+
+Для ИИ-агентов (Claude Code и др.): [`AGENTS.md`](./AGENTS.md). `main` —
+основная ветка.
