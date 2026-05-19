@@ -27,6 +27,7 @@ changes (architecture.md §5.3/§8).
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Protocol
 from uuid import UUID
@@ -203,6 +204,19 @@ async def _process_job(job_id: UUID) -> None:
         job.rows = resp.rows
         job.result_csv = resp.csv
         job.predictions_json = preds.model_dump_json()
+        # NON-graded detector trace (additive; older ML services send none).
+        # Guarded: a serialization hiccup must never fail an otherwise-good
+        # job — the graded CSV + best-frame review stand on their own.
+        if resp.detections is not None:
+            try:
+                job.detections_json = json.dumps(
+                    resp.detections, ensure_ascii=False, separators=(",", ":")
+                )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "job=%s detector trace dropped (bad JSON): %s",
+                    job_id, exc,
+                )
     logger.info("job=%s succeeded rows=%s", job_id, resp.rows)
 
 

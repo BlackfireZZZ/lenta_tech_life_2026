@@ -85,6 +85,8 @@ async def init_models() -> None:
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phase VARCHAR(16)",
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
             "mode VARCHAR(8) NOT NULL DEFAULT 'full'",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
+            "detections_json TEXT",
         ):
             await conn.execute(text(ddl))
     logger.info("DB schema ready (create_all + additive DDL on %s)", settings.DB_HOST)

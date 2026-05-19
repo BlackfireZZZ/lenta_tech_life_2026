@@ -13,10 +13,14 @@ import {
   ChevronRight,
   Crop,
   Download,
+  Image as ImageIcon,
   Pause,
   Play,
+  ScanLine,
 } from "lucide-react";
 import {
+  type DetectorBox,
+  type DetectorTrace,
   jobsApi,
   type Job,
   type JobPredictions,
@@ -47,6 +51,22 @@ const POLL_MS = 1200;
 // Tags whose best-frame timestamps fall within this window are treated as
 // "the same frame" (so a busy shelf moment is one group of many boxes).
 const FRAME_BUCKET_MS = 200;
+
+// Two honest review modes (a segmented switch by the video):
+//  - "frame"    — the existing inspector: one best frame per ценник.
+//  - "detector" — play the clip with the raw per-frame detector output
+//    (every box above its confidence threshold) drawn live, to judge the
+//    detector on its own. Its data is a separate non-graded trace fetched
+//    from the backend; the graded CSV is never derived from it.
+type ViewMode = "frame" | "detector";
+type TraceState = "idle" | "loading" | "ready" | "error";
+
+// In the detector view a trace frame is matched to the playhead by nearest
+// timestamp. Frames with no detection are omitted from the trace, so "no
+// frame within tolerance" honestly means the detector found nothing there —
+// we then draw nothing (never a stale box). Widened for a strided long-clip
+// trace from the real per-frame gap.
+const DET_BASE_TOLERANCE_MS = 500;
 
 // Shown big in the hero strip — everything else folds into the detail
 // groups, so the panel is never one endless column (the rest of the
@@ -220,6 +240,32 @@ function Reviewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [goTag, pos]);
 
+  // View mode + the detector trace. The trace can be sizeable, so it is
+  // fetched lazily — only the first time the user opens the detector view —
+  // and never re-fetched (it is immutable for a finished job). A 409 / any
+  // error just disables the detector view; the best-frame inspector and the
+  // graded CSV are wholly independent and unaffected.
+  const [mode, setMode] = useState<ViewMode>("frame");
+  const [trace, setTrace] = useState<DetectorTrace | null>(null);
+  const [traceState, setTraceState] = useState<TraceState>("idle");
+
+  useEffect(() => {
+    if (mode !== "detector" || trace || traceState !== "idle") return;
+    let alive = true;
+    setTraceState("loading");
+    jobsApi
+      .getDetections(id)
+      .then((t) => {
+        if (!alive) return;
+        setTrace(t);
+        setTraceState("ready");
+      })
+      .catch(() => alive && setTraceState("error"));
+    return () => {
+      alive = false;
+    };
+  }, [mode, trace, traceState, id]);
+
   return (
     <Card feature className="overflow-hidden">
       {/* Header — product name + which ценник of how many. No internal
@@ -258,7 +304,9 @@ function Reviewer({
         </div>
       </div>
 
-      <div className="grid items-start gap-6 p-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+      <ViewModeBar mode={mode} onMode={setMode} sampled={trace?.sampled} />
+
+      <div className="grid items-start gap-6 px-6 pb-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <VideoStage
           id={id}
           pred={pred}
@@ -266,11 +314,86 @@ function Reviewer({
           mates={mates}
           frameKey={frameKey}
           onSelect={onSelect}
+          mode={mode}
+          trace={trace}
+          traceState={traceState}
         />
         <DataPanel tag={tag} mates={mates} boxPos={boxPos} onSelect={onSelect} />
       </div>
     </Card>
   );
+}
+
+// --- The two-mode switch (DESIGN.md: subtle ash-tinted segmented control,
+// pill radius; the active segment lifts to Cloud White; Chartwell Blue only
+// on the active label/icon). Sits on its own row under the header so it
+// reads as "how you look at this", not a tag control. ----------------------
+
+function ViewModeBar({
+  mode,
+  onMode,
+  sampled,
+}: {
+  mode: ViewMode;
+  onMode: (m: ViewMode) => void;
+  sampled?: boolean;
+}) {
+  const C = JOB_PAGE_COPY.viewMode;
+  const items: { key: ViewMode; label: string; icon: typeof ImageIcon }[] = [
+    { key: "frame", label: C.bestFrame, icon: ImageIcon },
+    { key: "detector", label: C.detector, icon: ScanLine },
+  ];
+  return (
+    <div className="flex flex-col gap-2 px-6 pt-6 pb-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span className="text-caption uppercase tracking-[0.12em] text-steel-gray">
+          {C.label}
+        </span>
+        <div
+          role="tablist"
+          aria-label={C.label}
+          className="inline-flex gap-1 rounded-pill border border-stone-border bg-ash-gray/10 p-1"
+        >
+          {items.map(({ key, label, icon: Icon }) => {
+            const active = mode === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => onMode(key)}
+                className={cn(
+                  "inline-flex cursor-pointer items-center gap-1.5 rounded-pill px-3 py-1.5 text-[13px] font-medium transition-colors",
+                  active
+                    ? "bg-cloud-white text-chartwell-blue shadow-subtle"
+                    : "text-ash-gray hover:text-slate-text",
+                )}
+              >
+                <Icon className="size-3.5" />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <p className="text-caption text-steel-gray">
+        {mode === "detector" ? C.detectorHint : C.bestFrameHint}
+        {mode === "detector" && sampled ? ` · ${C.sampledNote}` : ""}
+      </p>
+    </div>
+  );
+}
+
+// RU plural for the live "N рамок" pill (1 рамка / 2–4 рамки / 5+ рамок).
+function boxesWord(n: number): string {
+  const C = JOB_PAGE_COPY.viewMode;
+  const m100 = n % 100;
+  const m10 = n % 10;
+  if (m100 >= 11 && m100 <= 14) return C.boxesMany;
+  if (m10 === 1) return C.boxesOne;
+  if (m10 >= 2 && m10 <= 4) return C.boxesFew;
+  return C.boxesMany;
 }
 
 // --- Video + its timeline (the only time-navigation control) --------------
@@ -282,6 +405,9 @@ function VideoStage({
   mates,
   frameKey,
   onSelect,
+  mode,
+  trace,
+  traceState,
 }: {
   id: string;
   pred: JobPredictions;
@@ -289,6 +415,9 @@ function VideoStage({
   mates: TagPrediction[];
   frameKey: (t: TagPrediction) => number;
   onSelect: (index: number) => void;
+  mode: ViewMode;
+  trace: DetectorTrace | null;
+  traceState: TraceState;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -352,7 +481,11 @@ function VideoStage({
 
   // Park the clip on the selected tag's frame (an explicit pick always
   // pauses + seeks, so the frame and the data panel stay in lock-step).
+  // Best-frame mode only: in the detector view the clip is meant to play
+  // freely, so selecting a tag must never yank playback. Switching back to
+  // "frame" re-parks (mode is in the deps), restoring the inspector exactly.
   useEffect(() => {
+    if (mode !== "frame") return;
     const v = videoRef.current;
     if (!v || !ready) return;
     v.pause();
@@ -361,7 +494,7 @@ function VideoStage({
       Number.isFinite(dur) && dur > 0 ? dur - 0.04 : t,
       Math.max(0, t),
     );
-  }, [tag, ready, dur, timeOf]);
+  }, [tag, ready, dur, timeOf, mode]);
 
   // The frame on screen is the source of truth: after any seek/pause, snap
   // the selection to the tag at that moment — unless we're still on the same
@@ -370,12 +503,14 @@ function VideoStage({
   const syncToFrame = useCallback(() => {
     const v = videoRef.current;
     if (!v || !dur) return;
+    setCur(v.currentTime); // keep the playhead/clock honest in both modes
+    if (mode !== "frame") return; // detector view derives its overlay from cur
     const near = nearestTag(v.currentTime / dur);
     // Only re-select when we've moved to a different frame; staying on the
     // same busy frame keeps whichever of its many boxes the user picked.
     if (frameKey(near) !== frameKey(tag)) onSelect(near.index);
     drawCrop();
-  }, [dur, nearestTag, onSelect, frameKey, tag, drawCrop]);
+  }, [dur, mode, nearestTag, onSelect, frameKey, tag, drawCrop]);
 
   const seekToFrac = useCallback(
     (frac: number) => {
@@ -403,7 +538,69 @@ function VideoStage({
     else v.pause();
   }, []);
 
+  // Detector trace, indexed for a fast nearest-by-time lookup. The match
+  // tolerance widens to the trace's own median frame gap (a strided long
+  // clip has larger gaps) so boxes don't flicker between sampled frames.
+  const detTimes = useMemo(
+    () => (trace ? trace.frames.map((f) => f.t_ms) : []),
+    [trace],
+  );
+  const detTolMs = useMemo(() => {
+    if (!trace || trace.frames.length < 2) return DET_BASE_TOLERANCE_MS;
+    const gaps: number[] = [];
+    for (let i = 1; i < detTimes.length; i++)
+      gaps.push(detTimes[i] - detTimes[i - 1]);
+    gaps.sort((a, b) => a - b);
+    const med = gaps[gaps.length >> 1] || DET_BASE_TOLERANCE_MS;
+    return Math.min(2500, Math.max(DET_BASE_TOLERANCE_MS, Math.round(med * 1.5)));
+  }, [trace, detTimes]);
+
+  // Boxes for the frame nearest the playhead (binary search over the
+  // time-ordered trace). Empty when no frame is within tolerance — that
+  // honestly means the detector found nothing there; we draw nothing.
+  const detBoxes = useMemo<DetectorBox[]>(() => {
+    if (mode !== "detector" || !trace || detTimes.length === 0) return [];
+    const ms = cur * 1000;
+    let lo = 0;
+    let hi = detTimes.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (detTimes[mid] < ms) lo = mid + 1;
+      else hi = mid;
+    }
+    let best = lo;
+    if (lo > 0 && Math.abs(detTimes[lo - 1] - ms) <= Math.abs(detTimes[lo] - ms))
+      best = lo - 1;
+    return Math.abs(detTimes[best] - ms) <= detTolMs
+      ? trace.frames[best].boxes
+      : [];
+  }, [mode, trace, detTimes, detTolMs, cur]);
+
+  // While the detector clip plays, drive the overlay from rAF (throttled to
+  // ~16 fps) — `timeupdate` fires only ~4 Hz, which makes boxes lurch. Off
+  // in best-frame mode (boxes are hidden during playback there anyway).
+  useEffect(() => {
+    if (mode !== "detector" || !playing) return;
+    const v = videoRef.current;
+    if (!v) return;
+    let raf = 0;
+    let last = -1;
+    const tick = () => {
+      const t = v.currentTime;
+      if (Math.abs(t - last) >= 0.05) {
+        last = t;
+        setCur(t);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [mode, playing]);
+
+  // Frame mode keeps the original rule (boxes only on a settled frame).
+  // Detector mode is the opposite: the boxes ARE the point during playback.
   const boxesVisible = ready && !playing && !scrubbing;
+  const detReady = mode === "detector" && ready;
 
   return (
     <div className="flex flex-col gap-3">
@@ -425,7 +622,11 @@ function VideoStage({
           }}
           onLoadedData={drawCrop}
           onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
-          onSeeked={() => {
+          onSeeked={(e) => {
+            // Always advance the playhead so the detector overlay tracks a
+            // seek/scrub too; the frame-mode re-select stays gated in
+            // syncToFrame (and is skipped mid-scrub).
+            setCur(e.currentTarget.currentTime);
             if (!scrubbing) syncToFrame();
           }}
           onPlay={() => setPlaying(true)}
@@ -433,10 +634,12 @@ function VideoStage({
           onClick={togglePlay}
         />
 
-        {/* Boxes for THIS frame only. Active one is focused via a clipped
-            9999px shadow (everything else dims); its mates are thin
-            outlines you can click to switch boxes within the frame. */}
-        {boxesVisible &&
+        {/* FRAME MODE — boxes for THIS frame only. Active one is focused via
+            a clipped 9999px shadow (everything else dims); its mates are
+            thin outlines you can click to switch boxes within the frame.
+            Unchanged from the original inspector. */}
+        {mode === "frame" &&
+          boxesVisible &&
           mates.map((m) => {
             const active = m.index === tag.index;
             return (
@@ -467,9 +670,64 @@ function VideoStage({
             );
           })}
 
-        {playing && (
+        {/* DETECTOR MODE — every above-threshold detector box for the frame
+            at the playhead. Non-interactive (pointer-events-none) so a click
+            still toggles play; this view is for watching, not picking. */}
+        {detReady &&
+          detBoxes.map((b, i) => {
+            const [x1, y1, x2, y2, score] = b;
+            const wide = x2 - x1 >= 0.06 && y2 - y1 >= 0.03;
+            return (
+              <div
+                key={i}
+                className="pointer-events-none absolute rounded-[3px] border border-chartwell-blue bg-chartwell-blue/5"
+                style={{
+                  left: `${x1 * 100}%`,
+                  top: `${y1 * 100}%`,
+                  width: `${(x2 - x1) * 100}%`,
+                  height: `${(y2 - y1) * 100}%`,
+                }}
+              >
+                {wide && (
+                  <span className="absolute -top-[18px] left-0 rounded-[3px] bg-chartwell-blue px-1 text-[10px] font-medium leading-[16px] text-primary-foreground tabular-nums">
+                    {Math.round(score * 100)}%
+                  </span>
+                )}
+              </div>
+            );
+          })}
+
+        {/* FRAME MODE — playback hides the boxes (the original behaviour). */}
+        {mode === "frame" && playing && (
           <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
             {JOB_PAGE_COPY.reviewer.playingOverlay}
+          </div>
+        )}
+
+        {/* DETECTOR MODE — live status pill (count + the honest threshold),
+            or a loading / unavailable note. */}
+        {mode === "detector" && traceState === "loading" && (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center bg-ghost-ink/40">
+            <span className="inline-flex items-center gap-2 rounded-pill bg-ghost-ink/70 px-3 py-1.5 text-[12px] font-medium text-cloud-white">
+              <Spinner className="size-3.5" />
+              {JOB_PAGE_COPY.viewMode.loading}
+            </span>
+          </div>
+        )}
+        {mode === "detector" &&
+          (traceState === "error" ||
+            (traceState === "ready" && trace?.frames.length === 0)) && (
+            <div className="pointer-events-none absolute inset-x-3 top-3 rounded-pill bg-ghost-ink/70 px-3 py-1.5 text-center text-[12px] font-medium text-cloud-white">
+              {JOB_PAGE_COPY.viewMode.unavailable}
+            </div>
+          )}
+        {detReady && traceState === "ready" && (trace?.frames.length ?? 0) > 0 && (
+          <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white tabular-nums">
+            {detBoxes.length > 0
+              ? `${detBoxes.length} ${boxesWord(detBoxes.length)} ${JOB_PAGE_COPY.viewMode.inFrame} · ${JOB_PAGE_COPY.viewMode.threshold} ${trace!.conf_threshold.toFixed(2)}`
+              : playing
+                ? JOB_PAGE_COPY.viewMode.noBoxesHere
+                : JOB_PAGE_COPY.viewMode.play}
           </div>
         )}
         </div>
@@ -525,6 +783,11 @@ function VideoStage({
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelect(t.index);
+                  // Frame mode: selecting parks the clip (gated park effect).
+                  // Detector mode: nothing parks, so jump there explicitly —
+                  // the dot stays a useful "go to this ценник" control
+                  // without interrupting playback.
+                  if (mode === "detector") seekToFrac(t.t_frac);
                 }}
                 className={cn(
                   "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-2 border-cloud-white transition-all",
@@ -550,20 +813,24 @@ function VideoStage({
         {JOB_PAGE_COPY.reviewer.timelineHint}
       </p>
 
-      {/* The cropped tag image. */}
-      <div className="mt-2">
-        <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
-          <Crop className="size-3.5" /> {JOB_PAGE_COPY.reviewer.cropTitle}
-        </p>
-        <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
-          <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
-        </div>
-        {cropFailed && (
-          <p className="mt-2 text-caption text-amber-700">
-            {JOB_PAGE_COPY.reviewer.cropFailed}
+      {/* The cropped tag image — a best-frame artifact. Hidden in the
+          detector view, where the clip sits at an arbitrary play position
+          and a per-tag crop would be misleading. */}
+      {mode === "frame" && (
+        <div className="mt-2">
+          <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
+            <Crop className="size-3.5" /> {JOB_PAGE_COPY.reviewer.cropTitle}
           </p>
-        )}
-      </div>
+          <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
+            <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
+          </div>
+          {cropFailed && (
+            <p className="mt-2 text-caption text-amber-700">
+              {JOB_PAGE_COPY.reviewer.cropFailed}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

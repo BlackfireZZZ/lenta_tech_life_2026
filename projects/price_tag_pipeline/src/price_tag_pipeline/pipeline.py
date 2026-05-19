@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Optional
 
@@ -31,9 +32,16 @@ from .fusion import fuse_crops
 from .progress import Phase, ProgressEvent, ProgressLike, ProgressReporter, as_reporter
 from .recognition import RecognitionChain, build_recognition_chain, parsed_is_empty
 from .rectifier import build_rectifier
-from .types import CropCandidate, FinalTag, TagObservation
+from .types import CropCandidate, Detection, FinalTag, TagObservation
 
 LOGGER = logging.getLogger(__name__)
+
+# Optional per-frame observer: ``(frame_idx, timestamp_s, frame_w, frame_h,
+# detections)``. Default ``None`` (no-op) — the research/CLI path is
+# unchanged and pays nothing. Used by the deployable service to collect a
+# NON-graded detector-trace side-artifact (see frame_trace.py); it never
+# touches ``tags`` / the CSV.
+FrameSink = Callable[[int, float, int, int, Sequence[Detection]], None]
 
 # Progress fraction budget per phase. The per-frame detect loop OCRs only
 # the tracks that *expire mid-video*; every track still alive when the clip
@@ -91,6 +99,7 @@ class PriceTagPipeline:
         video_path: str,
         output_path: Optional[str] = None,
         progress: ProgressLike = None,
+        on_frame: Optional[FrameSink] = None,
     ) -> list[FinalTag]:
         """Run the full pipeline on one video.
 
@@ -99,6 +108,14 @@ class PriceTagPipeline:
         ProgressReporter` or a bare ``callable(ProgressEvent)``. It is the
         single signal the CLI bar, the Gradio UI and the ML-service poll
         endpoint all consume. See docs/pipeline-reference.md "Progress".
+
+        ``on_frame`` is an equally-optional per-frame observer (default
+        ``None`` = no-op): ``(frame_idx, timestamp_s, frame_w, frame_h,
+        detections)`` once per frame that has detections. It exists only so
+        the deployable service can collect a NON-graded detector-trace
+        side-artifact (frame_trace.py). It is read-only w.r.t. the pipeline:
+        the returned ``tags`` / graded CSV are byte-for-byte identical
+        whether or not it is passed.
         """
         reporter = as_reporter(progress)
         resolved_out = self._resolve_output(output_path)
@@ -119,6 +136,7 @@ class PriceTagPipeline:
         try:
             self._run(
                 video_path, frames_total, report_step, finalized, reporter,
+                on_frame,
             )
             deduped = self._finalize(finalized, frames_total, reporter)
             if resolved_out:
@@ -139,10 +157,28 @@ class PriceTagPipeline:
         report_step: int,
         finalized: list[FinalTag],
         reporter: ProgressReporter,
+        on_frame: Optional[FrameSink] = None,
     ) -> None:
         for frame_idx, (frame, detections) in enumerate(
             self.detector.stream_video(video_path, fps_override=self.cfg.runtime.fps_override)
         ):
+            # NON-graded detector-trace tap (default-off). Read-only: it sees
+            # the same detections the graded loop does and cannot alter them.
+            # Its own collector is self-guarding, but guard the call too so a
+            # sink bug can never break the per-frame loop.
+            if on_frame is not None and detections:
+                try:
+                    fh, fw = frame.shape[:2]
+                    on_frame(
+                        frame_idx,
+                        detections[0].timestamp_s,
+                        int(fw),
+                        int(fh),
+                        detections,
+                    )
+                except Exception as exc:  # noqa: BLE001 - never fatal
+                    LOGGER.debug("on_frame sink raised (ignored): %s", exc)
+
             for det in detections:
                 if det.track_id is None:
                     continue

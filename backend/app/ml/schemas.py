@@ -48,3 +48,14 @@ class ProcessResponse(BaseModel):
     csv: str
     rows: int  # number of unique tags / CSV data rows
     meta: dict | None = None  # timings, model versions, etc. — non-graded
+    # Per-frame detector trace — a NON-graded QA side-artifact (additive;
+    # default None keeps older ML services compatible). The graded ``csv``
+    # is never derived from it. Shape (mirrors ml/app/contract.py /
+    # price_tag_pipeline.frame_trace):
+    #   {frame_width, frame_height, conf_threshold, sampled,
+    #    frames: [{t_ms, boxes: [[x1,y1,x2,y2,score], ...]}]}
+    # boxes are normalised [0,1] to the original frame — the SAME convention
+    # as the best-frame bbox, so the SPA overlays them with identical math.
+    # The gateway persists it and serves it at GET /jobs/{id}/detections so
+    # the review screen can replay the clip with the raw detector output.
+    detections: dict | None = None

@@ -35,3 +35,12 @@ class ProcessResponse(BaseModel):
     csv: str  # full 29-column submission text (schema: docs/hackathon/task.md)
     rows: int  # number of unique tags / CSV data rows
     meta: dict | None = None  # timings, model versions — non-graded
+    # Per-frame detector trace — NON-graded QA side-artifact (additive,
+    # default None so older callers are unaffected; the graded `csv` is
+    # never derived from it). Shape (price_tag_pipeline.frame_trace):
+    #   {frame_width, frame_height, conf_threshold, sampled,
+    #    frames: [{t_ms, boxes: [[x1,y1,x2,y2,score], ...]}]}
+    # boxes are normalised [0,1] to the original frame (same convention as
+    # the best-frame bbox). Lets the UI replay the clip with the raw
+    # detector output overlaid. See the backend mirror.
+    detections: dict | None = None

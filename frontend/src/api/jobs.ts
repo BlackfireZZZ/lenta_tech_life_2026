@@ -71,6 +71,34 @@ export interface JobPredictions {
   tags: TagPrediction[];
 }
 
+/**
+ * One raw detector box: `[x1, y1, x2, y2, score]`. The four coords are
+ * normalized [0,1] to the original frame (the SAME convention as
+ * `TagPrediction.bbox`, so the overlay math is identical); `score` is the
+ * detector confidence (always ≥ `DetectorTrace.conf_threshold`).
+ */
+export type DetectorBox = [number, number, number, number, number];
+
+export interface DetectorFrame {
+  t_ms: number; // frame time in ms (exact wall-clock on the real ML path)
+  boxes: DetectorBox[];
+}
+
+/**
+ * Per-frame detector trace — the NON-graded QA artifact behind the
+ * "detector markup" view. Lets the reviewer watch the clip with every
+ * above-threshold detector box drawn per frame, judging the detector on its
+ * own (vs the final one-row-per-tag CSV result). `frames` is time-ordered;
+ * a frame with no detection is simply absent (no box is shown there).
+ */
+export interface DetectorTrace {
+  frame_width: number;
+  frame_height: number;
+  conf_threshold: number; // every box is at/above this detector confidence
+  sampled: boolean; // long clips are uniformly strided to bound the payload
+  frames: DetectorFrame[];
+}
+
 export const ABSENT = "нет"; // field not present on the tag (task.md §3.3)
 
 export const jobsApi = {
@@ -99,6 +127,11 @@ export const jobsApi = {
 
   getPredictions: async (id: string): Promise<JobPredictions> =>
     (await apiClient.get<JobPredictions>(`/api/v1/jobs/${id}/predictions`)).data,
+
+  // The per-frame detector trace (non-graded). 409 → no trace for this job
+  // (older job / ML sent none); the caller falls back to best-frame only.
+  getDetections: async (id: string): Promise<DetectorTrace> =>
+    (await apiClient.get<DetectorTrace>(`/api/v1/jobs/${id}/detections`)).data,
 
   videoUrl: (id: string): string => apiUrl(`/api/v1/jobs/${id}/video`),
   csvUrl: (id: string): string => apiUrl(`/api/v1/jobs/${id}/result.csv`),

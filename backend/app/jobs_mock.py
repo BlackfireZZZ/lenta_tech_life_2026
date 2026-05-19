@@ -251,6 +251,50 @@ def build_predictions(
     )
 
 
+def build_detections(tags: list[TagPrediction]) -> dict:
+    """A deterministic mock detector trace (the non-graded QA artifact).
+
+    Same shape as ``price_tag_pipeline.frame_trace`` so the review screen's
+    detector view works end-to-end without the GPU. Each tag's box is shown
+    on a short run of dense frames around its moment (a tag drifting through
+    a slightly jittered detector box), so playing the clip shows boxes
+    appearing/disappearing like a real per-frame detector pass.
+
+    NOTE: in MOCK_MODE the uploaded clip's real duration is unknown, so
+    ``t_ms`` uses the same nominal scale as the mock ``frame_timestamp``.
+    The SPA maps a trace frame by nearest ``t_ms`` within a tolerance, so a
+    mock that is slightly off-scale still demos cleanly; on the real ML
+    path ``t_ms`` is exact wall-clock and the mapping is precise.
+    """
+    step_ms = 150
+    span_ms = 800  # each tag's box is present for ~±0.8 s around its moment
+    by_ms: dict[int, list[list[float]]] = {}
+    for t in tags:
+        c = t.frame_timestamp
+        # Deterministic per-tag jitter so the box "lives" instead of being
+        # pixel-frozen (keeps the mock honest to a real detector's wobble).
+        for k, ms in enumerate(range(c - span_ms, c + span_ms + 1, step_ms)):
+            if ms < 0:
+                continue
+            j = ((t.index * 7 + k * 3) % 7 - 3) * 0.002  # ±0.006
+            x1 = round(min(0.97, max(0.0, t.bbox.x1 + j)), 4)
+            y1 = round(min(0.97, max(0.0, t.bbox.y1 + j)), 4)
+            x2 = round(min(1.0, max(x1 + 0.01, t.bbox.x2 + j)), 4)
+            y2 = round(min(1.0, max(y1 + 0.01, t.bbox.y2 + j)), 4)
+            score = round(0.62 + ((t.index * 5 + k) % 33) / 100.0, 3)
+            by_ms.setdefault(ms, []).append([x1, y1, x2, y2, score])
+    frames = [
+        {"t_ms": ms, "boxes": by_ms[ms]} for ms in sorted(by_ms)
+    ]
+    return {
+        "frame_width": FRAME_WIDTH,
+        "frame_height": FRAME_HEIGHT,
+        "conf_threshold": 0.25,
+        "sampled": False,
+        "frames": frames,
+    }
+
+
 def build_csv(tags: list[TagPrediction]) -> str:
     """The graded 29-column CSV (task.md §3): comma separator, ``.`` decimal,
     UTF-8, minimal quoting (a field with a comma/quote is wrapped in ``"`` and

@@ -330,6 +330,8 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
                                meta={"mock": True, "job_id": req.job_id})
 
     from price_tag_pipeline.config import load_config
+    from price_tag_pipeline.detector import read_video_frame_count
+    from price_tag_pipeline.frame_trace import FrameTraceCollector
     from price_tag_pipeline.pipeline import PriceTagPipeline
     from price_tag_pipeline.progress import ProgressEvent
     from price_tag_pipeline.submission import final_tags_to_csv
@@ -393,7 +395,37 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
         mode, cfg.ocr.top_k_crops_per_track,
     )
 
-    tags = PriceTagPipeline(cfg).run(req.video_path, progress=_on_progress)
+    # NON-graded detector-trace tap. Fully guarded: building it, the
+    # frame-count probe and the collector itself can each fail without
+    # touching the graded run — on any failure `detections` stays None and
+    # the UI simply offers only the best-frame view. The graded `tags`/CSV
+    # are byte-for-byte identical whether or not this is collected.
+    trace: FrameTraceCollector | None = None
+    try:
+        n_frames = read_video_frame_count(req.video_path)
+        trace = FrameTraceCollector(
+            conf_threshold=float(cfg.detector.conf),
+            frames_total=n_frames,
+        )
+    except Exception as exc:  # noqa: BLE001 - never fatal
+        LOGGER.warning("frame-trace disabled (setup failed): %s", exc)
+        trace = None
+
+    tags = PriceTagPipeline(cfg).run(
+        req.video_path, progress=_on_progress, on_frame=trace
+    )
+
+    detections_artifact: dict | None = None
+    if trace is not None:
+        try:
+            detections_artifact = trace.to_dict()
+            LOGGER.info(
+                "frame-trace: %d frames (sampled=%s)",
+                trace.n_frames, detections_artifact.get("sampled"),
+            )
+        except Exception as exc:  # noqa: BLE001 - never fatal
+            LOGGER.warning("frame-trace serialize failed (dropped): %s", exc)
+            detections_artifact = None
 
     # task.md §3.4: the released Lenta CSVs use a bare stem as `filename`.
     # Prefer the original upload name from the gateway — the bytes on disk
@@ -411,6 +443,7 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
     return ProcessResponse(
         csv=csv_text,
         rows=len(tags),
+        detections=detections_artifact,
         meta={
             "job_id": req.job_id,
             "mock": False,

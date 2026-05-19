@@ -35,7 +35,12 @@ from tempfile import gettempdir
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +50,12 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.db.models.job import Job as _JobModel
 from app.db.session import session_scope
-from app.jobs_mock import build_csv, build_predictions, generate_tags
+from app.jobs_mock import (
+    build_csv,
+    build_detections,
+    build_predictions,
+    generate_tags,
+)
 from app.jobs_queue import job_queue, position_in_queue
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -326,6 +336,10 @@ async def create_job(
                     rows=cached.rows,
                     result_csv=cached.result_csv,
                     predictions_json=preds,
+                    # Carry the detector trace too, so a cache-replayed job
+                    # keeps the detector view (it is keyed on the same
+                    # bytes+rotation+mode, so the trace is identical).
+                    detections_json=cached.detections_json,
                 )
             )
             logger.info(
@@ -445,6 +459,43 @@ async def get_predictions(job_id: UUID) -> JobPredictions:
         if job.status != JobStatus.succeeded.value or not job.predictions_json:
             raise HTTPException(status.HTTP_409_CONFLICT, "Predictions not ready")
         return JobPredictions.model_validate_json(job.predictions_json)
+
+
+@router.get("/{job_id}/detections")
+async def get_detections(job_id: UUID) -> Response:
+    """Per-frame detector trace — the NON-graded detector-QA overlay source.
+
+    Lets the review screen replay the clip with the *raw per-frame detector
+    output* overlaid (every box above the detector's confidence threshold),
+    so the detector can be judged on its own — separate from the final
+    per-tag result the graded CSV carries.
+
+    409 when not ready, or when this job simply has no trace (an older job,
+    the ML service sent none, or its guarded collection failed). The graded
+    CSV and the best-frame review never depend on this — the UI just offers
+    only the best-frame view in that case.
+    """
+    if settings.MOCK_MODE:
+        job = _mock_get_or_404(job_id)
+        if job["status"] != JobStatus.succeeded:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Detections not ready"
+            )
+        return JSONResponse(build_detections(_mock_tags_for(job)))
+
+    async with session_scope() as s:
+        job = await _get_job_or_404(s, job_id)
+        if job.status != JobStatus.succeeded.value:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Detections not ready"
+            )
+        payload = job.detections_json
+    if not payload:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "No detector trace for this job"
+        )
+    # Stored already as a JSON string — serve verbatim, no re-encode.
+    return Response(content=payload, media_type="application/json")
 
 
 @router.get("/{job_id}/result.csv", response_class=PlainTextResponse)

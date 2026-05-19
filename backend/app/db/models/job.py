@@ -74,6 +74,12 @@ class Job(Base):
     result_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Reconstructed JobPredictions as a JSON string (non-graded review).
     predictions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Per-frame detector trace as a JSON string — a NON-graded QA artifact
+    # (price_tag_pipeline.frame_trace via the ML `detections` field). Lets
+    # the review screen replay the clip with the raw detector output
+    # overlaid. Nullable: older jobs / a failed/absent trace simply have no
+    # detector view (the graded CSV + best-frame review are unaffected).
+    detections_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
