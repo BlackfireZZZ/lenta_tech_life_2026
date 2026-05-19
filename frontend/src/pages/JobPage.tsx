@@ -519,7 +519,7 @@ function VideoStage({
               <button
                 key={t.index}
                 type="button"
-                title={tagLabel(t)}
+                title={`${tagLabel(t)} — лучший кадр`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -546,8 +546,8 @@ function VideoStage({
         </span>
       </div>
       <p className="text-caption text-steel-gray">
-        Нажмите на точку, чтобы открыть ценник. Тяните дорожку, чтобы
-        перемотать видео.
+        Каждая точка — лучший кадр ценника: по нему распознаны данные и
+        взят таймкод. Нажмите, чтобы открыть; тяните дорожку для перемотки.
       </p>
 
       {/* The cropped tag image. */}
