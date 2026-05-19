@@ -52,7 +52,12 @@ class PriceTagPipeline:
     def __init__(self, cfg: PipelineConfig):
         self.cfg = cfg
         self.detector = build_detector(cfg.detector)
-        self.rectifier = build_rectifier(cfg.rectifier)
+        # The detector un-projects boxes to the ORIGINAL (sideways for the
+        # robot cam) frame and the crop is taken there, so the rectifier must
+        # un-rotate crops upright by the same camera inverse the detector uses.
+        self.rectifier = build_rectifier(
+            cfg.rectifier, frame_rotation=cfg.detector.frame_rotation
+        )
         # QR -> barcode -> smart OCR, behind one stable seam. Parser/OCR/QR
         # wiring now lives in price_tag_pipeline.recognition, not here.
         self.recognition: RecognitionChain = build_recognition_chain(cfg)

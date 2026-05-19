@@ -33,11 +33,48 @@ LOGGER = logging.getLogger(__name__)
 # Axis-aligned (existing fast path)
 # ---------------------------------------------------------------------------
 
+def _upright_crop(
+    crop: np.ndarray, frame_rotation: str, rotate_vertical_tags: bool
+) -> np.ndarray:
+    """Rotate a raw-frame crop so its text is upright before OCR/decoding.
+
+    The Lenta scan-robot cam is mounted **90° CW**, so the detector runs on
+    an upright-rotated frame but un-projects boxes back to the *original*
+    (sideways) frame — and the pipeline crops from that original frame
+    (detector.py contract). So every crop the rectifier gets in a rotated
+    profile is itself sideways: a wide tag becomes tall and, crucially, the
+    text is 90° off. It must be un-rotated by the **inverse of the camera
+    mounting**, exactly as the detector un-rotates the whole frame and
+    `make_shelf_audit_fixture` un-rotates display crops:
+
+      * ``ccw`` (the Lenta profiles, cam 90° CW) → ``ROTATE_90_COUNTERCLOCKWISE``
+      * ``cw``                                   → ``ROTATE_90_CLOCKWISE``
+
+    Aspect ratio is NOT the gate here — every raw crop is sideways regardless
+    of how square it looks; ``rotate_vertical_tags`` is only the master
+    on/off switch. ``none`` keeps the legacy "obviously-tall → 90° CW"
+    heuristic so already-upright input is left untouched (the documented
+    detector invariant). A previous version rotated CW in *every* case, which
+    in the shipped ``ccw`` profile fed Qwen-VL crops upside-down (180° off) —
+    a severe, silent OCR-quality loss.
+    """
+    r = (frame_rotation or "none").lower()
+    if r == "ccw":
+        return cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE) if rotate_vertical_tags else crop
+    if r == "cw":
+        return cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE) if rotate_vertical_tags else crop
+    # 'none': legacy behaviour — only flip an obviously-vertical crop.
+    if rotate_vertical_tags and crop.shape[0] > crop.shape[1] * 1.6:
+        return cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
+    return crop
+
+
 class TagRectifier:
     """Padded crop + optional rotation + CLAHE on luminance. Keeps color."""
 
-    def __init__(self, cfg: RectifierConfig):
+    def __init__(self, cfg: RectifierConfig, frame_rotation: str = "none"):
         self.cfg = cfg
+        self.frame_rotation = frame_rotation
         self._clahe = cv2.createCLAHE(
             clipLimit=self.cfg.clahe_clip_limit,
             tileGridSize=(self.cfg.clahe_tile_grid_size, self.cfg.clahe_tile_grid_size),
@@ -59,8 +96,7 @@ class TagRectifier:
         if crop.size == 0:
             return None
 
-        if self.cfg.rotate_vertical_tags and crop.shape[0] > crop.shape[1] * 1.6:
-            crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
+        crop = _upright_crop(crop, self.frame_rotation, self.cfg.rotate_vertical_tags)
 
         enhanced, gray = _apply_clahe(crop, self._clahe, keep_color=self.cfg.keep_color)
         sharpness = laplacian_sharpness(gray)
@@ -100,10 +136,16 @@ class PerspectiveRectifier:
     approach (P1 in docs/strategy.md) is the right upgrade.
     """
 
-    def __init__(self, cfg: RectifierConfig, min_quad_area_ratio: float = 0.35):
+    def __init__(
+        self,
+        cfg: RectifierConfig,
+        min_quad_area_ratio: float = 0.35,
+        frame_rotation: str = "none",
+    ):
         self.cfg = cfg
+        self.frame_rotation = frame_rotation
         self.min_quad_area_ratio = min_quad_area_ratio
-        self._fallback = TagRectifier(cfg)
+        self._fallback = TagRectifier(cfg, frame_rotation=frame_rotation)
         self._clahe = cv2.createCLAHE(
             clipLimit=cfg.clahe_clip_limit,
             tileGridSize=(cfg.clahe_tile_grid_size, cfg.clahe_tile_grid_size),
@@ -133,8 +175,7 @@ class PerspectiveRectifier:
         if warped is None or warped.size == 0:
             return self._fallback.rectify(frame, det)
 
-        if self.cfg.rotate_vertical_tags and warped.shape[0] > warped.shape[1] * 1.6:
-            warped = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
+        warped = _upright_crop(warped, self.frame_rotation, self.cfg.rotate_vertical_tags)
 
         enhanced, gray = _apply_clahe(warped, self._clahe, keep_color=self.cfg.keep_color)
         sharpness = laplacian_sharpness(gray)
@@ -230,7 +271,12 @@ def _warp_to_rect(crop: np.ndarray, quad: np.ndarray) -> Optional[np.ndarray]:
 # Factory
 # ---------------------------------------------------------------------------
 
-def build_rectifier(cfg: RectifierConfig):
+def build_rectifier(cfg: RectifierConfig, frame_rotation: str = "none"):
+    """``frame_rotation`` mirrors ``DetectorConfig.frame_rotation``: the
+    rectifier crops from the *original* (possibly sideways) frame, so it must
+    un-rotate crops upright by the same camera-mounting inverse the detector
+    applies to whole frames. Passed by ``PriceTagPipeline``; defaults to
+    ``"none"`` so direct callers keep legacy behaviour."""
     if getattr(cfg, "perspective", False):
-        return PerspectiveRectifier(cfg)
-    return TagRectifier(cfg)
+        return PerspectiveRectifier(cfg, frame_rotation=frame_rotation)
+    return TagRectifier(cfg, frame_rotation=frame_rotation)
