@@ -12,6 +12,7 @@ const JobsPage = lazy(() => import("@/pages/JobsPage"));
 const JobPage = lazy(() => import("@/pages/JobPage"));
 const PipelinePage = lazy(() => import("@/pages/PipelinePage"));
 const ExperimentsPage = lazy(() => import("@/pages/ExperimentsPage"));
+const ShelfAuditPage = lazy(() => import("@/pages/ShelfAuditPage"));
 
 function PageFallback() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
               <Route path="/pipeline" element={<PipelinePage />} />
               <Route path="/experiments" element={<ExperimentsPage />} />
               <Route path="/jobs" element={<JobsPage />} />
+              <Route path="/shelf" element={<ShelfAuditPage />} />
               <Route path="/jobs/:id" element={<JobPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

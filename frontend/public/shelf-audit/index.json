@@ -1,0 +1,39 @@
+{
+  "videos": [
+    {
+      "id": "25_12-20",
+      "n_alerts": 48,
+      "n_cards": 72,
+      "n_out_of_stock": 2,
+      "n_missing_price_tag": 46
+    },
+    {
+      "id": "25_2-10",
+      "n_alerts": 25,
+      "n_cards": 45,
+      "n_out_of_stock": 5,
+      "n_missing_price_tag": 20
+    },
+    {
+      "id": "26_12-20",
+      "n_alerts": 20,
+      "n_cards": 61,
+      "n_out_of_stock": 0,
+      "n_missing_price_tag": 20
+    },
+    {
+      "id": "43_15",
+      "n_alerts": 19,
+      "n_cards": 40,
+      "n_out_of_stock": 1,
+      "n_missing_price_tag": 18
+    },
+    {
+      "id": "49_5",
+      "n_alerts": 45,
+      "n_cards": 101,
+      "n_out_of_stock": 2,
+      "n_missing_price_tag": 43
+    }
+  ]
+}

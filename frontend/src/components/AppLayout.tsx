@@ -7,6 +7,7 @@ const NAV = [
   { to: "/jobs", label: "Задачи", end: false },
   { to: "/pipeline", label: "Пайплайн", end: false },
   { to: "/experiments", label: "Эксперименты", end: false },
+  { to: "/shelf", label: "Аудит полки", end: false },
 ];
 
 // DESIGN "Layout": the nav bar is full-bleed across the top; the main
