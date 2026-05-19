@@ -12,7 +12,10 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { SHELF_AUDIT_COPY } from "@/content/shelfAuditContent";
+import {
+  SHELF_AUDIT_COPY,
+  formatSummaryHint,
+} from "@/content/shelfAuditContent";
 import {
   cropUrl,
   loadAudit,
@@ -80,28 +83,32 @@ function AlertRow({ alert, videoId }: { alert: ShelfAlert; videoId: string }) {
         <div className="flex items-center gap-2">
           {oos ? (
             <Badge variant="danger">
-              <PackageX className="size-3" /> Пустая полка
+              <PackageX className="size-3" /> {SHELF_AUDIT_COPY.alertTypeLabel.OUT_OF_STOCK}
             </Badge>
           ) : (
             <Badge variant="warning">
-              <Tags className="size-3" /> Товар без ценника
+              <Tags className="size-3" /> {SHELF_AUDIT_COPY.alertTypeLabel.MISSING_PRICE_TAG}
             </Badge>
           )}
           <span className="font-mono text-[11px] text-steel-gray">{alert.id}</span>
         </div>
         <p className="mt-2 text-[13px] leading-[1.5] text-slate-text">
-          {oos
-            ? "Ценник распознан, но товара над ним нет — упущенные продажи."
-            : "Кандидат: товар без сопоставленного ценника. Требует проверки — на части видео ценник просто не попал в кадр рядом с товаром."}
+          {SHELF_AUDIT_COPY.alertDescription[alert.type]}
         </p>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ash-gray">
           <span>⏱ {fmtTime(alert.timestamp_s)}</span>
-          <span>виден {alert.persistence_frames} кадров</span>
+          <span>
+            виден {alert.persistence_frames} {SHELF_AUDIT_COPY.metrics.visibleFramesSuffix}
+          </span>
           {alert.product?.facing_count != null && (
-            <span>{alert.product.facing_count} фейсингов</span>
+            <span>
+              {alert.product.facing_count} {SHELF_AUDIT_COPY.metrics.facingsSuffix}
+            </span>
           )}
           {alert.track_id != null && (
-            <span className="font-mono">трек {alert.track_id}</span>
+            <span className="font-mono">
+              {SHELF_AUDIT_COPY.metrics.trackPrefix} {alert.track_id}
+            </span>
           )}
         </div>
       </div>
@@ -122,25 +129,30 @@ function CardTile({ card, videoId }: { card: ProductCard; videoId: string }) {
           </div>
         )}
         <span className="absolute right-2 top-2">
-          <Badge variant="accent">×{card.facing_count} фейсингов</Badge>
+          <Badge variant="accent">
+            {SHELF_AUDIT_COPY.cardTile.facingsPrefix}
+            {card.facing_count} {SHELF_AUDIT_COPY.cardTile.facingsSuffix}
+          </Badge>
         </span>
       </div>
       <div className="flex flex-col gap-1 p-3">
         <p className="truncate text-[13px] font-medium text-slate-text">
           {card.name ?? (
-            <span className="text-steel-gray">Название — из распознавания ценника</span>
+            <span className="text-steel-gray">{SHELF_AUDIT_COPY.cardTile.noName}</span>
           )}
         </p>
         <div className="flex items-center justify-between text-[12px]">
           <span className={card.price != null ? "text-slate-text" : "text-steel-gray"}>
-            {card.price != null ? `${card.price} ₽` : "цена — с ценника"}
+            {card.price != null
+              ? `${card.price} ${SHELF_AUDIT_COPY.cardTile.rubSuffix}`
+              : SHELF_AUDIT_COPY.cardTile.noPrice}
           </span>
           <span className="font-mono text-[11px] text-ash-gray">
             {fmtTime(card.seen_from_s)}–{fmtTime(card.seen_to_s)}
           </span>
         </div>
         <span className="truncate font-mono text-[11px] text-steel-gray">
-          {card.barcode ?? "штрихкод — с ценника"}
+          {card.barcode ?? SHELF_AUDIT_COPY.cardTile.noBarcode}
         </span>
       </div>
     </Card>
@@ -160,12 +172,12 @@ export default function ShelfAuditPage() {
         setVideos(idx.videos);
         setVideoId(idx.videos[0]?.id ?? null);
         if (!idx.videos.length) {
-          setError("Пока нет данных аудита для показа.");
+          setError(SHELF_AUDIT_COPY.load.noData);
           setLoading(false);
         }
       })
       .catch(() => {
-        setError("Не удалось загрузить данные аудита.");
+        setError(SHELF_AUDIT_COPY.load.failed);
         setLoading(false);
       });
   }, []);
@@ -250,19 +262,19 @@ export default function ShelfAuditPage() {
         <>
           {/* Stats */}
           <section className="mx-auto grid w-full max-w-4xl grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat value={s.n_out_of_stock} label="Пустые полки" tone="danger" />
-            <Stat value={s.n_missing_price_tag} label="Без ценника (кандидаты)" tone="warning" />
-            <Stat value={s.n_product_cards} label="Распознано товаров" tone="accent" />
-            <Stat value={s.n_relations_ok} label="Ценник ↔ товар" tone="neutral" />
+            <Stat value={s.n_out_of_stock} label={SHELF_AUDIT_COPY.statLabels.outOfStock} tone="danger" />
+            <Stat value={s.n_missing_price_tag} label={SHELF_AUDIT_COPY.statLabels.missingTagCandidates} tone="warning" />
+            <Stat value={s.n_product_cards} label={SHELF_AUDIT_COPY.statLabels.productsRecognized} tone="accent" />
+            <Stat value={s.n_relations_ok} label={SHELF_AUDIT_COPY.statLabels.relation} tone="neutral" />
           </section>
           {s.missing_tag_facing_level_would_be != null && (
             <p className="mx-auto -mt-6 max-w-3xl text-center text-[12px] text-steel-gray">
-              Группировка фейсингов в товар убирает ложные срабатывания:{" "}
-              {s.n_product_tracks} фейсингов → {s.n_product_cards} карточек;
-              «товар без ценника» {s.missing_tag_facing_level_would_be} →{" "}
-              {s.n_missing_price_tag} на уровне товара. «Пустая полка» —
-              точный сигнал; «без ценника» пока кандидаты (зависит от того,
-              попал ли ценник в кадр рядом с товаром).
+              {formatSummaryHint({
+                tracks: s.n_product_tracks,
+                cards: s.n_product_cards,
+                rawMissing: s.missing_tag_facing_level_would_be,
+                missing: s.n_missing_price_tag,
+              })}
             </p>
           )}
 
@@ -272,7 +284,7 @@ export default function ShelfAuditPage() {
               <div className="flex items-center gap-2">
                 <ScanSearch className="size-5 text-chartwell-blue" />
                 <h2 className="font-display text-heading-sm font-medium text-slate-text">
-                  Алерты
+                  {SHELF_AUDIT_COPY.sections.alerts}
                 </h2>
                 <Badge variant="neutral">{alerts.length}</Badge>
               </div>
@@ -296,7 +308,7 @@ export default function ShelfAuditPage() {
               </Card>
               {alerts.length === 0 ? (
                 <Card className="p-6 text-center text-[14px] text-ash-gray">
-                  Нарушений не найдено на этом видео.
+                  {SHELF_AUDIT_COPY.load.noViolations}
                 </Card>
               ) : (
                 alerts.map((a) => (
@@ -310,7 +322,7 @@ export default function ShelfAuditPage() {
               <div className="flex items-center gap-2">
                 <Boxes className="size-5 text-chartwell-blue" />
                 <h2 className="font-display text-heading-sm font-medium text-slate-text">
-                  Карточки товаров
+                  {SHELF_AUDIT_COPY.sections.cards}
                 </h2>
                 <Badge variant="neutral">{audit.cards.length}</Badge>
               </div>

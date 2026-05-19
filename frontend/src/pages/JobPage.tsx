@@ -1,6 +1,5 @@
 import {
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -12,11 +11,8 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  Clock,
   Crop,
   Download,
-  Film,
-  Image as ImageIcon,
   Pause,
   Play,
 } from "lucide-react";
@@ -34,7 +30,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Summary } from "@/components/job/Summary";
 import { TagsTable } from "@/components/job/TagsTable";
-import { ServerLimitNote } from "@/components/ServerLimitNote";
 import {
   colorMeta,
   completeness,
@@ -45,22 +40,13 @@ import {
   tagLabel,
 } from "@/lib/tags";
 import { cn } from "@/lib/utils";
+import { JOB_PAGE_COPY } from "@/content/jobPageContent";
 
 const POLL_MS = 1200;
 
 // Tags whose best-frame timestamps fall within this window are treated as
 // "the same frame" (so a busy shelf moment is one group of many boxes).
 const FRAME_BUCKET_MS = 200;
-
-// Live ("видео с разметкой") view: a tag has a single captured moment — one
-// CSV row = one best-frame timestamp; the graded contract carries no
-// per-frame track. So as the clip plays we light its box for a short window
-// AROUND that moment, just wide enough to be seen at normal speed. This
-// marks *when the tag was read*, it does not claim a continuous track.
-const LIVE_WINDOW_S = 0.6;
-
-// The two honest review modes (see ViewModeBar).
-type ViewMode = "frame" | "live";
 
 // Shown big in the hero strip — everything else folds into the detail
 // groups, so the panel is never one endless column (the rest of the
@@ -97,7 +83,7 @@ export default function JobPage() {
           timer = setTimeout(tick, POLL_MS);
         }
       } catch {
-        if (alive) setError("Не удалось найти эту обработку — возможно, сервер перезапустился.");
+        if (alive) setError(JOB_PAGE_COPY.errors.notFound);
       }
     };
     tick();
@@ -118,7 +104,7 @@ export default function JobPage() {
         setPred(p);
         setSelected(p.tags[0]?.index ?? 0);
       })
-      .catch(() => alive && setError("Не удалось загрузить результаты распознавания."));
+      .catch(() => alive && setError(JOB_PAGE_COPY.errors.predictions));
     return () => {
       alive = false;
     };
@@ -143,9 +129,9 @@ export default function JobPage() {
 
   if (error) return <ErrorCard message={error} />;
   if (job?.status === "failed")
-    return <ErrorCard message={job.error || "Обработка завершилась с ошибкой."} />;
-  if (job?.status === "queued") return <Queued job={job} />;
-  if (!job || job.status === "running") return <Processing job={job} />;
+    return <ErrorCard message={job.error || JOB_PAGE_COPY.errors.failedDefault} />;
+  if (!job || job.status === "queued" || job.status === "running")
+    return <Processing job={job} />;
   if (!pred || !view) return <ReviewSkeleton />;
 
   return (
@@ -156,7 +142,7 @@ export default function JobPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Все ценники</CardTitle>
+          <CardTitle>{JOB_PAGE_COPY.tableTitle}</CardTitle>
         </CardHeader>
         <CardContent>
           <TagsTable data={view} selected={selected} onSelect={setSelected} />
@@ -234,11 +220,6 @@ function Reviewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [goTag, pos]);
 
-  // Best-frame inspector by default; the user can switch to annotated
-  // playback. The mode lives here so the video stage and the toggle stay
-  // in lock-step.
-  const [mode, setMode] = useState<ViewMode>("frame");
-
   return (
     <Card feature className="overflow-hidden">
       {/* Header — product name + which ценник of how many. No internal
@@ -246,7 +227,7 @@ function Reviewer({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-stone-border p-6">
         <div className="min-w-0">
           <p className="text-caption uppercase tracking-[0.12em] text-steel-gray">
-            Проверка ценников
+            {JOB_PAGE_COPY.reviewer.title}
           </p>
           <h2 className="mt-1 truncate font-display text-heading font-medium text-slate-text">
             {tagLabel(tag)}
@@ -258,9 +239,9 @@ function Reviewer({
             size="sm"
             onClick={() => goTag(pos - 1)}
             disabled={pos === 0}
-            title="Предыдущий ценник (←)"
+            title={JOB_PAGE_COPY.reviewer.prevTagTitle}
           >
-            <ChevronLeft /> Назад
+            <ChevronLeft /> {JOB_PAGE_COPY.reviewer.prevTagButton}
           </Button>
           <span className="min-w-[4.5rem] text-center font-display text-heading-sm tabular-nums text-slate-text">
             {pos + 1} <span className="text-ash-gray">/ {order.length}</span>
@@ -270,14 +251,12 @@ function Reviewer({
             size="sm"
             onClick={() => goTag(pos + 1)}
             disabled={pos === order.length - 1}
-            title="Следующий ценник (→)"
+            title={JOB_PAGE_COPY.reviewer.nextTagTitle}
           >
-            Вперёд <ChevronRight />
+            {JOB_PAGE_COPY.reviewer.nextTagButton} <ChevronRight />
           </Button>
         </div>
       </div>
-
-      <ViewModeBar mode={mode} onMode={setMode} />
 
       <div className="grid items-start gap-6 p-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <VideoStage
@@ -286,69 +265,11 @@ function Reviewer({
           tag={tag}
           mates={mates}
           frameKey={frameKey}
-          mode={mode}
           onSelect={onSelect}
         />
         <DataPanel tag={tag} mates={mates} boxPos={boxPos} onSelect={onSelect} />
       </div>
     </Card>
-  );
-}
-
-// --- View setting: how the video is shown ---------------------------------
-//
-// Two honest modes. "Лучший кадр" is the inspector — park on the chosen
-// tag's best frame, its box spotlit. "Видео с разметкой" is annotated
-// playback — the clip runs and each tag's box lights up at the moment it
-// was read. Only above-threshold tags ever reach this screen (JobPage
-// `view`), so in both modes only their boxes are drawn.
-
-function ViewModeBar({
-  mode,
-  onMode,
-}: {
-  mode: ViewMode;
-  onMode: (m: ViewMode) => void;
-}) {
-  const items: { id: ViewMode; label: string; icon: ReactNode }[] = [
-    { id: "frame", label: "Лучший кадр", icon: <ImageIcon className="size-3.5" /> },
-    { id: "live", label: "Видео с разметкой", icon: <Film className="size-3.5" /> },
-  ];
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-b border-stone-border px-6 py-3">
-      <div
-        role="tablist"
-        aria-label="Режим просмотра"
-        className="inline-flex rounded-pill border border-stone-border bg-canvas-fog p-1"
-      >
-        {items.map((it) => {
-          const active = it.id === mode;
-          return (
-            <button
-              key={it.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => onMode(it.id)}
-              className={cn(
-                "inline-flex cursor-pointer items-center gap-2 rounded-pill px-3.5 py-1.5 text-[13px] font-medium transition-colors",
-                active
-                  ? "bg-cloud-white text-slate-text shadow-subtle"
-                  : "text-ash-gray hover:text-slate-text",
-              )}
-            >
-              {it.icon}
-              {it.label}
-            </button>
-          );
-        })}
-      </div>
-      <p className="min-w-0 max-w-prose text-caption text-steel-gray">
-        {mode === "frame"
-          ? "Видео встаёт на лучший кадр выбранного ценника: его рамка выделена, остальное затемнено."
-          : "Видео идёт как есть — рамка каждого ценника появляется в кадре, где он распознан. Нажмите на рамку, чтобы открыть данные."}
-      </p>
-    </div>
   );
 }
 
@@ -360,7 +281,6 @@ function VideoStage({
   tag,
   mates,
   frameKey,
-  mode,
   onSelect,
 }: {
   id: string;
@@ -368,7 +288,6 @@ function VideoStage({
   tag: TagPrediction;
   mates: TagPrediction[];
   frameKey: (t: TagPrediction) => number;
-  mode: ViewMode;
   onSelect: (index: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -433,11 +352,7 @@ function VideoStage({
 
   // Park the clip on the selected tag's frame (an explicit pick always
   // pauses + seeks, so the frame and the data panel stay in lock-step).
-  // ONLY in best-frame mode: in live mode the clip must keep playing, so a
-  // pick / box-click must never yank the playhead. `mode` is a dep so that
-  // switching back to best-frame re-parks on the open tag.
   useEffect(() => {
-    if (mode !== "frame") return;
     const v = videoRef.current;
     if (!v || !ready) return;
     v.pause();
@@ -446,25 +361,21 @@ function VideoStage({
       Number.isFinite(dur) && dur > 0 ? dur - 0.04 : t,
       Math.max(0, t),
     );
-  }, [tag, ready, dur, timeOf, mode]);
+  }, [tag, ready, dur, timeOf]);
 
-  // The frame on screen is the source of truth in best-frame mode: after any
-  // seek/pause, snap the selection to the tag at that moment — unless we're
-  // still on the same frame (then keep the chosen box among its mates). This
-  // is what makes a stale overlay impossible. In live mode the playhead is
-  // free: we only keep `cur` (→ playhead + live boxes) current and never
-  // reselect or redraw the crop, so playback is never fought.
+  // The frame on screen is the source of truth: after any seek/pause, snap
+  // the selection to the tag at that moment — unless we're still on the same
+  // frame (then keep the chosen box among its mates). This is what makes a
+  // stale overlay impossible.
   const syncToFrame = useCallback(() => {
     const v = videoRef.current;
     if (!v || !dur) return;
-    setCur(v.currentTime);
-    if (mode !== "frame") return;
     const near = nearestTag(v.currentTime / dur);
     // Only re-select when we've moved to a different frame; staying on the
     // same busy frame keeps whichever of its many boxes the user picked.
     if (frameKey(near) !== frameKey(tag)) onSelect(near.index);
     drawCrop();
-  }, [dur, mode, nearestTag, onSelect, frameKey, tag, drawCrop]);
+  }, [dur, nearestTag, onSelect, frameKey, tag, drawCrop]);
 
   const seekToFrac = useCallback(
     (frac: number) => {
@@ -492,19 +403,7 @@ function VideoStage({
     else v.pause();
   }, []);
 
-  // Best-frame mode is an inspector: boxes only when the clip is parked.
-  // Live mode IS the annotated playback: boxes stay on while playing AND
-  // while scrubbing (that's the whole point of the mode).
-  const boxesVisible =
-    mode === "live" ? ready : ready && !playing && !scrubbing;
-
-  // The tags whose captured moment is within the display window of the
-  // playhead. `order` is already threshold-filtered upstream (JobPage
-  // `view`), so this shows ONLY boxes that passed the metric threshold.
-  const liveBoxes = useMemo(() => {
-    if (mode !== "live") return [] as TagPrediction[];
-    return order.filter((t) => Math.abs(cur - timeOf(t)) <= LIVE_WINDOW_S);
-  }, [mode, order, cur, timeOf]);
+  const boxesVisible = ready && !playing && !scrubbing;
 
   return (
     <div className="flex flex-col gap-3">
@@ -526,11 +425,7 @@ function VideoStage({
           }}
           onLoadedData={drawCrop}
           onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
-          onSeeked={(e) => {
-            // Keep the playhead + live boxes tracking even during a paused
-            // scrub (timeupdate may not fire then); only frame-snap once the
-            // scrub is released.
-            setCur(e.currentTarget.currentTime);
+          onSeeked={() => {
             if (!scrubbing) syncToFrame();
           }}
           onPlay={() => setPlaying(true)}
@@ -542,11 +437,8 @@ function VideoStage({
             9999px shadow (everything else dims); its mates are thin
             outlines you can click to switch boxes within the frame. */}
         {boxesVisible &&
-          (mode === "frame" ? mates : liveBoxes).map((m) => {
+          mates.map((m) => {
             const active = m.index === tag.index;
-            // Spotlight (dim everything else) is a best-frame inspector
-            // affordance — never dim the shelf while the clip is playing.
-            const spotlight = mode === "frame" && active;
             return (
               <button
                 key={m.index}
@@ -567,7 +459,7 @@ function VideoStage({
                   top: `${m.bbox.y1 * 100}%`,
                   width: `${(m.bbox.x2 - m.bbox.x1) * 100}%`,
                   height: `${(m.bbox.y2 - m.bbox.y1) * 100}%`,
-                  boxShadow: spotlight
+                  boxShadow: active
                     ? "0 0 0 9999px rgba(12, 10, 9, 0.55)"
                     : undefined,
                 }}
@@ -575,15 +467,9 @@ function VideoStage({
             );
           })}
 
-        {playing && mode === "frame" && (
+        {playing && (
           <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
-            Воспроизведение — рамки скрыты
-          </div>
-        )}
-        {mode === "live" && (
-          <div className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
-            <span className="size-1.5 rounded-full bg-chartwell-blue" />
-            Разметка по времени
+            {JOB_PAGE_COPY.reviewer.playingOverlay}
           </div>
         )}
         </div>
@@ -595,7 +481,7 @@ function VideoStage({
         <button
           type="button"
           onClick={togglePlay}
-          title={playing ? "Пауза" : "Воспроизвести"}
+          title={playing ? JOB_PAGE_COPY.reviewer.pauseTitle : JOB_PAGE_COPY.reviewer.playTitle}
           className="grid size-9 shrink-0 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
         >
           {playing ? (
@@ -634,14 +520,11 @@ function VideoStage({
               <button
                 key={t.index}
                 type="button"
-                title={`${tagLabel(t)} — лучший кадр`}
+                title={`${tagLabel(t)} ${JOB_PAGE_COPY.reviewer.pointBestFrameSuffix}`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelect(t.index);
-                  // In live mode opening a tag doesn't park the clip, so jump
-                  // the playhead to its moment — "go here and watch it".
-                  if (mode === "live") seekToFrac(t.t_frac);
                 }}
                 className={cn(
                   "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-2 border-cloud-white transition-all",
@@ -664,29 +547,23 @@ function VideoStage({
         </span>
       </div>
       <p className="text-caption text-steel-gray">
-        Каждая точка — лучший кадр ценника: именно по нему распознаны данные
-        и взято время в видео. Нажмите, чтобы открыть; тяните дорожку, чтобы
-        перемотать.
+        {JOB_PAGE_COPY.reviewer.timelineHint}
       </p>
 
-      {/* The cropped tag image — a best-frame inspector affordance. In live
-          mode it would just flicker through frames, so it's not rendered
-          (the canvas ref is null then; drawCrop is guarded). */}
-      {mode === "frame" && (
-        <div className="mt-2">
-          <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
-            <Crop className="size-3.5" /> Изображение ценника
-          </p>
-          <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
-            <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
-          </div>
-          {cropFailed && (
-            <p className="mt-2 text-caption text-amber-700">
-              Не удалось показать изображение ценника.
-            </p>
-          )}
+      {/* The cropped tag image. */}
+      <div className="mt-2">
+        <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
+          <Crop className="size-3.5" /> {JOB_PAGE_COPY.reviewer.cropTitle}
+        </p>
+        <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
+          <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
         </div>
-      )}
+        {cropFailed && (
+          <p className="mt-2 text-caption text-amber-700">
+            {JOB_PAGE_COPY.reviewer.cropFailed}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -711,12 +588,12 @@ function DataPanel({
       {mates.length > 1 && (
         <div className="flex items-center justify-between rounded-input border border-stone-border bg-canvas-fog px-3 py-2">
           <span className="text-caption text-ash-gray">
-            В этом кадре несколько ценников
+            {JOB_PAGE_COPY.frameSwitcher.manyInFrame}
           </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              title="Предыдущий ценник в кадре"
+              title={JOB_PAGE_COPY.frameSwitcher.prevInFrameTitle}
               onClick={() =>
                 onSelect(mates[(boxPos - 1 + mates.length) % mates.length].index)
               }
@@ -725,11 +602,11 @@ function DataPanel({
               <ChevronLeft className="size-3.5" />
             </button>
             <span className="text-[12px] tabular-nums text-slate-text">
-              {boxPos + 1} из {mates.length}
+              {boxPos + 1} {JOB_PAGE_COPY.frameSwitcher.indexDivider} {mates.length}
             </span>
             <button
               type="button"
-              title="Следующий ценник в кадре"
+              title={JOB_PAGE_COPY.frameSwitcher.nextInFrameTitle}
               onClick={() => onSelect(mates[(boxPos + 1) % mates.length].index)}
               className="grid size-7 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
             >
@@ -747,10 +624,10 @@ function DataPanel({
           </Badge>
         )}
         <div className="grid grid-cols-2 gap-x-4 gap-y-4">
-          <HeroStat label="Цена без карты" value={tag.fields.price_default} suffix="₽" />
-          <HeroStat label="Цена по карте" value={tag.fields.price_card} suffix="₽" />
-          <HeroStat label="Штрихкод" value={tag.fields.barcode} mono />
-          <HeroStat label="Артикул (SKU)" value={tag.fields.id_sku} mono />
+          <HeroStat label={JOB_PAGE_COPY.heroStats.priceDefault} value={tag.fields.price_default} suffix="₽" />
+          <HeroStat label={JOB_PAGE_COPY.heroStats.priceCard} value={tag.fields.price_card} suffix="₽" />
+          <HeroStat label={JOB_PAGE_COPY.heroStats.barcode} value={tag.fields.barcode} mono />
+          <HeroStat label={JOB_PAGE_COPY.heroStats.sku} value={tag.fields.id_sku} mono />
         </div>
       </div>
 
@@ -775,7 +652,9 @@ function DataPanel({
                 <span>{group.title}</span>
                 <span className="flex items-center gap-2 normal-case tracking-normal">
                   <span className="text-[12px] text-ash-gray">
-                    {filled > 0 ? `${filled} значений` : "нет данных"}
+                    {filled > 0
+                      ? `${filled} ${JOB_PAGE_COPY.groups.valuesSuffix}`
+                      : JOB_PAGE_COPY.groups.noData}
                   </span>
                   <ChevronRight className="size-3.5 text-steel-gray transition-transform group-open:rotate-90" />
                 </span>
@@ -830,7 +709,9 @@ function HeroStat({
         </p>
       ) : (
         <p className="mt-1 text-[13px] text-steel-gray">
-          {state === "absent" ? "нет на ценнике" : "не распознано"}
+          {state === "absent"
+            ? JOB_PAGE_COPY.fieldState.absent
+            : JOB_PAGE_COPY.fieldState.unrecognized}
         </p>
       )}
     </div>
@@ -842,13 +723,13 @@ function FieldValue({ field, value }: { field: string; value: string | undefined
   if (state === "absent")
     return (
       <Badge variant="neutral" className="font-normal">
-        нет на ценнике
+        {JOB_PAGE_COPY.fieldState.absent}
       </Badge>
     );
   if (state === "unrecognized")
     return (
       <Badge variant="warning" className="font-normal">
-        не распознано
+        {JOB_PAGE_COPY.fieldState.unrecognized}
       </Badge>
     );
   const mono =
@@ -889,22 +770,22 @@ function Header({
           to="/"
           className="inline-flex items-center gap-1.5 text-caption text-ash-gray hover:text-slate-text"
         >
-          <ArrowLeft className="size-3.5" /> Новое видео
+          <ArrowLeft className="size-3.5" /> {JOB_PAGE_COPY.header.newVideo}
         </Link>
         <h1 className="mt-2 truncate font-display text-heading-lg font-medium text-slate-text">
           {job.filename}
         </h1>
         <div className="mt-2 flex items-center gap-2">
-          <Badge variant="success">Готово</Badge>
+          <Badge variant="success">{JOB_PAGE_COPY.header.ready}</Badge>
           <span className="text-caption text-ash-gray">
-            {count} уникальных ценников
+            {count} {JOB_PAGE_COPY.header.uniqueTagsSuffix}
           </span>
         </div>
       </div>
       <a href={csvHref} download>
         <Button size="lg">
           <Download />
-          Скачать таблицу (CSV)
+          {JOB_PAGE_COPY.header.downloadCsv}
         </Button>
       </a>
     </div>
@@ -916,63 +797,23 @@ function Header({
 // its own moving stage. Falls back to fraction guesses only when the
 // backend gives no phase (MOCK_MODE / before the first poll).
 const PHASE_LABEL: Record<string, string> = {
-  detect: "Ищем и ведём ценники в кадрах…",
-  finalize: "Распознаём ценники нейросетью…",
-  dedup: "Склеиваем повторы одного ценника…",
-  done: "Формируем результат…",
+  detect: JOB_PAGE_COPY.processing.detect,
+  finalize: JOB_PAGE_COPY.processing.finalize,
+  dedup: JOB_PAGE_COPY.processing.dedup,
+  done: JOB_PAGE_COPY.processing.done,
 };
-
-// Waiting its turn — the single worker is busy with an earlier video. This
-// is a deliberate product limit (one cheap GPU), so it is explained, not
-// hidden behind a frozen progress bar.
-function Queued({ job }: { job: Job }) {
-  const pos = job.queue_position;
-  const line =
-    pos == null
-      ? "Готовим видео к обработке…"
-      : pos <= 0
-        ? "Вы следующий — обработка начнётся, как только освободится сервер."
-        : "Дождёмся их обработки и сразу возьмёмся за ваше видео.";
-  return (
-    <div className="grid place-items-center py-24">
-      <Card feature className="w-full max-w-md p-8 text-center">
-        <div className="mx-auto grid size-12 place-items-center rounded-card bg-chartwell-blue/10 text-chartwell-blue">
-          <Clock className="size-6" />
-        </div>
-        <h1 className="mt-5 font-display text-heading font-medium text-slate-text">
-          Видео в очереди
-        </h1>
-        <p className="mt-1 truncate text-caption text-ash-gray">
-          {job.filename}
-        </p>
-        {pos != null && pos > 0 && (
-          <p className="mt-5 font-display text-display font-medium tabular-nums text-slate-text">
-            {pos}
-            <span className="ml-2 align-middle text-caption font-normal text-ash-gray">
-              {pos === 1 ? "видео впереди" : "видео в очереди перед вами"}
-            </span>
-          </p>
-        )}
-        <p className="mt-4 text-[14px] leading-[1.6] text-slate-text">{line}</p>
-        <ServerLimitNote className="mt-6 text-left" />
-        <p className="mt-4 text-caption text-steel-gray">
-          Экран обновится сам — страницу можно не перезагружать.
-        </p>
-      </Card>
-    </div>
-  );
-}
 
 function Processing({ job }: { job: Job | null }) {
   const progress = job?.progress ?? 0;
-  const phase = !job
-    ? "Загружаем статус…"
-    : (job.phase && PHASE_LABEL[job.phase]) ||
-      (progress < 0.5
-        ? "Ищем ценники в кадрах…"
-        : progress < 0.9
-          ? "Распознаём поля и штрихкоды…"
-          : "Завершаем…");
+  const phase =
+    !job || job.status === "queued"
+      ? JOB_PAGE_COPY.processing.queued
+      : (job.phase && PHASE_LABEL[job.phase]) ||
+        (progress < 0.5
+          ? JOB_PAGE_COPY.processing.detect
+          : progress < 0.9
+            ? JOB_PAGE_COPY.processing.fallbackMid
+            : JOB_PAGE_COPY.processing.fallbackFinal);
   return (
     <div className="grid place-items-center py-24">
       <Card feature className="w-full max-w-md p-8 text-center">
@@ -980,7 +821,7 @@ function Processing({ job }: { job: Job | null }) {
           <Spinner className="size-6" />
         </div>
         <h1 className="mt-5 font-display text-heading font-medium text-slate-text">
-          Обрабатываем видео
+          {JOB_PAGE_COPY.processing.title}
         </h1>
         {job && (
           <p className="mt-1 truncate text-caption text-ash-gray">{job.filename}</p>
@@ -993,8 +834,7 @@ function Processing({ job }: { job: Job | null }) {
           </div>
         </div>
         <p className="mt-6 text-caption text-steel-gray">
-          Видео обрабатывается покадрово — это занимает время. Экран обновится
-          автоматически.
+          {JOB_PAGE_COPY.processing.hint}
         </p>
       </Card>
     </div>
@@ -1020,11 +860,11 @@ function ErrorCard({ message }: { message: string }) {
     <div className="grid place-items-center py-24">
       <Card className="w-full max-w-md p-8 text-center">
         <h1 className="font-display text-heading font-medium text-slate-text">
-          Не получилось
+          {JOB_PAGE_COPY.errors.genericTitle}
         </h1>
         <p className="mt-2 text-[14px] text-ash-gray">{message}</p>
         <Link to="/">
-          <Button className="mt-6">Загрузить другое видео</Button>
+          <Button className="mt-6">{JOB_PAGE_COPY.errors.backUpload}</Button>
         </Link>
       </Card>
     </div>

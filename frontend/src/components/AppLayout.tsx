@@ -1,14 +1,9 @@
 import { Link, NavLink } from "react-router-dom";
 import { ScanBarcode } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { APP_LAYOUT_COPY } from "@/content/appContent";
 
-const NAV = [
-  { to: "/", label: "Загрузить видео", end: true },
-  { to: "/jobs", label: "Мои обработки", end: false },
-  { to: "/pipeline", label: "Как это работает", end: false },
-  { to: "/experiments", label: "Что мы пробовали", end: false },
-  { to: "/shelf", label: "Аудит полки", end: false },
-];
+const NAV = APP_LAYOUT_COPY.nav;
 
 // DESIGN "Layout": the nav bar is full-bleed across the top; the main
 // content is max-width contained and centred over the Canvas Fog page.
@@ -22,7 +17,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               <ScanBarcode className="size-4" />
             </span>
             <span className="font-display text-[15px] font-medium text-slate-text">
-              Lenta · Распознавание ценников
+              {APP_LAYOUT_COPY.brand}
             </span>
           </Link>
           <nav className="flex items-center gap-1">

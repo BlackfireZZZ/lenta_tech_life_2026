@@ -14,218 +14,35 @@ import {
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { EXPERIMENTS_PAGE_COPY } from "@/content/experimentsContent";
+import {
+  EXPERIMENTS_PAGE_COPY,
+  EXPERIMENTS_SECTIONS_COPY,
+  type Verdict,
+} from "@/content/experimentsContent";
 
-// ─────────────────────────────────────────────────────────────────────────
-// What we actually tried. Distilled from the detector / OCR / QR campaigns,
-// the friend's zero-shot baseline, the tracker/level-2 ablations and the
-// parameter sweeps across the worktrees. Jury-facing: breadth of the search
-// + the measured conclusions (incl. the rigorous negative results).
-// ─────────────────────────────────────────────────────────────────────────
-type Verdict = "prod" | "explored" | "rejected";
-
-interface Attempt {
-  label: string;
-  note?: string;
-  verdict: Verdict;
-}
-
-interface DatasetRef {
-  name: string;
-  url: string;
-}
-
-interface ExpSection {
-  id: string;
-  icon: LucideIcon;
-  title: string;
-  blurb: string;
-  stat: string;
-  datasets?: DatasetRef[];
-  tried: Attempt[];
-  finding: string;
-  shipped: string;
-}
-
-const SECTIONS: ExpSection[] = [
-  {
-    id: "detector",
-    icon: ScanSearch,
-    title: "Чем находить ценники",
-    blurb:
-      "От попытки обучить свою модель с нуля до дообучения уже готовой нейросети на наборах открытых данных.",
-    stat: "4 набора данных · 6+ моделей",
-    datasets: [
-      {
-        name: "OpenFoodFacts price-tag-detection",
-        url: "https://huggingface.co/datasets/openfoodfacts/price-tag-detection",
-      },
-      {
-        name: "SOVAR Roboflow price-tag v2",
-        url: "https://universe.roboflow.com/sovar/price-tag-detection-r5jlv/dataset/2",
-      },
-      {
-        name: "Kaggle Supermarket Shelves",
-        url: "https://www.kaggle.com/datasets/humansintheloop/supermarket-shelves-dataset",
-      },
-      {
-        name: "Ultralytics SKU-110K",
-        url: "https://docs.ultralytics.com/datasets/detect/sku-110k",
-      },
-    ],
-    tried: [
-      { label: "Обучить свою модель с нуля", verdict: "rejected", note: "своих данных слишком мало — не взлетело" },
-      {
-        label: "Готовая нейросеть OpenFoodFacts (дообучаем, не учим с нуля)",
-        verdict: "prod",
-        note: "наша основа",
-      },
-      {
-        label: "YOLO-World без обучения — просто по слову «ценник»",
-        verdict: "explored",
-        note: "быстрая точка отсчёта",
-      },
-      {
-        label: "Перебор разных моделей (RF-DETR, YOLO 26 / 12 / 11 разных размеров)",
-        verdict: "explored",
-        note: "искали, что точнее",
-      },
-      {
-        label:
-          "Разные миксы открытых наборов данных + предобучение на крупном наборе полок",
-        verdict: "explored",
-        note: "больше внешних примеров",
-      },
-      {
-        label:
-          "Искусственно «портим» обучающие кадры под именно эту камеру: смаз, шум, блики, тени, искажение объектива",
-        verdict: "prod",
-      },
-      {
-        label: "Учим модель на её же ошибках — собираем то, что она ложно приняла за ценник",
-        verdict: "prod",
-        note: "меньше ложных срабатываний без потери находок",
-      },
-      {
-        label: "Переворот по вертикали, сильное искажение цвета, перенастройка на крошечном объёме",
-        verdict: "rejected",
-        note: "ломают цену или ничего не дают",
-      },
-    ],
-    finding:
-      "Сильнее всего находимость ценников поднимает разрешение кадра: переход с 1280 до 1536 точек дал примерно +70%. Данные важнее самой модели. Стандартные метрики на таком маленьком наборе обманывают, поэтому мы сверялись по отложенным видео и глазами, а не по цифрам обучения. Параметры камеры мы вычислили сами: маленькая матрица, широкий объектив, сильное «бочкообразное» искажение по краям.",
-    shipped:
-      "Дообученная нейросеть OpenFoodFacts (только класс «ценник»), кадр от 1536 точек, обучение с искажениями под нашу камеру и дообучение на собственных ошибках.",
-  },
-  {
-    id: "ocr",
-    icon: Languages,
-    title: "Чем читать текст",
-    blurb:
-      "Сравнение локальных нейросетей, которые «читают» картинку, и пошаговая доводка запроса к модели и разбора её ответа — всё без облака (правило конкурса).",
-    stat: "8+ моделей · ~10 замеренных шагов",
-    tried: [
-      {
-        label: "Нейросеть Qwen3-VL-4B",
-        verdict: "prod",
-        note: "локально, помещается в обычную игровую видеокарту",
-      },
-      { label: "GLM-OCR 0.9B", verdict: "rejected", note: "слабая, придумывает текст, путает «нет» и пусто" },
-      {
-        label: "Целый ряд других моделей (HunyuanOCR, PaddleOCR-VL, dots.ocr, MonkeyOCR, RolmOCR, InternVL3)",
-        verdict: "explored",
-        note: "сравнили на одном тесте",
-      },
-      { label: "Классические PaddleOCR и Tesseract", verdict: "prod", note: "лёгкие запасные варианты" },
-      {
-        label: "Аккуратный разбор ответа: чиним формат, в штрихкоде оставляем только цифры, разводим типы цен, чистим примечания",
-        verdict: "prod",
-      },
-      { label: "Очень подробный запрос к модели (вся схема из 28 полей)", verdict: "rejected", note: "модель просто повторяла схему — стало хуже, откатили" },
-      { label: "Растягивание вырезанного ярлыка с 1024 до 1536", verdict: "rejected", note: "в сумме хуже: медленнее, штрихкод читается хуже" },
-    ],
-    finding:
-      "Путь был от «не работает совсем» до почти идеального результата на нашем тесте — примерно за 10 аккуратных шагов. Сработала пара вещей: короткий чёткий запрос к модели плюс предсказуемая чистка её ответа кодом. Длинный подробный запрос только всё ухудшил — его откатили. Мелкие копейки в цене «без карты» — это предел качества исходного видео, а не нашего метода.",
-    shipped:
-      "Модель Qwen3-VL-4B локально, зафиксированные запрос и разбор ответа, PaddleOCR и Tesseract как запасные варианты.",
-  },
-  {
-    id: "qr",
-    icon: QrCode,
-    title: "Как считывать коды",
-    blurb:
-      "Коды на ценниках Ленты — это не один аккуратный «QR с ценами», а смесь разных типов. Мы пробовали считывать их по-разному и честно дошли до предела, который задаёт само качество съёмки.",
-    stat: "4 сканера · поиск кода по зонам ценника",
-    tried: [
-      {
-        label: "Сразу несколько движков распознавания кодов в связке",
-        verdict: "prod",
-      },
-      {
-        label: "Ищем код там, где он по макету ценника и должен быть (2D-код справа сверху, штрихкод — полосой снизу)",
-        verdict: "prod",
-        note: "именно это и дало результат",
-      },
-      {
-        label: "Разрешаем только реальные для Ленты типы кодов (QR, DataMatrix, EAN/UPC, Code128, DataBar)",
-        verdict: "prod",
-        note: "чтобы не ловить чужие форматы по ошибке",
-      },
-      { label: "Проверка контрольной цифры — отбраковываем неверно считанные коды", verdict: "prod", note: "ошибочный код хуже пустого" },
-      { label: "Поиск кода «вслепую» по всему ярлыку с поворотами", verdict: "rejected", note: "ноль попаданий" },
-      {
-        label: "Собирать код из многих кадров сразу",
-        verdict: "rejected",
-        note: "0 прироста — дело в смазе на видео, а не в сканере",
-      },
-    ],
-    finding:
-      "На деле коды совершенно разные: где-то QR-ссылка, где-то непрозрачный квадратный код, где-то многоэтажный или линейный штрихкод. Единственное, что реально помогло их вскрыть, — искать код там, где он расположен по макету ценника. Сравнение «как было / как стало» показало честный потолок около 9%: дальше всё упирается в качество съёмки (смаз стирает мелкие элементы кода), и лечится это условиями записи и сбором из многих кадров, а не донастройкой сканеров.",
-    shipped:
-      "Связка сканеров + поиск кода по зонам ценника, проверка контрольной цифры; склейка дубликатов сводит редкие прочитанные коды ровно в одну строку по штрихкоду.",
-  },
-  {
-    id: "tuning",
-    icon: SlidersHorizontal,
-    title: "Тонкая настройка",
-    blurb:
-      "Десятки мелких настроек — все проверены замером, а не на глаз. Меняем по одной за раз и оставляем только то, что реально дало плюс.",
-    stat: "журнал каждого прогона · по одной настройке",
-    tried: [
-      { label: "Поиск ценников: разрешение кадра, порог уверенности, способ обучения", verdict: "prod" },
-      { label: "Ведение по кадрам: выбор алгоритма, учёт движения камеры, пороги", verdict: "prod" },
-      { label: "Склейка дубликатов: одинаковый штрихкод → объединяем; учитываем время и пересечение рамок", verdict: "prod" },
-      { label: "Выбор лучшего кадра: резкость, размер ярлыка, уверенность и штраф за край кадра", verdict: "prod" },
-      { label: "Подготовка ярлыка: поля по краям, контраст; пороги для итогового ответа", verdict: "prod" },
-      { label: "Метод: каждый прогон — запись в журнал, проверка на отложенном видео и глазами", verdict: "prod" },
-      { label: "Тонкая перенастройка на маленьком объёме данных", verdict: "rejected", note: "почти ничего не меняет" },
-    ],
-    finding:
-      "Правило простое: одна настройка за раз, оставляем только при измеримом улучшении на отложенных данных. Многие «очевидные» крутилки на деле ничего не дали. Решают разрешение, объём данных и качество съёмки — а не тонкая настройка.",
-    shipped:
-      "Зафиксированные режимы «быстро / сбалансированно / качество», задокументированные настройки и журнал каждого прогона.",
-  },
-];
+const SECTION_ICONS: Record<string, LucideIcon> = {
+  detector: ScanSearch,
+  ocr: Languages,
+  qr: QrCode,
+  tuning: SlidersHorizontal,
+};
 
 const VERDICT: Record<
   Verdict,
   { label: string; hint: string; icon: LucideIcon; cls: string }
 > = {
   prod: {
-    label: "в работе",
-    hint: "вошло в финальную версию",
+    ...EXPERIMENTS_PAGE_COPY.verdict.prod,
     icon: Check,
     cls: "border-chartwell-blue/40 bg-chartwell-blue/10 text-slate-text",
   },
   explored: {
-    label: "проверили",
-    hint: "замерили, но не пригодилось",
+    ...EXPERIMENTS_PAGE_COPY.verdict.explored,
     icon: FlaskConical,
     cls: "border-stone-border bg-canvas-fog text-ash-gray",
   },
   rejected: {
-    label: "стало хуже",
-    hint: "замер показал — не помогает",
+    ...EXPERIMENTS_PAGE_COPY.verdict.rejected,
     icon: X,
     cls: "border-stone-border bg-transparent text-steel-gray",
   },
@@ -234,13 +51,14 @@ const VERDICT: Record<
 const VERDICT_ORDER: Verdict[] = ["prod", "explored", "rejected"];
 
 export default function ExperimentsPage() {
-  const [activeId, setActiveId] = useState(SECTIONS[0].id);
-  const section = SECTIONS.find((s) => s.id === activeId) ?? SECTIONS[0];
-  const ActiveIcon = section.icon;
+  const [activeId, setActiveId] = useState(EXPERIMENTS_SECTIONS_COPY[0].id);
+  const section =
+    EXPERIMENTS_SECTIONS_COPY.find((s) => s.id === activeId) ??
+    EXPERIMENTS_SECTIONS_COPY[0];
+  const ActiveIcon = SECTION_ICONS[section.id] ?? ScanSearch;
 
   return (
     <div className="flex flex-col gap-10">
-      {/* Hero */}
       <section className="mx-auto max-w-2xl pt-6 text-center">
         <p className="text-caption font-medium uppercase tracking-[0.14em] text-chartwell-blue">
           {EXPERIMENTS_PAGE_COPY.heroKicker}
@@ -259,11 +77,10 @@ export default function ExperimentsPage() {
         </div>
       </section>
 
-      {/* Category switcher */}
       <section className="mx-auto w-full max-w-4xl">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {SECTIONS.map((s) => {
-            const Icon = s.icon;
+          {EXPERIMENTS_SECTIONS_COPY.map((s) => {
+            const Icon = SECTION_ICONS[s.id] ?? ScanSearch;
             const on = s.id === activeId;
             return (
               <button
@@ -301,7 +118,6 @@ export default function ExperimentsPage() {
           })}
         </div>
 
-        {/* Legend — what the status pills mean */}
         <div className="mt-3 flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5">
           {VERDICT_ORDER.map((v) => {
             const meta = VERDICT[v];
@@ -324,7 +140,6 @@ export default function ExperimentsPage() {
         </div>
       </section>
 
-      {/* Active section */}
       <section className="mx-auto w-full max-w-4xl">
         <Card feature className="p-6 sm:p-8">
           <div className="flex items-start gap-3">
@@ -344,7 +159,7 @@ export default function ExperimentsPage() {
           {section.datasets && (
             <div className="mt-6">
               <p className="text-caption font-medium uppercase tracking-[0.12em] text-steel-gray">
-                Открытые наборы данных, которые мы использовали
+                {EXPERIMENTS_PAGE_COPY.datasetsTitle}
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {section.datasets.map((d) => (
@@ -365,14 +180,11 @@ export default function ExperimentsPage() {
 
           <div className="mt-6">
             <p className="text-caption font-medium uppercase tracking-[0.12em] text-steel-gray">
-              Что пробовали и с каким исходом
+              {EXPERIMENTS_PAGE_COPY.triedTitle}
             </p>
             {section.id === "tuning" && (
               <p className="mt-2 rounded-input border border-chartwell-blue/25 bg-chartwell-blue/5 px-3 py-2 text-[12px] leading-[1.55] text-ash-gray">
-                Тонкая настройка влияет точечно, но не «волшебно»: основной
-                прирост дают качество съёмки, объём данных и корректная
-                структура пайплайна. Поэтому оставлены только параметры с
-                подтверждённым эффектом.
+                {EXPERIMENTS_PAGE_COPY.tuningNote}
               </p>
             )}
             <ul className="mt-3 flex flex-col gap-2">
@@ -394,9 +206,7 @@ export default function ExperimentsPage() {
                         {a.label}
                       </span>
                       {a.note && (
-                        <span className="ml-2 text-[12px] text-ash-gray">
-                          — {a.note}
-                        </span>
+                        <span className="ml-2 text-[12px] text-ash-gray">— {a.note}</span>
                       )}
                     </div>
                     <span
@@ -435,7 +245,6 @@ export default function ExperimentsPage() {
         </Card>
       </section>
 
-      {/* Closing */}
       <section className="mx-auto w-full max-w-4xl">
         <Card className="flex flex-col items-center gap-2 p-6 text-center">
           <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">

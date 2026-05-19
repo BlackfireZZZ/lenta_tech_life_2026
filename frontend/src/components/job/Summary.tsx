@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import type { JobPredictions } from "@/api/jobs";
 import { colorMeta } from "@/lib/tags";
+import { TAG_SCHEMA_COPY } from "@/content/tagSchemaContent";
 
 // Two things a store reviewer actually cares about: how many price tags were
 // found, and how they split by price type (обычная / по карте / промо /
@@ -15,13 +16,13 @@ export function Summary({ data }: { data: JobPredictions }) {
   return (
     <div className="grid gap-4 sm:grid-cols-3">
       <Card className="p-6">
-        <p className="text-[14px] text-ash-gray">Найдено ценников</p>
+        <p className="text-[14px] text-ash-gray">{TAG_SCHEMA_COPY.summary.foundTags}</p>
         <p className="mt-2 font-display text-heading-lg font-medium text-slate-text">
           {tags.length}
         </p>
       </Card>
       <Card className="p-6 sm:col-span-2">
-        <p className="text-[14px] text-ash-gray">По типу цены</p>
+        <p className="text-[14px] text-ash-gray">{TAG_SCHEMA_COPY.summary.byPriceType}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           {Object.entries(byType).map(([color, n]) => {
             const m = colorMeta(color);

@@ -2,6 +2,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import type { JobPredictions, TagPrediction } from "@/api/jobs";
 import { colorMeta, fieldState, tagLabel } from "@/lib/tags";
 import { cn } from "@/lib/utils";
+import { TAG_SCHEMA_COPY } from "@/content/tagSchemaContent";
 
 // A quick scannable list of every recognized price tag: name, both prices,
 // barcode. Click a row to open it in the reviewer above. No internal
@@ -20,10 +21,10 @@ export function TagsTable({
       <THead>
         <tr>
           <TH className="w-10">#</TH>
-          <TH>Ценник</TH>
-          <TH className="w-28">Без карты</TH>
-          <TH className="w-28">По карте</TH>
-          <TH className="w-44">Штрихкод</TH>
+          <TH>{TAG_SCHEMA_COPY.tagsTable.name}</TH>
+          <TH className="w-28">{TAG_SCHEMA_COPY.tagsTable.noCard}</TH>
+          <TH className="w-28">{TAG_SCHEMA_COPY.tagsTable.byCard}</TH>
+          <TH className="w-44">{TAG_SCHEMA_COPY.tagsTable.barcode}</TH>
         </tr>
       </THead>
       <TBody>
@@ -100,10 +101,12 @@ function Row({
         {fieldState(tag.fields.barcode) === "value" ? (
           <span className={partial ? "text-amber-600" : "text-slate-text"}>
             {bc}
-            {partial && <span className="ml-1 text-[11px]">(частичный)</span>}
+            {partial && (
+              <span className="ml-1 text-[11px]">{TAG_SCHEMA_COPY.tagsTable.partial}</span>
+            )}
           </span>
         ) : (
-          <span className="text-steel-gray">не распознан</span>
+          <span className="text-steel-gray">{TAG_SCHEMA_COPY.tagsTable.notRecognized}</span>
         )}
       </TD>
     </TR>

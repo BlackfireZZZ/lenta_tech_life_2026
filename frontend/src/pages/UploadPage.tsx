@@ -9,45 +9,38 @@ import {
   Table2,
   UploadCloud,
   X,
-  Zap,
 } from "lucide-react";
-import { jobsApi, type ProcessingMode, type Rotation } from "@/api/jobs";
+import { jobsApi, type Rotation } from "@/api/jobs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { ServerLimitNote } from "@/components/ServerLimitNote";
+import { UPLOAD_PAGE_COPY } from "@/content/uploadPageContent";
 import { cn, formatBytes } from "@/lib/utils";
 
 const STEPS = [
   {
     icon: ScanLine,
-    title: "Находим ценники",
-    body: "Система просматривает видео кадр за кадром и обводит рамкой каждый ценник на полке.",
+    ...UPLOAD_PAGE_COPY.steps[0],
   },
   {
     icon: Tag,
-    title: "Читаем, что на них написано",
-    body: "Для каждого ценника берётся самый чёткий кадр — с него считываются цена, скидка, штрихкод и QR-код.",
+    ...UPLOAD_PAGE_COPY.steps[1],
   },
   {
     icon: Table2,
-    title: "Собираем таблицу",
-    body: "Один и тот же ценник встречался во многих кадрах — мы сводим его в одну строку. На выходе — готовая таблица, которую можно скачать.",
+    ...UPLOAD_PAGE_COPY.steps[2],
   },
 ];
 
 const ROTATE_NEXT: Record<Rotation, Rotation> = {
-  none: "ccw",
-  ccw: "cw",
-  cw: "none",
+  ccw: "none",
+  none: "cw",
+  cw: "ccw",
 };
 // CSS preview = how the detector will see the frames.
 const ROTATE_DEG: Record<Rotation, number> = { none: 0, ccw: -90, cw: 90 };
-const ROTATE_LABEL: Record<Rotation, string> = {
-  none: "как загружено",
-  ccw: "против часовой 90°",
-  cw: "по часовой 90°",
-};
+const ROTATE_LABEL: Record<Rotation, string> = UPLOAD_PAGE_COPY.rotateLabels;
+const DEFAULT_ROTATION: Rotation = "ccw";
 
 export default function UploadPage() {
   const navigate = useNavigate();
@@ -55,15 +48,10 @@ export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // Detector-only pre-rotation. Default "none" — the upload is trusted
-  // as-is; this button is the explicit fix for a sideways clip. It NEVER
-  // changes the stored video, the review playback or the graded CSV
-  // coords — only how the detector model sees frames.
-  const [rotation, setRotation] = useState<Rotation>("none");
-  // Recognition depth. Default = full (unchecked): the heavy text model
-  // reads several shots per tag and votes. Checked = fast: one shot per
-  // tag, much quicker. Detection is the same in both — it is already fast.
-  const [fast, setFast] = useState(false);
+  // Detector-only pre-rotation. Robot shelf videos are camera-sideways by
+  // default, matching balanced.yaml's ccw detector path. This never changes
+  // the stored video, review playback or graded CSV coords.
+  const [rotation, setRotation] = useState<Rotation>(DEFAULT_ROTATION);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   // Own the object URL for the local preview; revoke when it changes/clears.
@@ -80,8 +68,8 @@ export default function UploadPage() {
   const pick = useCallback((f: File | undefined | null) => {
     if (!f) return;
     if (!f.type.startsWith("video/")) {
-      toast.error("Нужен видеофайл", {
-        description: "Загрузите запись с полки (.mp4, .mov, .mkv …).",
+      toast.error(UPLOAD_PAGE_COPY.toasts.invalidFileTitle, {
+        description: UPLOAD_PAGE_COPY.toasts.invalidFileDescription,
       });
       return;
     }
@@ -101,32 +89,31 @@ export default function UploadPage() {
     if (!file || submitting) return;
     setSubmitting(true);
     try {
-      const mode: ProcessingMode = fast ? "fast" : "full";
-      const job = await jobsApi.create(file, rotation, mode);
+      const job = await jobsApi.create(file, rotation);
       navigate(`/jobs/${job.id}`);
     } catch (err) {
       setSubmitting(false);
-      toast.error("Не удалось запустить обработку", {
-        description: err instanceof Error ? err.message : "Проверьте, что сервер запущен.",
+      toast.error(UPLOAD_PAGE_COPY.toasts.submitFailedTitle, {
+        description:
+          err instanceof Error
+            ? err.message
+            : UPLOAD_PAGE_COPY.toasts.submitFailedFallbackDescription,
       });
     }
-  }, [file, submitting, navigate, rotation, fast]);
+  }, [file, submitting, navigate, rotation]);
 
   return (
     <div className="flex flex-col gap-12">
       {/* Hero */}
       <section className="mx-auto max-w-2xl pt-6 text-center">
         <p className="text-caption font-medium uppercase tracking-[0.14em] text-chartwell-blue">
-          Lenta Tech Life 2026
+          {UPLOAD_PAGE_COPY.hero.kicker}
         </p>
         <h1 className="mt-4 font-display text-heading-lg font-medium text-slate-text sm:text-display">
-          Полка под контролем
+          {UPLOAD_PAGE_COPY.hero.title}
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-[16px] leading-[1.6] text-ash-gray">
-          Загрузите видео, на котором робот едет вдоль полки, — система найдёт
-          каждый ценник, прочитает, что на нём написано, и соберёт всё в одну
-          таблицу. Видео, момент в кадре, увеличенный ярлык и распознанные
-          данные — всё на одном экране.
+          {UPLOAD_PAGE_COPY.hero.lead}
         </p>
       </section>
 
@@ -135,7 +122,7 @@ export default function UploadPage() {
         <div
           role="button"
           tabIndex={0}
-          aria-label="Загрузить видео"
+          aria-label={UPLOAD_PAGE_COPY.uploadCard.ariaUpload}
           onClick={() => !file && inputRef.current?.click()}
           onKeyDown={(e) => {
             if ((e.key === "Enter" || e.key === " ") && !file) {
@@ -202,26 +189,24 @@ export default function UploadPage() {
                   }}
                   className="inline-flex items-center gap-1.5 rounded-pill border border-stone-border bg-cloud-white px-3 py-1.5 text-caption font-medium text-slate-text hover:border-chartwell-blue hover:text-chartwell-blue"
                 >
-                  <RotateCw className="size-3.5" /> Повернуть · {ROTATE_LABEL[rotation]}
+                  <RotateCw className="size-3.5" /> {UPLOAD_PAGE_COPY.uploadCard.rotateButtonPrefix} · {ROTATE_LABEL[rotation]}
                 </button>
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     setFile(null);
-                    setRotation("none");
+                    setRotation(DEFAULT_ROTATION);
                     if (inputRef.current) inputRef.current.value = "";
                   }}
                   className="inline-flex items-center gap-1 rounded-pill px-3 py-1.5 text-caption text-ash-gray hover:text-slate-text"
                 >
-                  <X className="size-3.5" /> Другое видео
+                  <X className="size-3.5" /> {UPLOAD_PAGE_COPY.uploadCard.otherVideo}
                 </button>
               </div>
 
               <p className="max-w-md text-center text-caption text-ash-gray">
-                Поворот нужен, только если ценники лежат на боку, — он влияет
-                лишь на то, как кадры «видит» распознавание. Сам файл и видео
-                в результатах останутся как есть.
+                {UPLOAD_PAGE_COPY.uploadCard.rotateHint}
               </p>
             </div>
           ) : (
@@ -231,64 +216,26 @@ export default function UploadPage() {
               </span>
               <div>
                 <p className="text-[15px] font-medium text-slate-text">
-                  Перетащите видео сюда или нажмите, чтобы выбрать
+                  {UPLOAD_PAGE_COPY.uploadCard.dropTitle}
                 </p>
                 <p className="mt-1 text-caption text-ash-gray">
-                  MP4 / MOV / MKV · запись проезда робота вдоль полки
+                  {UPLOAD_PAGE_COPY.uploadCard.dropHint}
                 </p>
               </div>
             </div>
           )}
         </div>
 
-        <div className="flex flex-col gap-3 px-4 py-4">
-          {/* Fast vs full recognition. Detection is NOT cut here (it is
-              already fast — the user asked to keep it); only the slow
-              per-tag text recognition runs on fewer shots when fast is on. */}
-          <label
-            className={cn(
-              "flex cursor-pointer items-start gap-3 rounded-card border px-4 py-3 transition-colors",
-              fast
-                ? "border-chartwell-blue bg-sky-tint/30"
-                : "border-stone-border bg-canvas-fog hover:border-chartwell-blue/60",
-            )}
-          >
-            <input
-              type="checkbox"
-              checked={fast}
-              onChange={(e) => setFast(e.target.checked)}
-              className="mt-0.5 size-4 shrink-0 accent-chartwell-blue"
-            />
-            <span className="min-w-0">
-              <span className="flex items-center gap-1.5 text-[14px] font-medium text-slate-text">
-                <Zap className="size-4 text-chartwell-blue" /> Быстрый прогон
-              </span>
-              <span className="mt-0.5 block text-caption leading-[1.55] text-ash-gray">
-                Чтение текста с ценников — самая долгая часть. В быстром
-                режиме нейросеть распознаёт каждый ценник по одному лучшему
-                кадру, а не по нескольким: заметно быстрее, точность чуть
-                ниже. Поиск ценников в кадре не меняется — он и так быстрый.
-              </span>
-            </span>
-          </label>
-
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-caption text-ash-gray">
-              {fast
-                ? "Быстрый режим: одна попытка распознавания на ценник."
-                : "Полный режим: несколько кадров на ценник и голосование за точность."}
-            </p>
-            <Button size="lg" disabled={!file || submitting} onClick={submit}>
-              {submitting ? <Spinner /> : <UploadCloud />}
-              {submitting ? "Запуск…" : "Обработать видео"}
-            </Button>
-          </div>
+        <div className="flex items-center justify-between gap-4 px-4 py-4">
+          <p className="text-caption text-ash-gray">
+            {UPLOAD_PAGE_COPY.uploadCard.processHint}
+          </p>
+          <Button size="lg" disabled={!file || submitting} onClick={submit}>
+            {submitting ? <Spinner /> : <UploadCloud />}
+            {submitting ? UPLOAD_PAGE_COPY.uploadCard.submitting : UPLOAD_PAGE_COPY.uploadCard.submit}
+          </Button>
         </div>
       </Card>
-
-      {/* Why a video may wait — a real limit of the cheap rented server,
-          stated up front so the queue screen is no surprise. */}
-      <ServerLimitNote className="mx-auto w-full max-w-2xl" />
 
       {/* How it works */}
       <section className="mx-auto grid w-full max-w-4xl gap-4 sm:grid-cols-3">
@@ -298,7 +245,9 @@ export default function UploadPage() {
               <span className="grid size-7 place-items-center rounded-input bg-chartwell-blue/10 text-chartwell-blue">
                 <Icon className="size-4" />
               </span>
-              <span className="text-caption font-medium text-ash-gray">Шаг {i + 1}</span>
+              <span className="text-caption font-medium text-ash-gray">
+                {UPLOAD_PAGE_COPY.stepLabelPrefix} {i + 1}
+              </span>
             </div>
             <h3 className="mt-3 font-display text-heading-sm font-medium text-slate-text">
               {title}

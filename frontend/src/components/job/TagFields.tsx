@@ -1,5 +1,6 @@
 import type { TagPrediction } from "@/api/jobs";
 import { colorMeta, FIELD_GROUPS, fieldState } from "@/lib/tags";
+import { TAG_SCHEMA_COPY } from "@/content/tagSchemaContent";
 
 // The recognized data, grouped and labelled — the "красиво распознанные
 // данные" the review screen exists for. The three task.md §3.3 states are
@@ -47,14 +48,14 @@ function FieldValue({
   if (state === "absent") {
     return (
       <span className="inline-flex items-center rounded-pill border border-stone-border bg-canvas-fog px-2 py-0.5 text-[12px] text-ash-gray">
-        нет на ценнике
+        {TAG_SCHEMA_COPY.tagFields.absent}
       </span>
     );
   }
   if (state === "unrecognized") {
     return (
       <span className="inline-flex items-center rounded-pill border border-amber-200 bg-amber-50 px-2 py-0.5 text-[12px] text-amber-700">
-        не распознано
+        {TAG_SCHEMA_COPY.tagFields.unrecognized}
       </span>
     );
   }

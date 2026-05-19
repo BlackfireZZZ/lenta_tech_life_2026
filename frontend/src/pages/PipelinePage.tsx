@@ -125,7 +125,7 @@ export default function PipelinePage() {
           <Button
             size="lg"
             onClick={onPlay}
-            aria-label="Запустить прогон"
+            aria-label={PIPELINE_PAGE_COPY.cta.runAria}
             className="min-w-[220px] shadow-card transition-transform duration-200 hover:-translate-y-0.5"
           >
             {playing ? <Pause /> : <Play />}
@@ -141,7 +141,7 @@ export default function PipelinePage() {
             variant="ghost"
             size="lg"
             onClick={reset}
-            aria-label="Сбросить"
+            aria-label={PIPELINE_PAGE_COPY.cta.resetAria}
             className="min-w-[170px]"
           >
             <RotateCcw /> {PIPELINE_PAGE_COPY.cta.reset}
@@ -238,7 +238,9 @@ export default function PipelinePage() {
                               : "text-steel-gray group-hover:text-chartwell-blue",
                           )}
                         >
-                          {isActive ? "Свернуть" : "Подробнее"}
+                          {isActive
+                            ? PIPELINE_PAGE_COPY.stageToggle.collapse
+                            : PIPELINE_PAGE_COPY.stageToggle.expand}
                         </span>
                         <span
                           className={cn(
@@ -302,13 +304,10 @@ export default function PipelinePage() {
       <section className="mx-auto w-full max-w-3xl">
         <Card className="flex flex-col items-center gap-2 p-6 text-center">
           <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
-            Одно целое
+            {PIPELINE_PAGE_COPY.closing.title}
           </p>
           <p className="max-w-xl text-[14px] leading-[1.65] text-ash-gray">
-            Поиск ценников, их ведение по кадрам, распознавание и сверка с
-            каталогом — это разные части, но все они говорят на одном «языке»:
-            таблице из 29 столбцов. Один формат на всю систему — поэтому данные
-            нигде не теряются и не путаются.
+            {PIPELINE_PAGE_COPY.closing.text}
           </p>
         </Card>
       </section>
