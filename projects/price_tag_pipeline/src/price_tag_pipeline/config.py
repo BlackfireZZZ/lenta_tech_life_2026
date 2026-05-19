@@ -231,7 +231,7 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         min_crop_area_px=int(node["min_crop_area_px"]),
         min_detection_confidence=float(node["min_detection_confidence"]),
         top_k_crops_per_track=int(_opt(node, "top_k_crops_per_track", 5)),
-        code_decode_top_k=int(_opt(node, "code_decode_top_k", 24)),
+        code_decode_top_k=int(_opt(node, "code_decode_top_k", 0)),
         code_fuse_frames=int(_opt(node, "code_fuse_frames", 0)),
         vlm_model=str(_opt(node, "vlm_model", "PaddlePaddle/PaddleOCR-VL")),
         vlm_prompt_path=_opt(node, "vlm_prompt_path"),
