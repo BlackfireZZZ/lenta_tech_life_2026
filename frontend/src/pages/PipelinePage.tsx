@@ -10,14 +10,12 @@ import {
   Library,
   ListChecks,
   QrCode,
-  RotateCcw,
   ScanSearch,
   Sparkles,
   Spline,
   UploadCloud,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
@@ -67,14 +65,9 @@ export default function PipelinePage() {
   const last = STAGES.length - 1;
   const pct = (active / last) * 100;
 
-  const reset = useCallback(() => {
-    setActive(0);
-  }, []);
-
   const select = useCallback((i: number) => {
     setActive((cur) => (cur === i ? -1 : i)); // click again to collapse
   }, []);
-  const cta = (PIPELINE_PAGE_COPY as { cta?: { reset?: string; resetAria?: string } }).cta;
   const closing = (PIPELINE_PAGE_COPY as { closing?: { title?: string; text?: string } }).closing;
 
   return (
@@ -99,17 +92,6 @@ export default function PipelinePage() {
         <p className="mx-auto mt-4 max-w-xl text-[16px] leading-[1.6] text-ash-gray">
           {PIPELINE_PAGE_COPY.heroLead}
         </p>
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Button
-            variant="ghost"
-            size="lg"
-            onClick={reset}
-            aria-label={cta?.resetAria ?? "Сбросить"}
-            className="min-w-[170px]"
-          >
-            <RotateCcw /> {cta?.reset ?? "Сброс"}
-          </Button>
-        </div>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
           <Badge variant="accent">
             <Sparkles className="size-3" /> {PIPELINE_PAGE_COPY.badges[0]}
