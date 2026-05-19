@@ -6,15 +6,13 @@ writes one JPEG every ``--every`` seconds into
 ``<out>/<scene>/NNNNNN.jpg`` and skips frames where the robot was parked
 (near-duplicate of the last kept frame — see ``data.frame_sampling``).
 
-**Orientation.** The Lenta scan-robot camera is mounted rotated 90°
-clockwise: every clip is stored 3840×2160 *landscape* but the shelf is
-actually **vertical** — price tags lie on their side.  We undo it with a
-counter-clockwise rotation by default (``--rotate ccw``) so frames are
-upright portrait: the annotator sees a natural photo and, more importantly,
-the price-tag detector (trained on upright tags) stops missing/duplicating
-sideways tags.  Boxes are produced by the detector on these same rotated
-frames, so everything downstream stays consistent — there is no organizer
-seed to mis-place anymore.  ``--rotate none`` keeps the raw landscape.
+**Orientation.** The old default assumed every scan-robot clip needed a
+counter-clockwise turn. In practice clips can arrive from different camera
+mounts, so ``--rotate auto`` is now the safe default: STEP 1 keeps frames as
+captured and STEP 2 (``prelabel_frames.py --orientation auto``) lets the
+detector choose ``none`` / ``cw`` / ``ccw`` / ``180`` per scene before writing
+YOLO labels. Use an explicit ``--rotate ccw|cw|180|none`` only when you know
+the camera orientation in advance.
 
 Output layout (Ultralytics-style, label files land next to images in STEP 2):
 
@@ -96,6 +94,7 @@ def _slice_one(video: Path, scene: str, every: float, min_diff: float,
     rot_code = {
         "ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
         "cw": cv2.ROTATE_90_CLOCKWISE,
+        "180": cv2.ROTATE_180,
     }.get(rotate)
 
     seen = sampled = 0
@@ -123,6 +122,7 @@ def _slice_one(video: Path, scene: str, every: float, min_diff: float,
         "frames": files,
         "kept": len(files),
         "source_total": seen,
+        "rotate": rotate,
     }
 
 
@@ -141,9 +141,10 @@ def main() -> int:
     p.add_argument("--out", type=Path, default=Path("cvat_video_frames"))
     p.add_argument("--include-unlabeled", action="store_true",
                    help="also slice an Unlabeled/ subtree (skipped by default)")
-    p.add_argument("--rotate", choices=["ccw", "cw", "none"], default="ccw",
-                   help="90° rotation to upright the sideways robot footage "
-                        "(default ccw — the rig is mounted 90° clockwise)")
+    p.add_argument("--rotate", choices=["auto", "ccw", "cw", "180", "none"], default="auto",
+                   help="'auto' keeps raw frames and lets STEP 2 choose the "
+                        "best detector orientation per scene. Explicit values "
+                        "rotate frames immediately.")
     p.add_argument("--jpeg-quality", type=int, default=95)
     p.add_argument("--log-level", default="INFO")
     a = p.parse_args()

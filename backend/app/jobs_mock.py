@@ -81,7 +81,19 @@ def _price_num(s: str) -> float:
     return float(s)
 
 
-def _build_one(rng: Random, index: int, filename: str, n: int) -> TagPrediction:
+def _build_one(
+    rng: Random,
+    index: int,
+    filename: str,
+    n: int,
+    *,
+    t_frac: float | None = None,
+    bbox: BBoxNorm | None = None,
+    clean: bool = False,
+) -> TagPrediction:
+    """One mock tag. ``t_frac``/``bbox`` let the caller place several tags on
+    the SAME frame (a busy shelf moment); ``clean`` keeps every field decided
+    so the tag stays above the review threshold and is actually shown."""
     name, price_default, price_card, color = rng.choice(_CATALOGUE)
     has_card = price_card != price_default
 
@@ -99,8 +111,9 @@ def _build_one(rng: Random, index: int, filename: str, n: int) -> TagPrediction:
 
     # ~30% of tags have no QR block at all → every QR field is "нет".
     # Of the rest, a few have a QR that simply didn't decode → "" (unrec).
-    has_qr = rng.random() > 0.30
-    qr_unrecognized = has_qr and rng.random() < 0.20
+    # A `clean` tag always has a decoded QR so it stays above threshold.
+    has_qr = True if clean else rng.random() > 0.30
+    qr_unrecognized = (not clean) and has_qr and rng.random() < 0.20
 
     def qr(value: str) -> str:
         if not has_qr:
@@ -137,19 +150,24 @@ def _build_one(rng: Random, index: int, filename: str, n: int) -> TagPrediction:
     }
 
     # A couple of substantive fields left unrecognized on some tags, so the
-    # per-tag completeness shown in the UI is honest about the 80% threshold
-    # (task.md §5.1) rather than a perfect 100% everywhere.
-    if rng.random() < 0.45:
+    # review's "only confident tags" filter has something to actually hide.
+    # `clean` tags are exempt (they must stay visible).
+    if not clean and rng.random() < 0.45:
         victim = rng.choice(["product_name", "id_sku", "print_datetime", "code"])
         fields[victim] = UNREC
 
-    # Bounding box in normalized [0,1] coords. Tags sit across the shelf width
-    # and in the lower ~75% of the portrait frame.
-    bw = rng.uniform(0.16, 0.30)
-    bh = rng.uniform(0.09, 0.17)
-    x1 = rng.uniform(0.04, 1.0 - bw - 0.04)
-    y1 = rng.uniform(0.18, 1.0 - bh - 0.06)
-    bbox = BBoxNorm(x1=round(x1, 4), y1=round(y1, 4), x2=round(x1 + bw, 4), y2=round(y1 + bh, 4))
+    # Bounding box in normalized [0,1] coords. Caller may pin it (a tag that
+    # shares one frame with others); otherwise it sits across the shelf width
+    # in the lower ~75% of the portrait frame.
+    if bbox is None:
+        bw = rng.uniform(0.16, 0.30)
+        bh = rng.uniform(0.09, 0.17)
+        x1 = rng.uniform(0.04, 1.0 - bw - 0.04)
+        y1 = rng.uniform(0.18, 1.0 - bh - 0.06)
+        bbox = BBoxNorm(
+            x1=round(x1, 4), y1=round(y1, 4),
+            x2=round(x1 + bw, 4), y2=round(y1 + bh, 4),
+        )
 
     # Pixel coords for the CSV, derived from the same normalized box.
     fields["x_min"] = str(round(bbox.x1 * FRAME_WIDTH))
@@ -157,9 +175,12 @@ def _build_one(rng: Random, index: int, filename: str, n: int) -> TagPrediction:
     fields["x_max"] = str(round(bbox.x2 * FRAME_WIDTH))
     fields["y_max"] = str(round(bbox.y2 * FRAME_HEIGHT))
 
-    # One timestamp per unique tag (task.md §6.3): spread across the clip.
-    t_frac = round((index + 0.5) / n * 0.9 + rng.uniform(-0.02, 0.02) + 0.03, 4)
-    t_frac = min(0.97, max(0.02, t_frac))
+    # Normally one moment per unique tag, spread across the clip. When the
+    # caller pins `t_frac`, several tags land on the SAME frame (a busy shelf
+    # moment) so the in-frame multi-box navigation is exercised.
+    if t_frac is None:
+        t_frac = round((index + 0.5) / n * 0.9 + rng.uniform(-0.02, 0.02) + 0.03, 4)
+    t_frac = round(min(0.97, max(0.02, t_frac)), 4)
     frame_timestamp = int(t_frac * 60000)  # nominal ms; UI seeks by t_frac
     fields["frame_timestamp"] = str(frame_timestamp)
 
@@ -174,10 +195,44 @@ def _build_one(rng: Random, index: int, filename: str, n: int) -> TagPrediction:
 
 
 def generate_tags(job_id: UUID, filename: str) -> list[TagPrediction]:
-    """Deterministic per-job tag set (8–14 unique tags)."""
+    """Deterministic per-job tag set. Always includes one "busy frame": a row
+    of several tags pinned to a single timestamp, so the reviewer's in-frame
+    multi-box navigation is actually exercised (otherwise every frame is a
+    singleton and the feature looks broken)."""
     rng = Random(job_id.int)
-    n = rng.randint(8, 14)
-    return [_build_one(rng, i, filename, n) for i in range(n)]
+    n = rng.randint(10, 14)
+
+    k = rng.randint(3, 5)                       # boxes on the shared frame
+    start = rng.randint(1, n - k - 1)           # keep singletons on both sides
+    cluster = set(range(start, start + k))
+    cluster_tfrac = round(rng.uniform(0.35, 0.62), 4)
+    gap = 0.02
+    box_w = (0.92 - (k - 1) * gap) / k
+    row_y1 = round(rng.uniform(0.42, 0.58), 4)
+    box_h = 0.13
+
+    tags: list[TagPrediction] = []
+    for i in range(n):
+        if i in cluster:
+            j = i - start
+            x1 = round(0.04 + j * (box_w + gap), 4)
+            bbox = BBoxNorm(
+                x1=x1,
+                y1=row_y1,
+                x2=round(x1 + box_w, 4),
+                y2=round(row_y1 + box_h, 4),
+            )
+            tags.append(
+                _build_one(
+                    rng, i, filename, n,
+                    t_frac=cluster_tfrac, bbox=bbox, clean=True,
+                )
+            )
+        else:
+            tags.append(
+                _build_one(rng, i, filename, n, clean=rng.random() < 0.7)
+            )
+    return tags
 
 
 def build_predictions(

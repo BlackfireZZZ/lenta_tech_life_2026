@@ -13,6 +13,21 @@ class ProcessRequest(BaseModel):
 
     video_path: str  # path/URI the ML service can read (shared volume or object store)
     job_id: str  # gateway job id, for correlation/logging
+    # Original upload name. The graded CSV's `filename` cell is its bare stem
+    # (released Lenta CSVs use e.g. `25_2-10`). REQUIRED for correct GT
+    # matching: the bytes are stored on disk under an ASCII-safe
+    # "source.<ext>", so the ML service cannot recover the real name from
+    # `video_path`. Optional/"" only for backward compat (then the ML side
+    # falls back to the video_path stem).
+    filename: str = ""
+    # Detector-only frame pre-rotation: none | ccw | cw. Steers
+    # cfg.detector.frame_rotation (how the model sees frames). The stored
+    # video, the review playback and the graded CSV coords are ALWAYS the
+    # original orientation (boxes un-projected back). Default "none": an
+    # uploaded clip is trusted to be in its real-life orientation and the
+    # detector sees it untouched. The UI rotate button is the per-clip
+    # override for sideways footage (e.g. robot cam mounted 90° CW).
+    rotation: str = "none"
 
 
 class ProcessResponse(BaseModel):

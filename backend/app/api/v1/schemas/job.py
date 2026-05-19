@@ -87,6 +87,9 @@ class JobResponse(BaseModel):
     filename: str
     rows: int | None = None  # unique tags found (set when succeeded)
     error: str | None = None
+    # Coarse ML stage (detect | finalize | dedup | done); None in MOCK_MODE
+    # and before the first poll. The UI labels the bar from this.
+    phase: str | None = None
     # All three are set together when the job succeeds. URLs are relative to
     # the gateway origin so the SPA can serve them through its dev proxy.
     result_csv_url: str | None = None

@@ -6,16 +6,19 @@ internal service.
 This is the single source of truth for the web/service architecture — the
 per-service `README.md` files are thin pointers here.
 
-> **Current status: the product spine is wired end to end; the ML
-> inference layer is real.** Every service boundary and contract is in
-> place. `frontend` is the real upload→poll→review→CSV SPA. `backend` is a
-> self-contained deterministic mock (`MOCK_MODE`: in-memory jobs, seeded
-> mock tags, no DB and it does **not** call ML yet — §3.4/§5). `ml` is
-> **real**: it runs `PriceTagPipeline` and streams live progress, with a
-> guarded mock fallback so the monorepo still boots without GPU/weights
-> (§5). The unifying contract between all three is the graded 29-column
-> CSV + per-tag field semantics (§5.6). Remaining real work: backend
-> persistence and the backend→ML wiring (§9). Each section states
+> **Current status: the whole product is wired end to end and real.**
+> `frontend` is the real upload→poll→review→CSV SPA. `backend` now runs
+> `MOCK_MODE=false` in docker-compose: jobs **persist in Postgres**, and it
+> calls the **real** `ml` service **out-of-band** (the request returns
+> immediately; an asyncio task runs the pipeline and the gateway mirrors
+> ML `/progress` into `JobResponse.progress`), then serves the verbatim
+> graded CSV and a review payload reconstructed from it (§5.6). `ml` is
+> **real**: it runs `PriceTagPipeline` on GPU and streams live progress,
+> with a guarded mock fallback so the monorepo still boots without
+> GPU/weights (§5). `MOCK_MODE=true` is still supported as a standalone
+> skeleton (in-memory jobs, deterministic mock tags, no DB/Redis/ML) for
+> frontend-only work. The unifying contract between all three is the graded
+> 29-column CSV + per-tag field semantics (§5.6). Each section states
 > *as-built* vs. *target* so the doc never lies about the code.
 
 ---
@@ -52,8 +55,8 @@ lenta_tech_life_2026/
 │   │   │   ├── routes/       HTTP handlers (one file = one resource)
 │   │   │   └── schemas/      Pydantic DTOs (Create/Update/Response)
 │   │   ├── core/             config, logger (+ security/deps when auth lands)
-│   │   ├── db/               base, session, models/  (placeholder — §3.3)
-│   │   ├── cache/            redis wrapper            (placeholder — §3.9)
+│   │   ├── db/               base, session, models/  (implemented — §3.3)
+│   │   ├── cache/            redis wrapper            (implemented — §3.9)
 │   │   ├── ml/               CLIENT to the ML service (not the model!) — §5
 │   │   └── main.py           FastAPI assembly
 │   ├── scripts/init.sh       entrypoint: migrate → serve
@@ -134,9 +137,9 @@ HTTP → routes/<res>.py
 Simple CRUD logic lives directly in the route (no needless service layer —
 correct for a hackathon). Heavy domain logic → its own module.
 
-**As-built:** routes return mock data from an in-memory store; no DB/cache/
-auth dependencies are attached yet. The shape above is the target the
-placeholders are wired toward.
+**As-built:** routes are DB-backed (async SQLAlchemy via `session_scope`)
+with a fail-open Redis read-cache; auth is still out by design (§3.8). The
+data-flow shape above is real minus the auth dependency.
 
 ### 3.2 Config — `app/core/config.py`
 
@@ -147,14 +150,21 @@ Flip it off layer-by-layer as each is implemented. Computed
 `DATABASE_URL` / `DATABASE_URL_SYNC` (Alembic) / `REDIS_URL` are already
 defined for when persistence lands.
 
-### 3.3 Persistence — `app/db/` *(placeholder)*
+### 3.3 Persistence — `app/db/` *(implemented)*
 
-Target: `base.py` (declarative `Base`), `session.py` (async engine +
-`get_db_session`), `models/<res>.py` (one entity per file, UUID PKs,
-`created_at/updated_at` via `server_default=func.now()`, every model
-imported in `models/__init__.py` for Alembic autogenerate). Migrations:
-**autogenerate only**, applied by `scripts/init.sh` before Uvicorn.
-Files exist as commented placeholders pointing here.
+`base.py` (declarative `Base`), `session.py` (async `create_async_engine`
++ `async_sessionmaker` + `get_db_session` request dependency +
+`session_scope` for the out-of-band task + `init_models`/`ping`),
+`models/job.py` (the single `Job` entity — UUID PK, `created_at/updated_at`
+via `server_default=func.now()`, imported in `models/__init__.py`).
+
+**Deviation from the Alembic target (intentional, hackathon):** the schema
+is one `jobs` table, so the app brings it up with
+`Base.metadata.create_all` in the FastAPI lifespan (`init_models`, retried
+against a just-started Postgres) instead of Alembic migrations. `create_all`
+is idempotent and has zero migration-state failure surface in a
+one-command `docker compose up`. Alembic stays the documented path for when
+the schema grows (§3.10).
 
 ### 3.4 The `jobs` resource (the whole product API)
 
@@ -174,15 +184,21 @@ serves it **verbatim** and must never reshape graded columns. That
 29-column CSV is the contract that ties the gateway, the SPA and the real
 pipeline together; its three owners and lock-step are §5.6.
 
-**As-built:** `routes/jobs.py` keeps jobs in an in-memory dict and fakes
-progress on each poll. The uploaded clip is stored on a temp path and
-streamed back (range-enabled) by `GET /jobs/{id}/video`; the result is a
-deterministic mock tag set (`app/jobs_mock.py`, seeded by job id) exposed
-both as the verbatim 29-column `GET /jobs/{id}/result.csv` and as a
-non-graded review payload `GET /jobs/{id}/predictions` (per-tag normalized
-bbox + `frame_timestamp` + the value/`"нет"`/empty states, task.md §3.3).
-No DB and no real ML call yet. Target: persist jobs in Postgres, run the ML
-call out-of-band (§5.3), frontend polls `GET /jobs/{id}`.
+**As-built (`MOCK_MODE=false`, the docker-compose default):**
+`routes/jobs.py` persists every job in Postgres. `POST /jobs` writes the
+clip to the shared `uploads` volume under an ASCII-safe name, inserts a
+`queued` row, spawns an asyncio task and returns immediately. The task
+(`_process_job`, its own `session_scope`) marks the job `running`, calls
+the real ML service, and a sibling poller mirrors ML `/progress` into
+`Job.progress` (capped <1.0, stopped+awaited before the terminal write so
+it can't race). On success it stores the verbatim 29-column CSV and the
+review payload reconstructed from that CSV (`app/predictions.py`, §5.6);
+on any failure the job is `failed` with the message — the server never
+crashes. `GET /jobs/{id}` reads the row (terminal responses cached in
+Redis, fail-open, never a *running* job — §3.9); `/video` streams the
+stored clip (range-enabled); `/predictions` and `/result.csv` serve the
+persisted review JSON and the verbatim CSV. `MOCK_MODE=true` keeps the old
+in-memory deterministic mock (`app/jobs_mock.py`) for standalone work.
 
 ### 3.8 Authentication *(target — documented, not implemented)*
 
@@ -203,18 +219,25 @@ Decide auth in/out before building it; if in, it is the most expensive part
 — budget for it. Placeholder files are intentionally absent to avoid
 implying it's wired.
 
-### 3.9 Cache — `app/cache/` *(placeholder)*
+### 3.9 Cache — `app/cache/` *(implemented)*
 
-Target: `RedisCache.get_or_set_json(key, fetch, ttl)`; cache only
-GET-list/status reads, invalidate on any write; transparent passthrough
-when `CACHE_ENABLED=false`. Commented placeholder points here.
+`RedisCache` exposes `get_json`/`set_json` (+ the documented
+`get_or_set_json` convenience), all **fail-open**: any Redis error or
+`CACHE_ENABLED=false` ⇒ transparent passthrough, never a failed request.
+Wired in `GET /jobs/{id}` for **terminal jobs only** — a *running* job's
+status/progress changes every poll, so caching it would freeze the
+progress bar; a terminal job is immutable so its short TTL needs no
+invalidation. (Marginal value here since the SPA stops polling once
+terminal — kept because it makes the spine real and is provably safe.)
 
-### 3.10 Migrations — Alembic *(target)*
+### 3.10 Migrations — Alembic *(deferred; create_all in use — §3.3)*
 
-Autogenerate only (`uv run alembic revision --autogenerate -m "..."` →
-`upgrade head`); never hand-edit. `scripts/init.sh` runs `upgrade head`
-before serving (the migrate→serve contract is visible there as a no-op
-until persistence lands).
+The shipped path is `Base.metadata.create_all` in the app lifespan (§3.3):
+one table, idempotent, no migration state to corrupt on a cold
+`docker compose up`. Alembic (autogenerate only —
+`uv run alembic revision --autogenerate` → `upgrade head`, never
+hand-edit, run from `scripts/init.sh` before Uvicorn) remains the
+documented path for when the schema grows beyond `jobs`.
 
 ---
 
@@ -295,37 +318,44 @@ Tailwind v4 (`@tailwindcss/vite`), shadcn-style components in
 ### 5.2 Contract
 
 ```
-POST {ML_BASE_URL}/process            {video_path, job_id} → 200 {csv, rows, meta?}
+POST {ML_BASE_URL}/process            {video_path, job_id, filename} → 200 {csv, rows, meta?}
 GET  {ML_BASE_URL}/health                                  → 200 {"status":"ok","mode":…}
 GET  {ML_BASE_URL}/progress/{job_id}                        → 200 {fraction,phase,…}   (ADDITIVE)
 ```
 
 `csv` is the full 29-column submission text
 ([`hackathon/task.md`](./hackathon/task.md)); the backend persists and
-serves it unchanged. **The graded contract is `/process` + `/health`
-only** — `ProcessRequest`/`ProcessResponse` and their
-`backend/app/ml/schemas.py` mirror (§5.1 rule 3) are **unchanged**.
+serves it unchanged. `ProcessRequest` gained **`filename`** (optional,
+default `""`) — both mirrors updated in lock-step (§5.1 rule 3). It is
+**required for correctness**: the clip is stored on disk as an ASCII-safe
+`source.<ext>`, so without it every graded CSV's `filename` cell would be
+`source` and break GT matching for barcode-less tags. `meta` carries
+non-graded raw-clip geometry (`frame_width/height`, `video_duration_s`)
+the gateway uses to rebuild the review overlay. **The graded contract is
+`/process` + `/health`** and `ProcessResponse` is **unchanged**.
 `/progress/{job_id}` is **additive and optional**: the gateway MAY poll it
 to fill its own `JobResponse.progress`, but is not required to, and the
 two-mirror lock-step does not cover it.
 
 ### 5.3 Sync vs. async
 
-Video processing is **minutes-long**, so the honest target is the async
-pattern: backend creates a job, runs the ML call out-of-band, frontend
-polls `GET /api/v1/jobs/{id}`. The contract in §5.2 stays identical — only
-*who waits* changes. **As-built:** the ML side now runs the real pipeline
-and emits live progress (§5.5); `/process` is a *sync def* (FastAPI
-threadpool) so `/progress` stays answerable during a run, **without** a
-worker/queue (defer that — §8 — until the gateway side forces it). The
-*backend* still mocks its job flow (in-memory, instant) — that half is
-unchanged and still a skeleton.
+Video processing is **minutes-long**, so the gateway uses the async
+pattern: `POST /jobs` returns immediately, an asyncio task runs the ML
+call out-of-band, the frontend polls `GET /api/v1/jobs/{id}`. The contract
+in §5.2 is identical — only *who waits* changed. **As-built:** the ML side
+runs the real pipeline as a *sync def* (FastAPI threadpool) so `/progress`
+stays answerable during a run; the gateway side is an in-process
+`asyncio.create_task` (one uvicorn worker, single-user local testing —
+**no** RabbitMQ/queue, deferred per §8). If scaled out, the only change is
+swapping that task spawn for a real queue — the contract is unchanged.
 
 ### 5.4 Files
 
-`backend/app/ml/{schemas,client}.py` — contract + the single httpx seam
-(still mocked: returns a fake CSV; real body present as a comment —
-backend is out of this change's scope).
+`backend/app/ml/{schemas,client}.py` — contract + the single httpx seam.
+**Real:** `client.process()` does the async `POST /process`
+(`ML_TIMEOUT_SECONDS`, 502 on failure); `client.get_progress()` polls
+`/progress` best-effort (any failure → `{}`, never fails the job).
+`MOCK_MODE=true` still returns the fake CSV so the gateway runs standalone.
 `ml/app/{contract,runner,main}.py` — contract mirror + the **real**
 pipeline bridge: `runner.py` calls
 `PriceTagPipeline(cfg).run(video, progress=…)` →
@@ -366,10 +396,13 @@ All three agree on: the 29 column names **and order**; the byte format
 (UTF-8, `,` separator, `.` decimal, `\n` line terminator,
 `QUOTE_MINIMAL`); and the three field states — a value, `"нет"` (absent
 on the tag), or `""` (present but unrecognized) — which are scored
-(task.md §3.3/§5.3). When the backend swaps its mock for the real ML call
-(§9 step 4) the gateway parses the producer's CSV straight into
-`TagPrediction.fields`, derives the normalized bbox from the pixel columns,
-and the review UI is unchanged — that is the seam working. The lock-step
+(task.md §3.3/§5.3). The backend now does this for real: `app/predictions.py`
+parses the producer's verbatim CSV straight into `TagPrediction.fields`,
+derives the normalized bbox from the pixel columns (÷ the raw-frame size
+from `meta`) and `t_frac` from `frame_timestamp` ÷ clip duration, and the
+review UI is unchanged — the seam working
+(`backend/tests/test_predictions_reconstruction.py` pins the round-trip).
+The lock-step
 is enforced on the producer side by `tests/test_submission.py` (column
 count/order + `\n`/`QUOTE_MINIMAL` parity with `build_csv`); change one
 owner ⇒ change all three.
@@ -381,9 +414,15 @@ owner ⇒ change all three.
 `docker compose up --build` runs the whole product: `backend:8000`
 (`/docs` = Swagger), `frontend:5173`, `ml:8002`, `db:5432`, `redis:6379`.
 A named `uploads` volume is shared between `backend` and `ml` for the video
-handoff (§5). The root `./Dockerfile` is the **separate CUDA training
-image** and is intentionally not part of compose. In the skeleton the
-backend runs `MOCK_MODE=true`, so db/redis come up but aren't yet used.
+handoff (§5); `ml` also bind-mounts `./real_data/db_hack.csv` read-only for
+GT-safe catalog reconciliation (optional, skipped if absent —
+[`catalog-reconciliation.md`](./catalog-reconciliation.md)). The root
+`./Dockerfile` is the **separate CUDA training image** and is intentionally
+not part of compose. The backend runs
+`MOCK_MODE=false` (Postgres + real ML call); `backend/.env` is optional
+(`env_file: required: false` — every needed value is in the compose
+`environment:`). Full bring-up + verification:
+[`runbooks/docker-compose.md`](./runbooks/docker-compose.md).
 
 ---
 
@@ -404,34 +443,37 @@ non-ASCII paths, `"нет"` ≠ empty).
 No CI/CD, no OpenTelemetry/observability stack, no MCP/AI-assistant, no
 RabbitMQ (unless §5.3 forces a queue), no S3/MinIO (a shared volume covers
 the video handoff), no history/audit/rate-limit, no Storybook. What stays
-is the clean spine: layered backend + async SQLAlchemy + Alembic + Redis +
-(optional) auth; typed frontend with a generated contract; ML as a
-separate service behind a thin client.
+is the clean spine: layered backend + async SQLAlchemy + `create_all`
+(Alembic deferred, §3.10) + fail-open Redis + (optional) auth; typed
+frontend with a generated contract; ML as a separate service behind a thin
+client.
 
-## 9. Build order (from this skeleton)
+## 9. Build order — status
 
-1. **Decide auth in/out** (§3.8) — it sizes everything else.
-2. Backend persistence: implement `db/`, the `Job` model, swap the
-   in-memory store in `routes/jobs.py` for Postgres; Alembic init + first
-   migration; flip `MOCK_MODE` for the DB path.
-3. ML service: **done** — `ml/app/runner.py` runs the real
-   `PriceTagPipeline` with a guarded mock fallback and streams progress via
-   `GET /progress/{job_id}` (§5.4/§5.5). Remaining: install the pipeline
-   runtime deps / switch the `ml` image to the GPU base for production.
-4. Wire the real `backend/app/ml/client.py` httpx call; choose §5.3
-   sync/async; add a worker if async; poll `/progress/{job_id}` into
-   `JobResponse.progress`.
-5. Cache: implement `app/cache/`, cache the status/list reads.
-6. Frontend: real axios client (§4.2), `generate:types`, build the
-   upload→poll→download page, then layouts/auth if §1 said auth is in.
-7. End-to-end: upload a real video → poll → download a real CSV; validate
-   against [`pipeline-reference.md`](./pipeline-reference.md).
+1. **Auth:** **out** (§3.8) — anonymous upload→download, as designed.
+2. **Backend persistence: done** — `db/` + `Job` model, `routes/jobs.py`
+   on Postgres via `session_scope`, schema via `create_all` (Alembic
+   deferred, §3.3/§3.10).
+3. **ML service: done** — `ml/app/runner.py` runs the real
+   `PriceTagPipeline` on the GPU image with a guarded mock fallback +
+   `/progress` (§5.4/§5.5); `meta` now also carries non-graded raw-clip
+   geometry for the review overlay.
+4. **backend→ML wiring: done** — real async `client.process()` +
+   out-of-band `asyncio` task + `/progress` poll into `JobResponse.progress`
+   (§3.4/§5.3). `ProcessRequest.filename` added (both mirrors) to keep the
+   graded `filename` cell correct.
+5. **Cache: done** — fail-open `RedisCache`, terminal-only (§3.9).
+6. **Frontend:** the built SPA (§4) consumes the real endpoints unchanged —
+   the CSV→predictions seam (§5.6) makes the review screen work against the
+   real pipeline with no UI change.
+7. **End-to-end:** `docker compose up` → upload a real video → poll →
+   download the real graded CSV. Runbook + per-service verification:
+   [`runbooks/docker-compose.md`](./runbooks/docker-compose.md).
 
 ---
 
-**Summary:** the skeleton is the proven shape — layered gateway, typed SPA,
-ML as a separate service behind a thin client, the model kept in
-`projects/price_tag_pipeline/`. The **ML layer is now real** (pipeline +
-live progress, guarded mock fallback); backend and frontend remain
-skeleton by design. Fill the rest in along §9, keeping this doc honest as
-you go.
+**Summary:** the whole product is real — DB-backed gateway, fail-open
+Redis, the model kept in `projects/price_tag_pipeline/` behind a thin ML
+service called out-of-band, the typed SPA unchanged thanks to the verbatim
+29-column CSV contract (§5.6). `MOCK_MODE=true` stays as the standalone
+skeleton. Keep this doc honest as the code evolves.

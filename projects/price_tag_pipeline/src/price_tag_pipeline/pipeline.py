@@ -35,12 +35,16 @@ from .types import CropCandidate, FinalTag, TagObservation
 
 LOGGER = logging.getLogger(__name__)
 
-# Progress fraction budget per phase. Detection (the per-frame loop, which
-# also runs OCR on expiring tracks inline) is by far the bulk of the
-# wall-clock time, so it owns almost the whole bar; the end-of-video
-# finalize + cross-track dedup tail is at most a few seconds.
-_DETECT_CEIL = 0.97
-_FINALIZE_FRAC = 0.97
+# Progress fraction budget per phase. The per-frame detect loop OCRs only
+# the tracks that *expire mid-video*; every track still alive when the clip
+# ends is OCR'd in the finalize phase. On a shelf clip that ends with the
+# camera still on the rack that is a large, slow Qwen burst — minutes, not
+# "a few seconds". So finalize owns a real, visibly-moving slice of the bar
+# (it used to be a single frozen tick at 0.97 — the "stuck at Сборка
+# выгрузки" bug) and reports per recognized track.
+_DETECT_CEIL = 0.90
+_FINALIZE_START = 0.90
+_FINALIZE_END = 0.985
 _DEDUP_FRAC = 0.99
 
 
@@ -185,14 +189,28 @@ class PriceTagPipeline:
         frames_total: int,
         reporter: ProgressReporter,
     ) -> list[FinalTag]:
-        # Flush any tracks still live at end of video (OCR their best crops).
+        # OCR the best crops of every track still live at end of video. This
+        # is the heavy Qwen burst; report per track so the bar keeps moving
+        # instead of freezing on one tick for minutes.
+        live_tids = list(self.aggregator._tracks.keys())
+        n = len(live_tids)
+        base = len(finalized)
         reporter.publish(ProgressEvent(
-            phase=Phase.FINALIZE, fraction=_FINALIZE_FRAC,
+            phase=Phase.FINALIZE, fraction=_FINALIZE_START,
             frames_done=frames_total, frames_total=frames_total,
-            tags_finalized=len(finalized), message="finalizing tracks",
+            tags_finalized=base,
+            message=f"recognizing tags (0/{n})" if n else "recognizing tags",
         ))
-        for tid in list(self.aggregator._tracks.keys()):
+        span = _FINALIZE_END - _FINALIZE_START
+        for i, tid in enumerate(live_tids, 1):
             self._recognize_track(tid)
+            reporter.publish(ProgressEvent(
+                phase=Phase.FINALIZE,
+                fraction=_FINALIZE_START + span * (i / n) if n else _FINALIZE_END,
+                frames_done=frames_total, frames_total=frames_total,
+                tags_finalized=base + i,
+                message=f"recognizing tags ({i}/{n})",
+            ))
         finalized.extend(self.aggregator.flush_all())
 
         # Cross-track deduplication on the full list.

@@ -1,6 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Crop, Download, Film } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Crop,
+  Download,
+  Pause,
+  Play,
+} from "lucide-react";
 import {
   jobsApi,
   type Job,
@@ -15,11 +30,37 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Summary } from "@/components/job/Summary";
 import { TagsTable } from "@/components/job/TagsTable";
-import { TagFields } from "@/components/job/TagFields";
-import { colorMeta, completeness, PASS_THRESHOLD, tagLabel } from "@/lib/tags";
-import { cn, formatTimestamp } from "@/lib/utils";
+import {
+  colorMeta,
+  completeness,
+  displayValue,
+  FIELD_GROUPS,
+  fieldState,
+  PASS_THRESHOLD,
+  tagLabel,
+} from "@/lib/tags";
+import { cn } from "@/lib/utils";
 
 const POLL_MS = 1200;
+
+// Tags whose best-frame timestamps fall within this window are treated as
+// "the same frame" (so a busy shelf moment is one group of many boxes).
+const FRAME_BUCKET_MS = 200;
+
+// Shown big in the hero strip — everything else folds into the detail
+// groups, so the panel is never one endless column (the rest of the
+// FIELD_GROUPS rows skip these keys to avoid repetition).
+const HERO_KEYS = [
+  "price_default",
+  "price_card",
+  "barcode",
+  "id_sku",
+] as const;
+const HIDDEN_FROM_GROUPS = new Set<string>([
+  "product_name",
+  "color",
+  ...HERO_KEYS,
+]);
 
 export default function JobPage() {
   const { id = "" } = useParams();
@@ -32,7 +73,6 @@ export default function JobPage() {
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
-
     const tick = async () => {
       try {
         const j = await jobsApi.get(id);
@@ -69,38 +109,646 @@ export default function JobPage() {
     };
   }, [job?.status, pred, id]);
 
+  // Only surface tags we're confident in — a half-read ценник is noise to a
+  // reviewer, not data. The downloaded CSV still contains every row (it is
+  // the deliverable); the on-screen review just hides the unreliable ones.
+  const view = useMemo(() => {
+    if (!pred) return null;
+    const good = pred.tags.filter(
+      (t) => completeness(t, pred.substantive_fields) >= PASS_THRESHOLD,
+    );
+    return { ...pred, tags: good.length ? good : pred.tags };
+  }, [pred]);
+
+  useEffect(() => {
+    if (view && !view.tags.some((t) => t.index === selected)) {
+      setSelected(view.tags[0]?.index ?? 0);
+    }
+  }, [view, selected]);
+
   if (error) return <ErrorCard message={error} />;
   if (job?.status === "failed")
     return <ErrorCard message={job.error || "Обработка завершилась с ошибкой."} />;
   if (!job || job.status === "queued" || job.status === "running")
     return <Processing job={job} />;
-  if (!pred) return <ReviewSkeleton />;
-
-  const tag = pred.tags.find((t) => t.index === selected) ?? pred.tags[0];
+  if (!pred || !view) return <ReviewSkeleton />;
 
   return (
-    <div className="flex flex-col gap-8">
-      <Header job={job} count={pred.tags.length} csvHref={jobsApi.csvUrl(id)} />
-      <Summary data={pred} />
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <VideoPanel id={id} pred={pred} tag={tag} onSelect={setSelected} />
-        <SelectedTag pred={pred} tag={tag} />
-      </div>
+    <div className="flex flex-col gap-12">
+      <Header job={job} count={view.tags.length} csvHref={jobsApi.csvUrl(id)} />
+      <Summary data={view} />
+      <Reviewer id={id} pred={view} selected={selected} onSelect={setSelected} />
 
       <Card>
         <CardHeader>
-          <CardTitle>Все ценники · {pred.tags.length}</CardTitle>
+          <CardTitle>Все ценники</CardTitle>
         </CardHeader>
         <CardContent>
-          <TagsTable data={pred} selected={selected} onSelect={setSelected} />
+          <TagsTable data={view} selected={selected} onSelect={setSelected} />
         </CardContent>
       </Card>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Reviewer — one navigation model: the video's own timeline. Markers on the
+// track are the tags; the playhead/selection is always derived from the
+// frame on screen, so the overlay box can never go stale.
+// ===========================================================================
+
+function Reviewer({
+  id,
+  pred,
+  selected,
+  onSelect,
+}: {
+  id: string;
+  pred: JobPredictions;
+  selected: number;
+  onSelect: (index: number) => void;
+}) {
+  const order = pred.tags;
+  const pos = Math.max(0, order.findIndex((t) => t.index === selected));
+  const tag = order[pos] ?? order[0];
+
+  // "One frame" = tags whose best-frame falls in the same short time bucket.
+  // The aggregator's per-tag best-frame timestamps cluster but rarely match
+  // to the ms, so an exact-equality grouping would wrongly show every shelf
+  // tag as a singleton. A tolerance bucket means a busy shelf frame is one
+  // group with however MANY boxes it really has — the overlay + the in-frame
+  // switcher below are written to scale to any count, not just 2–3.
+  const frameKey = useCallback(
+    (t: TagPrediction) => Math.round(t.frame_timestamp / FRAME_BUCKET_MS),
+    [],
+  );
+  const framesByKey = useMemo(() => {
+    const m = new Map<number, TagPrediction[]>();
+    for (const t of order) {
+      const k = Math.round(t.frame_timestamp / FRAME_BUCKET_MS);
+      const arr = m.get(k) ?? [];
+      arr.push(t);
+      m.set(k, arr);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.bbox.x1 - b.bbox.x1);
+    return m;
+  }, [order]);
+  const mates = framesByKey.get(frameKey(tag)) ?? [tag];
+  const boxPos = Math.max(0, mates.findIndex((t) => t.index === tag.index));
+
+  const goTag = useCallback(
+    (next: number) =>
+      onSelect(order[Math.min(order.length - 1, Math.max(0, next))].index),
+    [order, onSelect],
+  );
+
+  // ←/→ step between tags (never scrolls the page — no scrollIntoView/focus).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goTag(pos - 1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goTag(pos + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [goTag, pos]);
+
+  return (
+    <Card feature className="overflow-hidden">
+      {/* Header — product name + which ценник of how many. No internal
+          metrics: the timeline under the video is the one scrubber. */}
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-stone-border p-6">
+        <div className="min-w-0">
+          <p className="text-caption uppercase tracking-[0.12em] text-steel-gray">
+            Проверка ценников
+          </p>
+          <h2 className="mt-1 truncate font-display text-heading font-medium text-slate-text">
+            {tagLabel(tag)}
+          </h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goTag(pos - 1)}
+            disabled={pos === 0}
+            title="Предыдущий ценник (←)"
+          >
+            <ChevronLeft /> Назад
+          </Button>
+          <span className="min-w-[4.5rem] text-center font-display text-heading-sm tabular-nums text-slate-text">
+            {pos + 1} <span className="text-ash-gray">/ {order.length}</span>
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goTag(pos + 1)}
+            disabled={pos === order.length - 1}
+            title="Следующий ценник (→)"
+          >
+            Вперёд <ChevronRight />
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid items-start gap-6 p-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <VideoStage
+          id={id}
+          pred={pred}
+          tag={tag}
+          mates={mates}
+          frameKey={frameKey}
+          onSelect={onSelect}
+        />
+        <DataPanel tag={tag} mates={mates} boxPos={boxPos} onSelect={onSelect} />
+      </div>
+    </Card>
+  );
+}
+
+// --- Video + its timeline (the only time-navigation control) --------------
+
+function VideoStage({
+  id,
+  pred,
+  tag,
+  mates,
+  frameKey,
+  onSelect,
+}: {
+  id: string;
+  pred: JobPredictions;
+  tag: TagPrediction;
+  mates: TagPrediction[];
+  frameKey: (t: TagPrediction) => number;
+  onSelect: (index: number) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [ready, setReady] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [cur, setCur] = useState(0);
+  const [dur, setDur] = useState(0);
+  const [cropFailed, setCropFailed] = useState(false);
+
+  const order = pred.tags;
+
+  const timeOf = useCallback(
+    (t: TagPrediction) =>
+      Number.isFinite(dur) && dur > 0
+        ? t.t_frac * dur
+        : t.frame_timestamp / 1000,
+    [dur],
+  );
+
+  const nearestTag = useCallback(
+    (frac: number) => {
+      let best = order[0];
+      let bd = Infinity;
+      for (const t of order) {
+        const d = Math.abs(t.t_frac - frac);
+        if (d < bd) {
+          bd = d;
+          best = t;
+        }
+      }
+      return best;
+    },
+    [order],
+  );
+
+  const drawCrop = useCallback(() => {
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, c.width, c.height); // never show the previous tag
+    if (!v.videoWidth || !v.videoHeight) return;
+    const { x1, y1, x2, y2 } = tag.bbox;
+    const sx = x1 * v.videoWidth;
+    const sy = y1 * v.videoHeight;
+    const sw = Math.max(1, (x2 - x1) * v.videoWidth);
+    const sh = Math.max(1, (y2 - y1) * v.videoHeight);
+    const W = 520;
+    c.width = W;
+    c.height = Math.max(1, Math.round((W * sh) / sw));
+    try {
+      ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      setCropFailed(false);
+    } catch {
+      setCropFailed(true); // cross-origin taint — only in a broken deploy
+    }
+  }, [tag.bbox]);
+
+  // Park the clip on the selected tag's frame (an explicit pick always
+  // pauses + seeks, so the frame and the data panel stay in lock-step).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !ready) return;
+    v.pause();
+    const t = timeOf(tag);
+    v.currentTime = Math.min(
+      Number.isFinite(dur) && dur > 0 ? dur - 0.04 : t,
+      Math.max(0, t),
+    );
+  }, [tag, ready, dur, timeOf]);
+
+  // The frame on screen is the source of truth: after any seek/pause, snap
+  // the selection to the tag at that moment — unless we're still on the same
+  // frame (then keep the chosen box among its mates). This is what makes a
+  // stale overlay impossible.
+  const syncToFrame = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !dur) return;
+    const near = nearestTag(v.currentTime / dur);
+    // Only re-select when we've moved to a different frame; staying on the
+    // same busy frame keeps whichever of its many boxes the user picked.
+    if (frameKey(near) !== frameKey(tag)) onSelect(near.index);
+    drawCrop();
+  }, [dur, nearestTag, onSelect, frameKey, tag, drawCrop]);
+
+  const seekToFrac = useCallback(
+    (frac: number) => {
+      const v = videoRef.current;
+      if (!v || !dur) return;
+      v.currentTime = Math.min(dur - 0.04, Math.max(0, frac * dur));
+    },
+    [dur],
+  );
+
+  const onTrackPointer = useCallback(
+    (e: ReactPointerEvent) => {
+      const el = trackRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      seekToFrac((e.clientX - r.left) / r.width);
+    },
+    [seekToFrac],
+  );
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) void v.play();
+    else v.pause();
+  }, []);
+
+  const boxesVisible = ready && !playing && !scrubbing;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* The wrapper shrink-wraps the <video> (w-fit) so the % overlay maps
+          to the real video pixels — no object-contain letterbox drift even
+          for a tall portrait clip with many boxes. */}
+      <div className="mx-auto flex w-full justify-center">
+        <div className="relative w-fit overflow-hidden rounded-input bg-ghost-ink">
+        <video
+          ref={videoRef}
+          src={jobsApi.videoUrl(id)}
+          crossOrigin="anonymous"
+          playsInline
+          preload="auto"
+          className="block max-h-[60vh] max-w-full"
+          onLoadedMetadata={(e) => {
+            setDur(e.currentTarget.duration || 0);
+            setReady(true);
+          }}
+          onLoadedData={drawCrop}
+          onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
+          onSeeked={() => {
+            if (!scrubbing) syncToFrame();
+          }}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onClick={togglePlay}
+        />
+
+        {/* Boxes for THIS frame only. Active one is focused via a clipped
+            9999px shadow (everything else dims); its mates are thin
+            outlines you can click to switch boxes within the frame. */}
+        {boxesVisible &&
+          mates.map((m) => {
+            const active = m.index === tag.index;
+            return (
+              <button
+                key={m.index}
+                type="button"
+                title={tagLabel(m)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(m.index);
+                }}
+                className={cn(
+                  "absolute rounded-[3px] transition-colors",
+                  active
+                    ? "border-2 border-chartwell-blue"
+                    : "cursor-pointer border border-cloud-white/70 hover:border-2 hover:border-chartwell-blue",
+                )}
+                style={{
+                  left: `${m.bbox.x1 * 100}%`,
+                  top: `${m.bbox.y1 * 100}%`,
+                  width: `${(m.bbox.x2 - m.bbox.x1) * 100}%`,
+                  height: `${(m.bbox.y2 - m.bbox.y1) * 100}%`,
+                  boxShadow: active
+                    ? "0 0 0 9999px rgba(12, 10, 9, 0.55)"
+                    : undefined,
+                }}
+              />
+            );
+          })}
+
+        {playing && (
+          <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
+            Воспроизведение — рамки скрыты
+          </div>
+        )}
+        </div>
+      </div>
+
+      {/* The timeline IS the scrubber: each dot is a ценник, the blue one is
+          open. Click a dot to open it; drag the bar to move through video. */}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={togglePlay}
+          title={playing ? "Пауза" : "Воспроизвести"}
+          className="grid size-9 shrink-0 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
+        >
+          {playing ? (
+            <Pause className="size-4" />
+          ) : (
+            <Play className="size-4" />
+          )}
+        </button>
+        <div
+          ref={trackRef}
+          onPointerDown={(e) => {
+            (e.target as HTMLElement).setPointerCapture(e.pointerId);
+            setScrubbing(true);
+            onTrackPointer(e);
+          }}
+          onPointerMove={(e) => scrubbing && onTrackPointer(e)}
+          onPointerUp={(e) => {
+            (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+            setScrubbing(false);
+            syncToFrame();
+          }}
+          className="relative h-9 grow cursor-pointer select-none"
+        >
+          {/* rail */}
+          <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-pill bg-stone-border" />
+          {/* played */}
+          <div
+            className="absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-pill bg-chartwell-blue/70"
+            style={{ width: `${dur ? (cur / dur) * 100 : 0}%` }}
+          />
+          {/* one dot per ценник; the open one is blue, the rest are
+              neutral and grow on hover so they read as clickable */}
+          {order.map((t) => {
+            const active = t.index === tag.index;
+            return (
+              <button
+                key={t.index}
+                type="button"
+                title={`${tagLabel(t)} — лучший кадр`}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(t.index);
+                }}
+                className={cn(
+                  "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-2 border-cloud-white transition-all",
+                  active
+                    ? "z-10 size-4 bg-chartwell-blue"
+                    : "size-2.5 bg-steel-gray hover:size-3.5 hover:bg-slate-text",
+                )}
+                style={{ left: `${t.t_frac * 100}%` }}
+              />
+            );
+          })}
+          {/* playhead */}
+          <div
+            className="pointer-events-none absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-chartwell-blue bg-cloud-white shadow-subtle"
+            style={{ left: `${dur ? (cur / dur) * 100 : 0}%` }}
+          />
+        </div>
+        <span className="shrink-0 font-mono text-[12px] tabular-nums text-ash-gray">
+          {clock(cur)} / {clock(dur)}
+        </span>
+      </div>
+      <p className="text-caption text-steel-gray">
+        Каждая точка — лучший кадр ценника: по нему распознаны данные и
+        взят таймкод. Нажмите, чтобы открыть; тяните дорожку для перемотки.
+      </p>
+
+      {/* The cropped tag image. */}
+      <div className="mt-2">
+        <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
+          <Crop className="size-3.5" /> Изображение ценника
+        </p>
+        <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
+          <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
+        </div>
+        {cropFailed && (
+          <p className="mt-2 text-caption text-amber-700">
+            Не удалось показать изображение ценника.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Recognized data — hero facts + folded detail groups ------------------
+
+function DataPanel({
+  tag,
+  mates,
+  boxPos,
+  onSelect,
+}: {
+  tag: TagPrediction;
+  mates: TagPrediction[];
+  boxPos: number;
+  onSelect: (index: number) => void;
+}) {
+  const cm = colorMeta(tag.color);
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Boxes-in-one-frame switcher (only when this frame holds several). */}
+      {mates.length > 1 && (
+        <div className="flex items-center justify-between rounded-input border border-stone-border bg-canvas-fog px-3 py-2">
+          <span className="text-caption text-ash-gray">
+            В этом кадре несколько ценников
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              title="Предыдущий ценник в кадре"
+              onClick={() =>
+                onSelect(mates[(boxPos - 1 + mates.length) % mates.length].index)
+              }
+              className="grid size-7 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
+            >
+              <ChevronLeft className="size-3.5" />
+            </button>
+            <span className="text-[12px] tabular-nums text-slate-text">
+              {boxPos + 1} из {mates.length}
+            </span>
+            <button
+              type="button"
+              title="Следующий ценник в кадре"
+              onClick={() => onSelect(mates[(boxPos + 1) % mates.length].index)}
+              className="grid size-7 cursor-pointer place-items-center rounded-pill border border-stone-border bg-cloud-white text-slate-text transition-colors hover:border-chartwell-blue hover:text-chartwell-blue"
+            >
+              <ChevronRight className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hero — the few things that matter, read at a glance. */}
+      <div className="rounded-card border border-stone-border bg-canvas-fog p-4">
+        {tag.color.toLowerCase() !== "white" && (
+          <Badge variant="accent" className="mb-3">
+            {cm.label}
+          </Badge>
+        )}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+          <HeroStat label="Цена без карты" value={tag.fields.price_default} suffix="₽" />
+          <HeroStat label="Цена по карте" value={tag.fields.price_card} suffix="₽" />
+          <HeroStat label="Штрихкод" value={tag.fields.barcode} mono />
+          <HeroStat label="Артикул (SKU)" value={tag.fields.id_sku} mono />
+        </div>
+      </div>
+
+      {/* Detail groups — empty groups collapse so the panel never becomes a
+          giant column (QR-код is almost always "нет данных"). */}
+      <div className="flex flex-col gap-3">
+        {FIELD_GROUPS.map((group) => {
+          const rows = group.fields.filter(
+            (f) => !HIDDEN_FROM_GROUPS.has(f.key),
+          );
+          if (!rows.length) return null;
+          const filled = rows.filter(
+            (f) => fieldState(tag.fields[f.key]) === "value",
+          ).length;
+          return (
+            <details
+              key={group.title}
+              open={filled > 0}
+              className="group overflow-hidden rounded-input border border-stone-border"
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between bg-cloud-white px-3 py-2 text-caption font-medium uppercase tracking-[0.12em] text-steel-gray">
+                <span>{group.title}</span>
+                <span className="flex items-center gap-2 normal-case tracking-normal">
+                  <span className="text-[12px] text-ash-gray">
+                    {filled > 0 ? `${filled} значений` : "нет данных"}
+                  </span>
+                  <ChevronRight className="size-3.5 text-steel-gray transition-transform group-open:rotate-90" />
+                </span>
+              </summary>
+              <dl className="grid grid-cols-1 gap-px bg-stone-border sm:grid-cols-2">
+                {rows.map(({ key, label }) => (
+                  <div
+                    key={key}
+                    className="flex items-baseline justify-between gap-3 bg-cloud-white px-3 py-2"
+                  >
+                    <dt className="shrink-0 text-[13px] text-ash-gray">
+                      {label}
+                    </dt>
+                    <dd className="min-w-0 text-right">
+                      <FieldValue field={key} value={tag.fields[key]} />
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function HeroStat({
+  label,
+  value,
+  suffix,
+  mono,
+}: {
+  label: string;
+  value: string | undefined;
+  suffix?: string;
+  mono?: boolean;
+}) {
+  const state = fieldState(value);
+  return (
+    <div className="min-w-0">
+      <p className="text-caption text-ash-gray">{label}</p>
+      {state === "value" ? (
+        <p
+          className={cn(
+            "mt-1 truncate font-display text-heading-sm font-medium text-slate-text",
+            mono && "font-mono tabular-nums",
+          )}
+        >
+          {value}
+          {suffix && <span className="ml-1 text-[13px] text-ash-gray">{suffix}</span>}
+        </p>
+      ) : (
+        <p className="mt-1 text-[13px] text-steel-gray">
+          {state === "absent" ? "нет на ценнике" : "не распознано"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FieldValue({ field, value }: { field: string; value: string | undefined }) {
+  const state = fieldState(value);
+  if (state === "absent")
+    return (
+      <Badge variant="neutral" className="font-normal">
+        нет на ценнике
+      </Badge>
+    );
+  if (state === "unrecognized")
+    return (
+      <Badge variant="warning" className="font-normal">
+        не распознано
+      </Badge>
+    );
+  const mono =
+    field === "barcode" || field.includes("qr") || field === "id_sku";
+  return (
+    <span
+      className={cn(
+        "break-words text-[13px] text-slate-text",
+        mono && "font-mono tabular-nums",
+      )}
+    >
+      {displayValue(field, value ?? "")}
+    </span>
+  );
+}
+
+function clock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const s = Math.floor(sec % 60);
+  return `${Math.floor(sec / 60)}:${s.toString().padStart(2, "0")}`;
+}
+
+// ===========================================================================
 
 function Header({
   job,
@@ -125,7 +773,9 @@ function Header({
         </h1>
         <div className="mt-2 flex items-center gap-2">
           <Badge variant="success">Готово</Badge>
-          <span className="text-caption text-ash-gray">{count} уникальных ценников</span>
+          <span className="text-caption text-ash-gray">
+            {count} уникальных ценников
+          </span>
         </div>
       </div>
       <a href={csvHref} download>
@@ -138,190 +788,28 @@ function Header({
   );
 }
 
-function VideoPanel({
-  id,
-  pred,
-  tag,
-  onSelect,
-}: {
-  id: string;
-  pred: JobPredictions;
-  tag: TagPrediction;
-  onSelect: (index: number) => void;
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [ready, setReady] = useState(false);
-  const [cropFailed, setCropFailed] = useState(false);
-
-  const drawCrop = useCallback(() => {
-    const v = videoRef.current;
-    const c = canvasRef.current;
-    if (!v || !c || !v.videoWidth || !v.videoHeight) return;
-    const { x1, y1, x2, y2 } = tag.bbox;
-    const sx = x1 * v.videoWidth;
-    const sy = y1 * v.videoHeight;
-    const sw = Math.max(1, (x2 - x1) * v.videoWidth);
-    const sh = Math.max(1, (y2 - y1) * v.videoHeight);
-    const W = 560;
-    c.width = W;
-    c.height = Math.round((W * sh) / sw);
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    try {
-      ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
-      setCropFailed(false);
-    } catch {
-      setCropFailed(true); // cross-origin taint — only in a misconfigured deploy
-    }
-  }, [tag.bbox]);
-
-  // Seek the uploaded clip to this tag's moment. The mock can't know the
-  // real clip length, so it gives a fraction; multiply by the actual
-  // duration (frame_timestamp stays the graded ms value, shown as-is).
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v || !ready) return;
-    const dur = v.duration;
-    const t = Number.isFinite(dur) ? tag.t_frac * dur : tag.frame_timestamp / 1000;
-    v.currentTime = Math.min(Number.isFinite(dur) ? dur - 0.05 : t, Math.max(0, t));
-  }, [tag, ready]);
-
-  const m = colorMeta(tag.color);
-
-  return (
-    <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Film className="size-4 text-ash-gray" /> Исходное видео
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="relative overflow-hidden rounded-input bg-ghost-ink">
-            <video
-              ref={videoRef}
-              src={jobsApi.videoUrl(id)}
-              crossOrigin="anonymous"
-              controls
-              playsInline
-              preload="auto"
-              className="block max-h-[420px] w-full object-contain"
-              onLoadedMetadata={() => setReady(true)}
-              onSeeked={drawCrop}
-            />
-            {/* Bounding boxes overlaid in normalized coords — scales with the
-                rendered <video> automatically. */}
-            {pred.tags.map((t) => {
-              const active = t.index === tag.index;
-              return (
-                <button
-                  key={t.index}
-                  type="button"
-                  onClick={() => onSelect(t.index)}
-                  title={tagLabel(t)}
-                  className={cn(
-                    "absolute rounded-[3px] transition-colors",
-                    active
-                      ? "border-2 border-chartwell-blue bg-chartwell-blue/10"
-                      : "border border-cloud-white/40 hover:border-cloud-white",
-                  )}
-                  style={{
-                    left: `${t.bbox.x1 * 100}%`,
-                    top: `${t.bbox.y1 * 100}%`,
-                    width: `${(t.bbox.x2 - t.bbox.x1) * 100}%`,
-                    height: `${(t.bbox.y2 - t.bbox.y1) * 100}%`,
-                  }}
-                >
-                  {active && (
-                    <span className="absolute -top-5 left-0 whitespace-nowrap rounded-pill bg-chartwell-blue px-1.5 py-0.5 text-[10px] font-medium text-cloud-white">
-                      #{t.index + 1}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <p className="mt-2 text-caption text-ash-gray">
-            Прямоугольники — найденные ценники. Клик по рамке или строке
-            таблицы переключает выбранный ценник.
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Crop className="size-4 text-ash-gray" /> Кроп ценника #{tag.index + 1}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col items-start gap-3">
-            <div className="overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
-              <canvas ref={canvasRef} className="block max-w-full" />
-            </div>
-            {cropFailed && (
-              <p className="text-caption text-amber-700">
-                Кроп недоступен: видео отдаётся с другого источника без CORS.
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-2 text-caption text-ash-gray">
-              <Badge variant="info">{formatTimestamp(tag.frame_timestamp)}</Badge>
-              <span>
-                кадр, где ценник распознан лучше всего · таймкод{" "}
-                <span className="font-mono text-slate-text">{tag.frame_timestamp}</span> мс
-              </span>
-              <span
-                className="inline-flex items-center gap-1.5 rounded-pill border border-stone-border bg-canvas-fog px-2 py-0.5 text-slate-text"
-                title={m.label}
-              >
-                <span
-                  className="size-2.5 rounded-full"
-                  style={{ background: m.swatch, boxShadow: `0 0 0 1px ${m.ring}` }}
-                />
-                {m.label}
-              </span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function SelectedTag({ pred, tag }: { pred: JobPredictions; tag: TagPrediction }) {
-  const score = completeness(tag, pred.substantive_fields);
-  const pass = score >= PASS_THRESHOLD;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="truncate">{tagLabel(tag)}</CardTitle>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          <Badge variant={pass ? "success" : "warning"}>
-            Полнота {Math.round(score * 100)}%
-          </Badge>
-          <span className="text-caption text-steel-gray">
-            {pass ? "проходит порог 80%" : "ниже порога 80% (task.md §5.1)"}
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <TagFields tag={tag} />
-      </CardContent>
-    </Card>
-  );
-}
+// Real ML stages → honest RU labels. The end-of-video Qwen burst
+// ("finalize") used to hide behind a frozen "Сборка выгрузки"; it is now
+// its own moving stage. Falls back to fraction guesses only when the
+// backend gives no phase (MOCK_MODE / before the first poll).
+const PHASE_LABEL: Record<string, string> = {
+  detect: "Детекция и трекинг ценников…",
+  finalize: "Распознавание ценников нейросетью…",
+  dedup: "Объединение дубликатов…",
+  done: "Формируем результат…",
+};
 
 function Processing({ job }: { job: Job | null }) {
   const progress = job?.progress ?? 0;
   const phase =
     !job || job.status === "queued"
       ? "В очереди…"
-      : progress < 0.5
-        ? "Детекция ценников в кадрах…"
-        : progress < 0.9
-          ? "Распознавание полей и штрихкодов…"
-          : "Сборка выгрузки…";
+      : (job.phase && PHASE_LABEL[job.phase]) ||
+        (progress < 0.5
+          ? "Детекция ценников в кадрах…"
+          : progress < 0.9
+            ? "Распознавание полей и штрихкодов…"
+            : "Завершение…");
   return (
     <div className="grid place-items-center py-24">
       <Card feature className="w-full max-w-md p-8 text-center">
@@ -352,17 +840,14 @@ function Processing({ job }: { job: Job | null }) {
 
 function ReviewSkeleton() {
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-12">
       <Skeleton className="h-12 w-72" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <Skeleton key={i} className="h-28" />
         ))}
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Skeleton className="h-96" />
-        <Skeleton className="h-96" />
-      </div>
+      <Skeleton className="h-[560px]" />
     </div>
   );
 }

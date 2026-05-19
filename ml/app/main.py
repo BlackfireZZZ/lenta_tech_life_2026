@@ -19,18 +19,40 @@ it runs. ``/progress`` is **additive and optional** — the
 ``backend/app/ml/schemas.py`` mirror are unchanged.
 """
 
+import threading
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.contract import ProcessRequest, ProcessResponse
-from app.runner import current_mode, run_pipeline
+from app.runner import current_mode, run_pipeline, warm_state, warmup
 from app import progress_registry
 
-app = FastAPI(title="Lenta Price-Tag ML Service", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the heavy model NOW, not on the first upload. Background daemon
+    # thread so the service is immediately up and /health answers while the
+    # ~8 GB Qwen load runs; the process-wide VLM cache + its lock mean a
+    # request that races the warm-up just waits for the single shared load.
+    threading.Thread(target=warmup, name="vlm-warmup", daemon=True).start()
+    yield
+
+
+app = FastAPI(
+    title="Lenta Price-Tag ML Service", version="0.2.0", lifespan=lifespan
+)
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "ml", "mode": current_mode()}
+    # `warm`: cold|warming|ready|skipped|error — observable, additive.
+    return {
+        "status": "ok",
+        "service": "ml",
+        "mode": current_mode(),
+        "warm": warm_state(),
+    }
 
 
 @app.post("/process", response_model=ProcessResponse)

@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 // border; subtle = ash-tinted; outline = dark text, input radius. Compact
 // vertical padding, pill radius for the main shapes (DESIGN "Do's").
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chartwell-blue/40 [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors disabled:cursor-not-allowed disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chartwell-blue/40 [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {

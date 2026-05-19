@@ -34,7 +34,6 @@ HF_MODEL_PREFIX = "hf://"
 # below makes those win so the tuned config is not silently ignored.
 ULTRALYTICS_BUILTIN_TRACKERS = {"botsort.yaml", "bytetrack.yaml"}
 
-
 def _require_cv2():
     try:
         import cv2  # type: ignore
@@ -411,8 +410,6 @@ class YOLOTrackerDetector(BaseDetector):
                 yield frame, detections
         finally:
             cap.release()
-
-        cap.release()
 
 
 def unrotate_box_xyxy(

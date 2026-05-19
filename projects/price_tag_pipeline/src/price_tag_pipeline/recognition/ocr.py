@@ -48,6 +48,7 @@ import base64
 import io
 import json
 import logging
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Optional
@@ -60,6 +61,17 @@ from ..types import OCRResult
 from .base import CropDecoder, RecognitionResult, parsed_is_empty
 
 LOGGER = logging.getLogger(__name__)
+
+# Process-wide cache of loaded transformers VLMs, keyed by model id. A
+# Qwen3-VL-4B load is ~8 GB / tens of seconds; without this every new
+# engine instance (each PriceTagPipeline build, e.g. per request or per
+# rotation) reloaded the whole model. Now it loads once per process and is
+# shared read-only for inference. The lock makes a concurrent first-load
+# (e.g. startup warm-up racing a request) wait for the single load instead
+# of doubling it. Keyed by model id only: dtype/device are deterministic
+# from the runtime, so one id ⇒ one resident model.
+_VLM_CACHE: dict[str, tuple[Any, Any]] = {}
+_VLM_CACHE_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +459,21 @@ class TransformersVLMEngine(BaseOCREngine):
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        # Single load per process, shared across instances. The lock makes a
+        # concurrent first caller (startup warm-up vs. an inbound request)
+        # wait for the one load instead of doubling ~8 GB of VRAM.
+        with _VLM_CACHE_LOCK:
+            if self._model is not None:
+                return
+            cached = _VLM_CACHE.get(self.model_id)
+            if cached is not None:
+                self._model, self._processor = cached
+                LOGGER.info("VLM %s served from process cache", self.model_id)
+                return
+            self._load_locked()
+            _VLM_CACHE[self.model_id] = (self._model, self._processor)
+
+    def _load_locked(self) -> None:
         try:
             import transformers  # type: ignore
             from transformers import AutoProcessor  # type: ignore

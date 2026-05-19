@@ -1,16 +1,11 @@
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import type { JobPredictions, TagPrediction } from "@/api/jobs";
-import {
-  colorMeta,
-  completeness,
-  fieldState,
-  PASS_THRESHOLD,
-  tagLabel,
-} from "@/lib/tags";
-import { cn, formatTimestamp } from "@/lib/utils";
+import { colorMeta, fieldState, tagLabel } from "@/lib/tags";
+import { cn } from "@/lib/utils";
 
-// One row per unique tag (the CSV granularity). Clicking a row selects it,
-// seeks the video and redraws the crop.
+// A quick scannable list of every recognized price tag: name, both prices,
+// barcode. Click a row to open it in the reviewer above. No internal
+// metrics or timecodes — those mean nothing to a store reviewer.
 export function TagsTable({
   data,
   selected,
@@ -27,17 +22,16 @@ export function TagsTable({
           <TH className="w-10">#</TH>
           <TH>Ценник</TH>
           <TH className="w-28">Без карты</TH>
+          <TH className="w-28">По карте</TH>
           <TH className="w-44">Штрихкод</TH>
-          <TH className="w-24">Таймкод</TH>
-          <TH className="w-28">Полнота</TH>
         </tr>
       </THead>
       <TBody>
-        {data.tags.map((tag) => (
+        {data.tags.map((tag, i) => (
           <Row
             key={tag.index}
             tag={tag}
-            substantive={data.substantive_fields}
+            ordinal={i + 1}
             selected={tag.index === selected}
             onSelect={onSelect}
           />
@@ -49,17 +43,16 @@ export function TagsTable({
 
 function Row({
   tag,
-  substantive,
+  ordinal,
   selected,
   onSelect,
 }: {
   tag: TagPrediction;
-  substantive: string[];
+  ordinal: number;
   selected: boolean;
   onSelect: (index: number) => void;
 }) {
   const m = colorMeta(tag.color);
-  const score = completeness(tag, substantive);
   const bc = tag.fields.barcode ?? "";
   const partial = fieldState(tag.fields.barcode) === "value" && bc.length < 13;
 
@@ -69,7 +62,7 @@ function Row({
       onClick={() => onSelect(tag.index)}
       className="cursor-pointer hover:bg-canvas-fog"
     >
-      <TD className="text-ash-gray tabular-nums">{tag.index + 1}</TD>
+      <TD className="text-ash-gray tabular-nums">{ordinal}</TD>
       <TD>
         <div className="flex items-center gap-2.5">
           <span
@@ -96,6 +89,13 @@ function Row({
           <span className="text-steel-gray">—</span>
         )}
       </TD>
+      <TD className="tabular-nums">
+        {fieldState(tag.fields.price_card) === "value" ? (
+          `${tag.fields.price_card} ₽`
+        ) : (
+          <span className="text-steel-gray">—</span>
+        )}
+      </TD>
       <TD className="font-mono text-[12px] tabular-nums">
         {fieldState(tag.fields.barcode) === "value" ? (
           <span className={partial ? "text-amber-600" : "text-slate-text"}>
@@ -105,23 +105,6 @@ function Row({
         ) : (
           <span className="text-steel-gray">не распознан</span>
         )}
-      </TD>
-      <TD className="tabular-nums text-ash-gray">{formatTimestamp(tag.frame_timestamp)}</TD>
-      <TD>
-        <div className="flex items-center gap-2">
-          <div className="h-1.5 w-12 overflow-hidden rounded-pill bg-stone-border">
-            <div
-              className={cn(
-                "h-full rounded-pill",
-                score >= PASS_THRESHOLD ? "bg-chartwell-blue" : "bg-amber-400",
-              )}
-              style={{ width: `${Math.round(score * 100)}%` }}
-            />
-          </div>
-          <span className="tabular-nums text-[12px] text-ash-gray">
-            {Math.round(score * 100)}%
-          </span>
-        </div>
       </TD>
     </TR>
   );

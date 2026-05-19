@@ -56,13 +56,13 @@ export interface ColorMeta {
   ring: string; // 1px outline so a near-white chip stays visible
 }
 
-// Lenta tag colours encode the price mechanic (docs/hackathon/price-tag-guide).
-// Kept light/tinted — data, not decoration (DESIGN: no extra saturated hues).
+// The tag colour encodes the price mechanic. The reviewer is for store
+// staff, not us — show the plain meaning, never the internal colour name.
 const COLOR_META: Record<string, ColorMeta> = {
-  white: { label: "Белый · обычный", swatch: "#ffffff", ring: "#d6d3d1" },
-  yellow: { label: "Жёлтый · по карте", swatch: "#f7d774", ring: "#e0b94a" },
-  green: { label: "Зелёный · промо", swatch: "#86d9a8", ring: "#3fae6f" },
-  red: { label: "Красный · акция", swatch: "#f0a3a3", ring: "#dc6a6a" },
+  white: { label: "Обычная цена", swatch: "#ffffff", ring: "#d6d3d1" },
+  yellow: { label: "Цена по карте", swatch: "#f7d774", ring: "#e0b94a" },
+  green: { label: "Промо", swatch: "#86d9a8", ring: "#3fae6f" },
+  red: { label: "Акция", swatch: "#f0a3a3", ring: "#dc6a6a" },
 };
 
 export function colorMeta(color: string): ColorMeta {
@@ -73,6 +73,22 @@ export function colorMeta(color: string): ColorMeta {
       ring: "#d6d3d1",
     }
   );
+}
+
+// task.md §3: `special_symbols` is the tag's *display type*, not "special
+// symbols" — к (коробка), л (лоток), ш (штука). Shown human-readably so the
+// reviewer doesn't see a bare "к".
+const DISPLAY_TYPE: Record<string, string> = {
+  "к": "к · коробка",
+  "л": "л · лоток",
+  "ш": "ш · штука",
+};
+
+/** Human-readable cell value for a field (currently only the display type
+ *  needs decoding; everything else is shown verbatim). */
+export function displayValue(field: string, value: string): string {
+  if (field === "special_symbols") return DISPLAY_TYPE[value] ?? value;
+  return value;
 }
 
 export interface FieldGroup {
@@ -89,11 +105,11 @@ export const FIELD_GROUPS: FieldGroup[] = [
     title: "Товар",
     fields: [
       { key: "product_name", label: "Наименование" },
-      { key: "color", label: "Тип ценника" },
+      { key: "color", label: "Цвет ценника" },
       { key: "id_sku", label: "Артикул (SKU)" },
-      { key: "code", label: "Код" },
+      { key: "code", label: "Код зоны выкладки" },
       { key: "additional_info", label: "Доп. информация" },
-      { key: "special_symbols", label: "Спецсимволы" },
+      { key: "special_symbols", label: "Тип выкладки" },
     ],
   },
   {
@@ -101,7 +117,7 @@ export const FIELD_GROUPS: FieldGroup[] = [
     fields: [
       { key: "price_default", label: "Цена без карты" },
       { key: "price_card", label: "Цена по карте" },
-      { key: "price_discount", label: "Цена со скидкой" },
+      { key: "price_discount", label: "Промо-цена" },
       { key: "discount_amount", label: "Размер скидки" },
     ],
   },
@@ -109,7 +125,7 @@ export const FIELD_GROUPS: FieldGroup[] = [
     title: "Идентификация",
     fields: [
       { key: "barcode", label: "Штрихкод" },
-      { key: "print_datetime", label: "Дата печати" },
+      { key: "print_datetime", label: "Дата и время печати" },
     ],
   },
   {

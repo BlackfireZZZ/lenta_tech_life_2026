@@ -10,11 +10,11 @@ dependencies = [
     "pydantic-settings",
     "python-multipart",          # multipart video upload
     "httpx",                     # → ML service
-    # --- enabled when persistence/auth land (see docs/architecture.md) ---
-    # "sqlalchemy[asyncio]",
-    # "asyncpg",
+    "sqlalchemy[asyncio]>=2",    # job/result persistence (docs/architecture.md §3.3)
+    "asyncpg",                   # async Postgres driver
+    "redis>=5",                  # status-read cache (fail-open, §3.9)
+    # --- enabled if auth lands (documented, not implemented — §3.8) ---
     # "alembic",
-    # "redis",
     # "pyjwt",
     # "argon2-cffi",
     # "itsdangerous",

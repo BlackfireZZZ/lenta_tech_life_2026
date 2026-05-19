@@ -6,6 +6,12 @@ A local, network-free post-recognition step that cross-checks the recognized
 
 * Code: `price_tag_pipeline.catalog` (`CatalogIndex`, `CatalogReconciler`)
 * CLI: `projects/price_tag_pipeline/scripts/catalog_reconcile.py`
+* **In the Docker e2e:** `ml/app/runner.py` applies it automatically as a
+  post-step on the produced CSV (fill-only; re-rendered through the
+  producer renderer so the graded bytes are unchanged) when
+  `real_data/db_hack.csv` is mounted at `$CATALOG_CSV`
+  (`/data/catalog/db_hack.csv`). Fully guarded — a missing mount or any
+  failure serves the raw CSV. Tests: `ml/tests/test_catalog_post_step.py`.
 * Tests: `projects/price_tag_pipeline/tests/test_catalog_reconcile.py`
 * Dep: `rapidfuzz` (in `requirements/base.txt`) — light, C++, no network.
   Fits the "cloud APIs banned at inference / lightweight rewarded" rule.
