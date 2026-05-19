@@ -54,6 +54,12 @@ class Job(Base):
         String(64), nullable=True, index=True
     )
 
+    # Coarse pipeline stage mirrored from the ML side
+    # (detect | finalize | dedup | done). Lets the UI label the bar
+    # truthfully — the end-of-video Qwen burst is "finalize", not a guess
+    # from the (frame-based, then near-frozen) fraction.
+    phase: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The verbatim graded 29-column CSV from the ML service.

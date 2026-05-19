@@ -173,6 +173,7 @@ def _job_response(job) -> JobResponse:
         filename=job.filename,
         rows=job.rows,
         error=job.error,
+        phase=job.phase,
         result_csv_url=f"{base}/result.csv" if done else None,
         predictions_url=f"{base}/predictions" if done else None,
         video_url=f"{base}/video" if done else None,
@@ -206,6 +207,7 @@ async def _poll_progress(job_id: UUID) -> None:
             value = max(0.0, min(0.99, float(frac)))
         except (TypeError, ValueError):
             continue
+        phase = snap.get("phase") or None
         try:
             async with session_scope() as s:
                 job = await s.get(_JobModel, job_id)
@@ -213,6 +215,11 @@ async def _poll_progress(job_id: UUID) -> None:
                     return
                 if value > job.progress:
                     job.progress = value
+                # Phase can change even while the fraction barely moves (the
+                # long finalize/OCR burst) — persist it independently so the
+                # bar's label stays truthful.
+                if phase and phase != job.phase:
+                    job.phase = phase
         except Exception as exc:  # pragma: no cover - never fatal
             logger.debug("progress write failed (job=%s): %s", job_id, exc)
 

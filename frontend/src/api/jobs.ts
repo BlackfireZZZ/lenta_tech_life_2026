@@ -20,6 +20,9 @@ export interface Job {
   filename: string;
   rows: number | null;
   error: string | null;
+  // Coarse ML stage: detect | finalize | dedup | done (null in mock / before
+  // the first poll). Drives the truthful progress label.
+  phase: string | null;
   result_csv_url: string | null;
   predictions_url: string | null;
   video_url: string | null;

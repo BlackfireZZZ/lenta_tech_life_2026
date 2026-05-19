@@ -788,16 +788,28 @@ function Header({
   );
 }
 
+// Real ML stages → honest RU labels. The end-of-video Qwen burst
+// ("finalize") used to hide behind a frozen "Сборка выгрузки"; it is now
+// its own moving stage. Falls back to fraction guesses only when the
+// backend gives no phase (MOCK_MODE / before the first poll).
+const PHASE_LABEL: Record<string, string> = {
+  detect: "Детекция и трекинг ценников…",
+  finalize: "Распознавание ценников нейросетью…",
+  dedup: "Объединение дубликатов…",
+  done: "Формируем результат…",
+};
+
 function Processing({ job }: { job: Job | null }) {
   const progress = job?.progress ?? 0;
   const phase =
     !job || job.status === "queued"
       ? "В очереди…"
-      : progress < 0.5
-        ? "Детекция ценников в кадрах…"
-        : progress < 0.9
-          ? "Распознавание полей и штрихкодов…"
-          : "Сборка выгрузки…";
+      : (job.phase && PHASE_LABEL[job.phase]) ||
+        (progress < 0.5
+          ? "Детекция ценников в кадрах…"
+          : progress < 0.9
+            ? "Распознавание полей и штрихкодов…"
+            : "Завершение…");
   return (
     <div className="grid place-items-center py-24">
       <Card feature className="w-full max-w-md p-8 text-center">
