@@ -72,7 +72,7 @@ services:
       # these if present & complete; otherwise the pipeline downloads the
       # config's HF refs into hf_cache once ("local if present, else
       # download"). A missing host path → empty dir → treated as absent.
-      - ./data/checkpoints/detector/lenta_price_tag_manual_stop_best.pt:/models/local/detector.pt:ro
+      - ./data/checkpoints/detector/lenta_price_tag_detector_full494_off_aug_best.pt:/models/local/detector.pt:ro
       - ./weights/qwen3-vl-4b:/models/local/qwen3-vl-4b:ro
       # Hot code (no rebuild for runner/pipeline changes; mirrors backend's
       # mount). Heavy deps stay in the image — only Python source is overlaid.
