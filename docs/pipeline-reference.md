@@ -162,7 +162,7 @@ data/checkpoints/detector/lenta_price_tag_detector_full494_off_aug_best.pt
 
 This is the YOLO11x OpenFoodFacts base fine-tuned on the full 494-frame Lenta
 set with the camera-matched augmentation block (report:
-[detector-finetuning-report.md](./detector-finetuning-report.md)). It is
+[detector-finetuning-report.md](./internal/detector-finetuning-report.md)). It is
 **upright-trained**, so every profile also sets `frame_rotation: ccw` (the
 robot cam is mounted 90° CW). The weights are gitignored (456 MB); place the
 file at that path, or rely on `docker-compose.yaml`, which bind-mounts the
