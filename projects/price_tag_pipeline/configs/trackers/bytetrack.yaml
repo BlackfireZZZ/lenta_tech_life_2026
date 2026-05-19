@@ -11,10 +11,14 @@
 
 tracker_type: bytetrack
 
-# Start tracks only from confident detections. Same data-driven value as the
-# primary botsort.yaml (see its comment): 0.82 un-sticks ID-gluing across a
-# pan without over-fragmenting. THE dominant lever on this detector/data.
-new_track_thresh: 0.82
+# Start tracks only from confident detections. Same value + rationale as the
+# primary botsort.yaml (see its long comment): for the full494 detector 0.82
+# causes catastrophic UNRECOVERABLE over-merge (one ID per whole video,
+# dup 0.16–0.38); 0.94 moves to the recoverable over-fragmentation side that
+# the aggregator dedup collapses back toward 1.0. The full494 audit proved
+# ByteTrack and BoT-SORT(gmc=none) produce IDENTICAL metrics at equal
+# new_track_thresh, so this stays in lock-step with botsort.yaml.
+new_track_thresh: 0.94
 
 # Cleaner first-stage association; keep low-score second-stage recovery so a
 # motion-blur dip does not fragment a track.
