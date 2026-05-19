@@ -27,3 +27,4 @@
 | [source-materials.md](./source-materials.md) | Pointer to raw organizer decks (local-only) |
 | [branches.md](./branches.md) | Git branch history |
 | [ocr-campaign-log.md](./ocr-campaign-log.md) | OCR iteration campaign log |
+| [speed-optimization-research.md](./speed-optimization-research.md) | Where per-clip time goes + prioritized, quality-gated speedups |
