@@ -14,6 +14,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { EXPERIMENTS_PAGE_COPY } from "@/content/experimentsContent";
 
 // ─────────────────────────────────────────────────────────────────────────
 // What we actually tried. Distilled from the detector / OCR / QR campaigns,
@@ -242,23 +243,19 @@ export default function ExperimentsPage() {
       {/* Hero */}
       <section className="mx-auto max-w-2xl pt-6 text-center">
         <p className="text-caption font-medium uppercase tracking-[0.14em] text-chartwell-blue">
-          Lenta Tech Life 2026 · Что мы пробовали
+          {EXPERIMENTS_PAGE_COPY.heroKicker}
         </p>
         <h1 className="mt-4 font-display text-heading-lg font-medium text-slate-text sm:text-display">
-          Что мы перепробовали
+          {EXPERIMENTS_PAGE_COPY.heroTitle}
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-[16px] leading-[1.6] text-ash-gray">
-          Это не «взяли одну готовую модель и сдали». Мы перебрали много
-          вариантов: чем находить ценники, чем читать текст, как считывать коды
-          и десятки мелких настроек. Здесь и то, что сработало, и то, что мы
-          честно проверили и отбросили, — потому что замер показал, что копать
-          дальше смысла нет.
+          {EXPERIMENTS_PAGE_COPY.heroLead}
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
           <Badge variant="accent">
-            <Sparkles className="size-3" /> Каждое решение — по замеру, а не на глаз
+            <Sparkles className="size-3" /> {EXPERIMENTS_PAGE_COPY.heroBadges[0]}
           </Badge>
-          <Badge variant="neutral">Всё работает локально</Badge>
+          <Badge variant="neutral">{EXPERIMENTS_PAGE_COPY.heroBadges[1]}</Badge>
         </div>
       </section>
 
@@ -370,6 +367,14 @@ export default function ExperimentsPage() {
             <p className="text-caption font-medium uppercase tracking-[0.12em] text-steel-gray">
               Что пробовали и с каким исходом
             </p>
+            {section.id === "tuning" && (
+              <p className="mt-2 rounded-input border border-chartwell-blue/25 bg-chartwell-blue/5 px-3 py-2 text-[12px] leading-[1.55] text-ash-gray">
+                Тонкая настройка влияет точечно, но не «волшебно»: основной
+                прирост дают качество съёмки, объём данных и корректная
+                структура пайплайна. Поэтому оставлены только параметры с
+                подтверждённым эффектом.
+              </p>
+            )}
             <ul className="mt-3 flex flex-col gap-2">
               {section.tried.map((a) => {
                 const v = VERDICT[a.verdict];
@@ -412,7 +417,7 @@ export default function ExperimentsPage() {
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
             <div className="rounded-card border border-chartwell-blue/30 bg-chartwell-blue/5 p-4">
               <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
-                Ключевой вывод
+                {EXPERIMENTS_PAGE_COPY.summaryCards.finding}
               </p>
               <p className="mt-1.5 text-[13px] leading-[1.6] text-slate-text">
                 {section.finding}
@@ -420,7 +425,7 @@ export default function ExperimentsPage() {
             </div>
             <div className="rounded-card border border-stone-border bg-canvas-fog p-4">
               <p className="text-caption font-medium uppercase tracking-[0.12em] text-steel-gray">
-                Что в итоговой версии
+                {EXPERIMENTS_PAGE_COPY.summaryCards.shipped}
               </p>
               <p className="mt-1.5 text-[13px] leading-[1.6] text-slate-text">
                 {section.shipped}
@@ -434,13 +439,10 @@ export default function ExperimentsPage() {
       <section className="mx-auto w-full max-w-4xl">
         <Card className="flex flex-col items-center gap-2 p-6 text-center">
           <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
-            Метод
+            {EXPERIMENTS_PAGE_COPY.methodTitle}
           </p>
           <p className="max-w-2xl text-[14px] leading-[1.65] text-ash-gray">
-            Каждое направление — это отдельный замеренный эксперимент: меняем
-            одно, проверяем на отложенных видео и глазами, оставляем только при
-            подтверждённом плюсе. Неудачные попытки мы тоже показываем — именно
-            в этом строгость подхода, а не угадайка.
+            {EXPERIMENTS_PAGE_COPY.methodText}
           </p>
         </Card>
       </section>

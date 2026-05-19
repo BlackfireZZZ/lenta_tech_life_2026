@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { SHELF_AUDIT_COPY } from "@/content/shelfAuditContent";
 import {
   cropUrl,
   loadAudit,
@@ -195,24 +196,20 @@ export default function ShelfAuditPage() {
       {/* Hero */}
       <section className="mx-auto max-w-2xl pt-6 text-center">
         <p className="text-caption font-medium uppercase tracking-[0.14em] text-chartwell-blue">
-          Lenta Tech Life 2026 · Дополнительная возможность
+          {SHELF_AUDIT_COPY.heroKicker}
         </p>
         <h1 className="mt-4 font-display text-heading-lg font-medium text-slate-text sm:text-display">
-          Аудит полки
+          {SHELF_AUDIT_COPY.heroTitle}
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-[16px] leading-[1.6] text-ash-gray">
-          Тот же проезд робота, что даёт зачётный CSV, попутно находит{" "}
-          <b className="text-slate-text">пустые полки</b> и{" "}
-          <b className="text-slate-text">товары без ценника</b>, и собирает
-          карточку на каждый товар. Полностью автоматически, рядом с зачётным
-          CSV — не вместо него.
+          {SHELF_AUDIT_COPY.heroLead}
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
           <Badge variant="accent">
-            <Sparkles className="size-3" /> Полностью автоматически
+            <Sparkles className="size-3" /> {SHELF_AUDIT_COPY.heroBadges[0]}
           </Badge>
-          <Badge variant="info">Рядом с зачётным CSV</Badge>
-          <Badge variant="neutral">Локально · без облака</Badge>
+          <Badge variant="info">{SHELF_AUDIT_COPY.heroBadges[1]}</Badge>
+          <Badge variant="neutral">{SHELF_AUDIT_COPY.heroBadges[2]}</Badge>
         </div>
       </section>
 
@@ -279,6 +276,24 @@ export default function ShelfAuditPage() {
                 </h2>
                 <Badge variant="neutral">{alerts.length}</Badge>
               </div>
+              <Card className="space-y-3 p-4">
+                <div>
+                  <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
+                    {SHELF_AUDIT_COPY.alertsTitle}
+                  </p>
+                  <p className="mt-1 text-[13px] leading-[1.6] text-ash-gray">
+                    {SHELF_AUDIT_COPY.alertsText}
+                  </p>
+                </div>
+                <div className="rounded-input border border-stone-border bg-canvas-fog px-3 py-2">
+                  <p className="text-[12px] font-medium text-slate-text">
+                    {SHELF_AUDIT_COPY.modelNoteTitle}
+                  </p>
+                  <p className="mt-1 text-[12px] leading-[1.55] text-ash-gray">
+                    {SHELF_AUDIT_COPY.modelNoteText}
+                  </p>
+                </div>
+              </Card>
               {alerts.length === 0 ? (
                 <Card className="p-6 text-center text-[14px] text-ash-gray">
                   Нарушений не найдено на этом видео.
@@ -310,13 +325,10 @@ export default function ShelfAuditPage() {
           <section className="mx-auto w-full max-w-3xl">
             <Card className="flex flex-col items-center gap-2 p-6 text-center">
               <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
-                Зачем это
+                {SHELF_AUDIT_COPY.purposeTitle}
               </p>
               <p className="max-w-xl text-[14px] leading-[1.65] text-ash-gray">
-                Робот, который и так читает ценники, тем же проездом
-                превращается в аудитора полки: видит упущенные продажи и
-                нарушения выкладки. Цена, название и штрихкод в карточках
-                берутся из основного распознавания ценника.
+                {SHELF_AUDIT_COPY.purposeText}
               </p>
             </Card>
           </section>

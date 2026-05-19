@@ -22,6 +22,11 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import {
+  PIPELINE_PAGE_COPY,
+  PIPELINE_STAGES_TEXT,
+  type PipelineStageText,
+} from "@/content/pipelineContent";
 
 // ─────────────────────────────────────────────────────────────────────────
 // The real pipeline, stage by stage. Faithful to docs/pipeline-reference.md,
@@ -31,128 +36,32 @@ import { cn } from "@/lib/utils";
 // ─────────────────────────────────────────────────────────────────────────
 interface Stage {
   icon: LucideIcon;
-  title: string;
-  tagline: string;
-  detail: string;
-  techniques: string[];
-  knobs?: string[];
-  ref?: string;
+  title: PipelineStageText["title"];
+  tagline: PipelineStageText["tagline"];
+  detail: PipelineStageText["detail"];
+  techniques: PipelineStageText["techniques"];
+  knobs?: PipelineStageText["knobs"];
+  ref?: PipelineStageText["ref"];
 }
 
-const STAGES: Stage[] = [
-  {
-    icon: UploadCloud,
-    title: "Загрузка видео",
-    tagline: "Вы загружаете видео — оно встаёт в очередь",
-    detail:
-      "Вы загружаете видео на сайт. Файл уходит на сервер и встаёт в очередь на обработку. Распознавание длится несколько минут, поэтому вместо «зависшего» экрана вы всё время видите живой прогресс-бар — он показывает, какой шаг идёт прямо сейчас.",
-    techniques: ["Очередь задач", "Живой прогресс"],
-    ref: "architecture.md §5",
-  },
-  {
-    icon: ScanSearch,
-    title: "Поиск ценников в кадре",
-    tagline: "Нейросеть обводит каждый ценник на полке",
-    detail:
-      "Система просматривает каждый кадр и обводит рамкой каждый ценник на полке. В основе — готовая нейросеть, которую обучили узнавать ценники в открытом проекте OpenFoodFacts; мы дообучили её на полках Ленты, а не учили с нуля. Поэтому рамки получаются устойчивыми даже на плотно заставленной полке и при движущейся камере.",
-    techniques: ["Нейросеть YOLO11x", "Дообучена на полках Ленты"],
-    knobs: ["detector.conf: 0.25", "detector.iou: 0.50"],
-    ref: "experiments/finetune_openfoodfacts.yaml",
-  },
-  {
-    icon: Spline,
-    title: "Ведение ценника по кадрам",
-    tagline: "Узнаём один и тот же ценник в разных кадрах",
-    detail:
-      "Робот едет — и один и тот же ценник попадает в десятки кадров. Чтобы потом не посчитать его много раз, система «ведёт» каждый ценник от кадра к кадру и понимает, что это всё тот же ярлык (это называют трекингом). Алгоритм специально учитывает, что камера движется, — иначе на ходу ценники легко перепутать.",
-    techniques: ["Трекинг BoT-SORT", "Учёт движения камеры"],
-    knobs: ["tracker: botsort.yaml", "new_track_thresh: 0.82"],
-    ref: "configs/balanced.yaml",
-  },
-  {
-    icon: Aperture,
-    title: "Выбор лучшего кадра",
-    tagline: "Берём самые чёткие кадры каждого ценника",
-    detail:
-      "Пока ценник проезжает мимо камеры, часть кадров получается смазанной. Из всех кадров с одним ценником система отбирает несколько самых резких и вырезает с них только сам ярлык (такой вырезанный кусочек изображения мы называем кроп). Дальше читаем именно эти чёткие кропы, а не случайный смазанный кадр.",
-    techniques: ["Оценка резкости", "Несколько лучших кадров на ценник"],
-    knobs: ["top_k_crops_per_track: 5", "min_sharpness: 35"],
-    ref: "configs/balanced.yaml",
-  },
-  {
-    icon: Crop,
-    title: "Подготовка ярлыка",
-    tagline: "Выравниваем и делаем ярлык читаемым",
-    detail:
-      "Вырезанный ярлык немного «причёсываем»: добавляем поля по краям, чтобы ничего не обрезалось, аккуратно поднимаем контраст (цвет при этом не трогаем — по цвету видно тип ценника), наклонённые ярлыки доворачиваем. Так распознавание получает ровную и чёткую картинку.",
-    techniques: ["Поднятие контраста", "Поля по краям", "Цвет сохраняем"],
-    knobs: ["rectifier.padding_ratio: 0.10"],
-    ref: "configs/balanced.yaml",
-  },
-  {
-    icon: QrCode,
-    title: "Считывание кода",
-    tagline: "Сначала пробуем прочитать код на ценнике",
-    detail:
-      "Сначала пробуем считать сам код на ценнике. На ценниках Ленты они разные: где-то QR-ссылка, где-то квадратный код DataMatrix, где-то обычный полосатый штрихкод. Каждое успешное считывание — это «голос»: финальное значение система выбирает потом из всех голосов, а не по первому попавшемуся.",
-    techniques: ["Несколько сканеров кодов", "QR → штрихкод → текст"],
-    knobs: ["recognition.enable_qr / enable_barcode"],
-    ref: "recognition-pipeline.md",
-  },
-  {
-    icon: Languages,
-    title: "Распознавание текста (OCR)",
-    tagline: "Нейросеть читает ярлык — локально, без облака",
-    detail:
-      "OCR — это распознавание текста по картинке. То, что не зашито в код (название, цену, скидку), «считывает» с ярлыка нейросеть, которая умеет одновременно и видеть изображение, и отвечать текстом. Мы сравнили несколько таких моделей и взяли лучшую. Она работает прямо на нашем компьютере — без интернета и облака, этого требуют правила конкурса.",
-    techniques: ["Нейросеть Qwen3-VL-4B", "Только локально, без облака", "Запасной PaddleOCR"],
-    knobs: ["ocr.backend: qwen3_vl", "vlm_temperature: 0.0"],
-    ref: "pipeline-reference.md",
-  },
-  {
-    icon: ListChecks,
-    title: "Раскладка по полям",
-    tagline: "Превращаем распознанный текст в аккуратные поля",
-    detail:
-      "Распознанный текст раскладывается по полям: цена в рублях, размер скидки и так далее. Важная тонкость: «нет» (такого поля на ценнике вообще не было) и «пусто» (поле было, но мы его не разобрали) — это разные вещи. Если их перепутать, оценка снижается, поэтому мы их строго различаем.",
-    techniques: ["Российские форматы цен", "«нет» ≠ «пусто»"],
-    ref: "task.md §3.3 / §5.3",
-  },
-  {
-    icon: Boxes,
-    title: "Сводим повторы в один ценник",
-    tagline: "Один реальный ценник — ровно одна строка",
-    detail:
-      "Один ценник мы видели в десятках кадров и каждый раз что-то распознавали. Здесь все наблюдения по нему сводятся вместе голосованием — для каждого поля берётся самый частый ответ. Потом идёт дедупликация (от слова «дубликат» — удаление повторов): если два разных «следа» на самом деле один и тот же ценник, они склеиваются в один. На выходе каждый реальный ценник встречается ровно один раз — за дубликаты в таблице оценка заметно снижается.",
-    techniques: ["Голосование по полям", "Склейка дубликатов"],
-    knobs: ["dedup_iou_threshold: 0.4", "min_observations: 2"],
-    ref: "pipeline-reference.md",
-  },
-  {
-    icon: Library,
-    title: "Сверка с каталогом",
-    tagline: "Сверяем с каталогом товаров Ленты",
-    detail:
-      "Распознанные штрихкод и название сверяются с официальным каталогом товаров Ленты (около 625 000 позиций, хранится локально, без интернета). Штрихкод — главный ключ: нашли его в каталоге — подставляем точное, «чистое» название. Если штрихкод не прочитался, его можно восстановить по уверенному совпадению названия, а ошибочно считанный код отсекаем по контрольной цифре. То, чего на ценнике нет, мы при этом никогда не дописываем. В итоге в каталоге находится около 97% ценников с прочитанным штрихкодом.",
-    techniques: [
-      "Каталог Ленты (~625 000)",
-      "Нечёткое сравнение названий",
-      "Проверка контрольной цифры",
-      "Локально, без сети",
-    ],
-    knobs: ["catalog: real_data/db_hack.csv", "name-policy: fill (safe)"],
-    ref: "catalog-reconciliation.md",
-  },
-  {
-    icon: FileCheck2,
-    title: "Итоговая таблица",
-    tagline: "Таблица из 29 столбцов: один ценник — одна строка",
-    detail:
-      "На выходе — таблица из 29 столбцов: одна строка на один уникальный ценник (формат CSV, он открывается в Excel или Google Таблицах). Это и есть итоговый результат, который можно скачать и проверить. Один и тот же формат используют все части системы, поэтому данные нигде не «разъезжаются».",
-    techniques: ["29 столбцов", "Формат CSV (UTF-8)"],
-    ref: "architecture.md §5.6",
-  },
+const STAGE_ICONS: LucideIcon[] = [
+  UploadCloud,
+  ScanSearch,
+  Spline,
+  Aperture,
+  Crop,
+  QrCode,
+  Languages,
+  ListChecks,
+  Boxes,
+  Library,
+  FileCheck2,
 ];
+
+const STAGES: Stage[] = PIPELINE_STAGES_TEXT.map((stage, i) => ({
+  ...stage,
+  icon: STAGE_ICONS[i] ?? FileCheck2,
+}));
 
 const STEP_MS = 1700;
 
@@ -204,37 +113,46 @@ export default function PipelinePage() {
       {/* Hero */}
       <section className="mx-auto max-w-2xl pt-6 text-center">
         <p className="text-caption font-medium uppercase tracking-[0.14em] text-chartwell-blue">
-          Lenta Tech Life 2026 · Как это работает
+          {PIPELINE_PAGE_COPY.heroKicker}
         </p>
         <h1 className="mt-4 font-display text-heading-lg font-medium text-slate-text sm:text-display">
-          Путь видео — от записи до таблицы
+          {PIPELINE_PAGE_COPY.heroTitle}
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-[16px] leading-[1.6] text-ash-gray">
-          Одиннадцать шагов: от видео, где робот едет вдоль полки, до готовой
-          таблицы с ценниками. Нажмите «Показать по шагам» — и пройдите весь
-          путь по очереди, или откройте любой шаг сами.
+          {PIPELINE_PAGE_COPY.heroLead}
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Button size="lg" onClick={onPlay} aria-label="Запустить прогон">
+          <Button
+            size="lg"
+            onClick={onPlay}
+            aria-label="Запустить прогон"
+            className="min-w-[220px] shadow-card transition-transform duration-200 hover:-translate-y-0.5"
+          >
             {playing ? <Pause /> : <Play />}
             {playing
-              ? "Пауза"
+              ? PIPELINE_PAGE_COPY.cta.pause
               : active >= last
-                ? "Показать заново"
+                ? PIPELINE_PAGE_COPY.cta.replay
                 : active <= 0
-                  ? "Показать по шагам"
-                  : "Продолжить"}
+                  ? PIPELINE_PAGE_COPY.cta.start
+                  : PIPELINE_PAGE_COPY.cta.resume}
           </Button>
-          <Button variant="ghost" size="lg" onClick={reset} aria-label="Сбросить">
-            <RotateCcw /> Сброс
+          <Button
+            variant="ghost"
+            size="lg"
+            onClick={reset}
+            aria-label="Сбросить"
+            className="min-w-[170px]"
+          >
+            <RotateCcw /> {PIPELINE_PAGE_COPY.cta.reset}
           </Button>
         </div>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
           <Badge variant="accent">
-            <Sparkles className="size-3" /> Работает локально — без интернета и облака
+            <Sparkles className="size-3" /> {PIPELINE_PAGE_COPY.badges[0]}
           </Badge>
-          <Badge variant="info">Нейросеть на видеокарте</Badge>
-          <Badge variant="neutral">Итог — таблица из 29 столбцов</Badge>
+          <Badge variant="info">{PIPELINE_PAGE_COPY.badges[1]}</Badge>
+          <Badge variant="neutral">{PIPELINE_PAGE_COPY.badges[2]}</Badge>
         </div>
       </section>
 
