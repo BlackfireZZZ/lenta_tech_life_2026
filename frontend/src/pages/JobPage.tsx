@@ -1,5 +1,6 @@
 import {
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -14,6 +15,8 @@ import {
   Clock,
   Crop,
   Download,
+  Film,
+  Image as ImageIcon,
   Pause,
   Play,
 } from "lucide-react";
@@ -48,6 +51,16 @@ const POLL_MS = 1200;
 // Tags whose best-frame timestamps fall within this window are treated as
 // "the same frame" (so a busy shelf moment is one group of many boxes).
 const FRAME_BUCKET_MS = 200;
+
+// Live ("видео с разметкой") view: a tag has a single captured moment — one
+// CSV row = one best-frame timestamp; the graded contract carries no
+// per-frame track. So as the clip plays we light its box for a short window
+// AROUND that moment, just wide enough to be seen at normal speed. This
+// marks *when the tag was read*, it does not claim a continuous track.
+const LIVE_WINDOW_S = 0.6;
+
+// The two honest review modes (see ViewModeBar).
+type ViewMode = "frame" | "live";
 
 // Shown big in the hero strip — everything else folds into the detail
 // groups, so the panel is never one endless column (the rest of the
@@ -221,6 +234,11 @@ function Reviewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [goTag, pos]);
 
+  // Best-frame inspector by default; the user can switch to annotated
+  // playback. The mode lives here so the video stage and the toggle stay
+  // in lock-step.
+  const [mode, setMode] = useState<ViewMode>("frame");
+
   return (
     <Card feature className="overflow-hidden">
       {/* Header — product name + which ценник of how many. No internal
@@ -259,6 +277,8 @@ function Reviewer({
         </div>
       </div>
 
+      <ViewModeBar mode={mode} onMode={setMode} />
+
       <div className="grid items-start gap-6 p-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <VideoStage
           id={id}
@@ -266,11 +286,69 @@ function Reviewer({
           tag={tag}
           mates={mates}
           frameKey={frameKey}
+          mode={mode}
           onSelect={onSelect}
         />
         <DataPanel tag={tag} mates={mates} boxPos={boxPos} onSelect={onSelect} />
       </div>
     </Card>
+  );
+}
+
+// --- View setting: how the video is shown ---------------------------------
+//
+// Two honest modes. "Лучший кадр" is the inspector — park on the chosen
+// tag's best frame, its box spotlit. "Видео с разметкой" is annotated
+// playback — the clip runs and each tag's box lights up at the moment it
+// was read. Only above-threshold tags ever reach this screen (JobPage
+// `view`), so in both modes only their boxes are drawn.
+
+function ViewModeBar({
+  mode,
+  onMode,
+}: {
+  mode: ViewMode;
+  onMode: (m: ViewMode) => void;
+}) {
+  const items: { id: ViewMode; label: string; icon: ReactNode }[] = [
+    { id: "frame", label: "Лучший кадр", icon: <ImageIcon className="size-3.5" /> },
+    { id: "live", label: "Видео с разметкой", icon: <Film className="size-3.5" /> },
+  ];
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-b border-stone-border px-6 py-3">
+      <div
+        role="tablist"
+        aria-label="Режим просмотра"
+        className="inline-flex rounded-pill border border-stone-border bg-canvas-fog p-1"
+      >
+        {items.map((it) => {
+          const active = it.id === mode;
+          return (
+            <button
+              key={it.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onMode(it.id)}
+              className={cn(
+                "inline-flex cursor-pointer items-center gap-2 rounded-pill px-3.5 py-1.5 text-[13px] font-medium transition-colors",
+                active
+                  ? "bg-cloud-white text-slate-text shadow-subtle"
+                  : "text-ash-gray hover:text-slate-text",
+              )}
+            >
+              {it.icon}
+              {it.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="min-w-0 max-w-prose text-caption text-steel-gray">
+        {mode === "frame"
+          ? "Видео встаёт на лучший кадр выбранного ценника: его рамка выделена, остальное затемнено."
+          : "Видео идёт как есть — рамка каждого ценника появляется в кадре, где он распознан. Нажмите на рамку, чтобы открыть данные."}
+      </p>
+    </div>
   );
 }
 
@@ -282,6 +360,7 @@ function VideoStage({
   tag,
   mates,
   frameKey,
+  mode,
   onSelect,
 }: {
   id: string;
@@ -289,6 +368,7 @@ function VideoStage({
   tag: TagPrediction;
   mates: TagPrediction[];
   frameKey: (t: TagPrediction) => number;
+  mode: ViewMode;
   onSelect: (index: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -353,7 +433,11 @@ function VideoStage({
 
   // Park the clip on the selected tag's frame (an explicit pick always
   // pauses + seeks, so the frame and the data panel stay in lock-step).
+  // ONLY in best-frame mode: in live mode the clip must keep playing, so a
+  // pick / box-click must never yank the playhead. `mode` is a dep so that
+  // switching back to best-frame re-parks on the open tag.
   useEffect(() => {
+    if (mode !== "frame") return;
     const v = videoRef.current;
     if (!v || !ready) return;
     v.pause();
@@ -362,21 +446,25 @@ function VideoStage({
       Number.isFinite(dur) && dur > 0 ? dur - 0.04 : t,
       Math.max(0, t),
     );
-  }, [tag, ready, dur, timeOf]);
+  }, [tag, ready, dur, timeOf, mode]);
 
-  // The frame on screen is the source of truth: after any seek/pause, snap
-  // the selection to the tag at that moment — unless we're still on the same
-  // frame (then keep the chosen box among its mates). This is what makes a
-  // stale overlay impossible.
+  // The frame on screen is the source of truth in best-frame mode: after any
+  // seek/pause, snap the selection to the tag at that moment — unless we're
+  // still on the same frame (then keep the chosen box among its mates). This
+  // is what makes a stale overlay impossible. In live mode the playhead is
+  // free: we only keep `cur` (→ playhead + live boxes) current and never
+  // reselect or redraw the crop, so playback is never fought.
   const syncToFrame = useCallback(() => {
     const v = videoRef.current;
     if (!v || !dur) return;
+    setCur(v.currentTime);
+    if (mode !== "frame") return;
     const near = nearestTag(v.currentTime / dur);
     // Only re-select when we've moved to a different frame; staying on the
     // same busy frame keeps whichever of its many boxes the user picked.
     if (frameKey(near) !== frameKey(tag)) onSelect(near.index);
     drawCrop();
-  }, [dur, nearestTag, onSelect, frameKey, tag, drawCrop]);
+  }, [dur, mode, nearestTag, onSelect, frameKey, tag, drawCrop]);
 
   const seekToFrac = useCallback(
     (frac: number) => {
@@ -404,7 +492,19 @@ function VideoStage({
     else v.pause();
   }, []);
 
-  const boxesVisible = ready && !playing && !scrubbing;
+  // Best-frame mode is an inspector: boxes only when the clip is parked.
+  // Live mode IS the annotated playback: boxes stay on while playing AND
+  // while scrubbing (that's the whole point of the mode).
+  const boxesVisible =
+    mode === "live" ? ready : ready && !playing && !scrubbing;
+
+  // The tags whose captured moment is within the display window of the
+  // playhead. `order` is already threshold-filtered upstream (JobPage
+  // `view`), so this shows ONLY boxes that passed the metric threshold.
+  const liveBoxes = useMemo(() => {
+    if (mode !== "live") return [] as TagPrediction[];
+    return order.filter((t) => Math.abs(cur - timeOf(t)) <= LIVE_WINDOW_S);
+  }, [mode, order, cur, timeOf]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -426,7 +526,11 @@ function VideoStage({
           }}
           onLoadedData={drawCrop}
           onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
-          onSeeked={() => {
+          onSeeked={(e) => {
+            // Keep the playhead + live boxes tracking even during a paused
+            // scrub (timeupdate may not fire then); only frame-snap once the
+            // scrub is released.
+            setCur(e.currentTarget.currentTime);
             if (!scrubbing) syncToFrame();
           }}
           onPlay={() => setPlaying(true)}
@@ -438,8 +542,11 @@ function VideoStage({
             9999px shadow (everything else dims); its mates are thin
             outlines you can click to switch boxes within the frame. */}
         {boxesVisible &&
-          mates.map((m) => {
+          (mode === "frame" ? mates : liveBoxes).map((m) => {
             const active = m.index === tag.index;
+            // Spotlight (dim everything else) is a best-frame inspector
+            // affordance — never dim the shelf while the clip is playing.
+            const spotlight = mode === "frame" && active;
             return (
               <button
                 key={m.index}
@@ -460,7 +567,7 @@ function VideoStage({
                   top: `${m.bbox.y1 * 100}%`,
                   width: `${(m.bbox.x2 - m.bbox.x1) * 100}%`,
                   height: `${(m.bbox.y2 - m.bbox.y1) * 100}%`,
-                  boxShadow: active
+                  boxShadow: spotlight
                     ? "0 0 0 9999px rgba(12, 10, 9, 0.55)"
                     : undefined,
                 }}
@@ -468,9 +575,15 @@ function VideoStage({
             );
           })}
 
-        {playing && (
+        {playing && mode === "frame" && (
           <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
             Воспроизведение — рамки скрыты
+          </div>
+        )}
+        {mode === "live" && (
+          <div className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-pill bg-ghost-ink/70 px-2.5 py-1 text-[12px] font-medium text-cloud-white">
+            <span className="size-1.5 rounded-full bg-chartwell-blue" />
+            Разметка по времени
           </div>
         )}
         </div>
@@ -526,6 +639,9 @@ function VideoStage({
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelect(t.index);
+                  // In live mode opening a tag doesn't park the clip, so jump
+                  // the playhead to its moment — "go here and watch it".
+                  if (mode === "live") seekToFrac(t.t_frac);
                 }}
                 className={cn(
                   "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-2 border-cloud-white transition-all",
@@ -553,20 +669,24 @@ function VideoStage({
         перемотать.
       </p>
 
-      {/* The cropped tag image. */}
-      <div className="mt-2">
-        <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
-          <Crop className="size-3.5" /> Изображение ценника
-        </p>
-        <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
-          <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
-        </div>
-        {cropFailed && (
-          <p className="mt-2 text-caption text-amber-700">
-            Не удалось показать изображение ценника.
+      {/* The cropped tag image — a best-frame inspector affordance. In live
+          mode it would just flicker through frames, so it's not rendered
+          (the canvas ref is null then; drawCrop is guarded). */}
+      {mode === "frame" && (
+        <div className="mt-2">
+          <p className="mb-2 flex items-center gap-2 text-caption text-ash-gray">
+            <Crop className="size-3.5" /> Изображение ценника
           </p>
-        )}
-      </div>
+          <div className="inline-block overflow-hidden rounded-input border border-stone-border bg-canvas-fog">
+            <canvas ref={canvasRef} className="block max-h-[220px] max-w-full" />
+          </div>
+          {cropFailed && (
+            <p className="mt-2 text-caption text-amber-700">
+              Не удалось показать изображение ценника.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
