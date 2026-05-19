@@ -142,14 +142,38 @@ python projects/price_tag_pipeline/scripts/gradio_app.py \
 
 ## Profiles
 
-- `fast.yaml`   — OpenFoodFacts detector, classical PaddleOCR, low TTL. Use for quick smoke runs.
-- `balanced.yaml` — production default; OpenFoodFacts detector + BoT-SORT + PaddleOCR.
-- `hq.yaml`     — OpenFoodFacts detector + PaddleOCR-VL 1.5 VLM. Best quality, slowest.
-- `zeroshot_nolabel.yaml` — no training/labels required (YOLO-World + OCR baseline).
+- `fast.yaml`   — fine-tuned detector, classical PaddleOCR, low TTL. Quick smoke runs.
+- `balanced.yaml` — production default; fine-tuned detector + BoT-SORT + Qwen3-VL-4B.
+- `hq.yaml`     — fine-tuned detector + PaddleOCR-VL 1.5 VLM. Best quality, slowest.
+- `hq_qwen3_vl.yaml` — fine-tuned detector + Qwen3-VL (the validated OCR winner).
+- `zeroshot_nolabel.yaml` — no training/labels required (YOLO-World + OCR baseline);
+  the only profile still on the raw OFF / open-vocab detector.
 
-Production profiles use OpenFoodFacts'
-`hf://openfoodfacts/price-tag-detection/weights/best.pt` by default. Override
-`detector.model_path` in the YAML to use a local fine-tuned checkpoint.
+(All non-zeroshot profiles share the one authoritative detector checkpoint
+documented just below.)
+
+**Detector weights (authoritative).** `fast.yaml`, `balanced.yaml`, `hq.yaml`
+and `hq_qwen3_vl.yaml` all point `detector.model_path` at the **current
+fine-tuned checkpoint**:
+
+```text
+data/checkpoints/detector/lenta_price_tag_detector_full494_off_aug_best.pt
+```
+
+This is the YOLO11x OpenFoodFacts base fine-tuned on the full 494-frame Lenta
+set with the camera-matched augmentation block (report:
+[detector-finetuning-report.md](./detector-finetuning-report.md)). It is
+**upright-trained**, so every profile also sets `frame_rotation: ccw` (the
+robot cam is mounted 90° CW). The weights are gitignored (456 MB); place the
+file at that path, or rely on `docker-compose.yaml`, which bind-mounts the
+**same file** to `/models/local/detector.pt` (the ML service's
+`_resolve_local_weights` then prefers it). Keep the CLI configs and the
+compose mount on this one filename so an offline benchmark and the deployed
+product run the *identical* detector — a divergence here silently invalidates
+every offline quality measurement. The OFF base
+(`hf://openfoodfacts/price-tag-detection/weights/best.pt`) is now only the
+*fine-tuning starting point* and the `zeroshot_nolabel.yaml` fallback, not the
+inference default.
 
 ## Backends
 

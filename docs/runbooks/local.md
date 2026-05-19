@@ -56,14 +56,19 @@ The zero-label baseline can still use the open-vocabulary model configured in:
 projects/price_tag_pipeline/configs/zeroshot_nolabel.yaml
 ```
 
-For local fine-tuned detector runs, either edit `detector.model_path` in the
-YAML or put the detector checkpoint at:
+The non-zeroshot profiles (`fast`/`balanced`/`hq`/`hq_qwen3_vl`) already point
+`detector.model_path` at the **authoritative fine-tuned checkpoint** — place
+the (gitignored, 456 MB) weights file there:
 
 ```text
-data/checkpoints/detector/best.pt
+data/checkpoints/detector/lenta_price_tag_detector_full494_off_aug_best.pt
 ```
 
-and point `balanced.yaml` or `hq.yaml` at that file.
+This is the exact same file `docker-compose.yaml` bind-mounts to
+`/models/local/detector.pt`, so a local CLI run and the deployed product use
+the identical detector. Only change the configs if you are A/B-ing a new
+checkpoint — and change all of them together so offline numbers stay
+comparable to the shipped pipeline.
 
 ## 3. Batch Inference
 
