@@ -31,9 +31,16 @@ from .types import (
 )
 
 
+# NOTE: discount_amount is deliberately NOT here. Its valid printed values
+# carry a unit symbol — "-18%", "-286₽" (price-tag-guide §4: "storing the raw
+# string is the safest") — so numeric voting's _coerce_float("-18%") returns
+# None and the read is dropped every time, emitting the field empty. It is a
+# scored substantive field; the scorer (eval_hack_csv) falls back to an exact
+# string compare when the GT value isn't a bare float, so the literal "-18%"
+# must survive. Vote it as TEXT (preserves the symbol; still fine for the rare
+# bare-number case, which the scorer floats on both sides anyway).
 _NUMERIC_EXTRA_FIELDS = {
     "price_discount",
-    "discount_amount",
     "price1_qr",
     "price2_qr",
     "price3_qr",

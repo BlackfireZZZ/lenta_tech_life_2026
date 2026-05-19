@@ -276,3 +276,55 @@ def test_extra_fields_are_voted_into_final_tag():
     row = out[0].to_dict()
     assert row["qr_code_barcode"] == "4601234567890"
     assert row["price1_qr"] == 129.99
+
+
+def test_discount_amount_percentage_string_survives_voting():
+    """Regression: discount_amount valid values carry a unit symbol
+
+    ("-18%", "-286₽" — price-tag-guide §4). It must NOT be numeric-voted, or
+    _coerce_float drops every read and the scored field is emitted empty.
+    """
+    from price_tag_pipeline.submission import final_tags_to_csv
+
+    agg = TrackAggregator(_cfg())
+    parsed = ParsedTag(
+        extra_fields={"discount_amount": "-18%"},
+        extra_confidences={"discount_amount": 0.9},
+    )
+    for frame in (1, 2):
+        agg.add_observation(TagObservation(
+            frame_idx=frame,
+            timestamp_s=frame / 30.0,
+            track_id=3,
+            bbox_xyxy=(10, 20, 100, 60),
+            parsed=parsed,
+            detection_confidence=0.9,
+            sharpness=120.0,
+        ))
+    agg.mark_seen(3, 2, (10, 20, 100, 60))
+    out = agg.flush_all()
+    assert len(out) == 1
+    assert out[0].to_dict()["discount_amount"] == "-18%"
+    # And it must reach the graded CSV verbatim (not "" and not "-18.00").
+    csv_text = final_tags_to_csv(out, filename="25_2-10")
+    header, row = csv_text.splitlines()[0], csv_text.splitlines()[1]
+    col = header.split(",").index("discount_amount")
+    assert row.split(",")[col] == "-18%"
+
+
+def test_ruble_discount_amount_string_survives_voting():
+    agg = TrackAggregator(_cfg())
+    parsed = ParsedTag(
+        extra_fields={"discount_amount": "-286₽"},
+        extra_confidences={"discount_amount": 0.9},
+    )
+    for frame in (1, 2):
+        agg.add_observation(TagObservation(
+            frame_idx=frame, timestamp_s=frame / 30.0, track_id=4,
+            bbox_xyxy=(10, 20, 100, 60), parsed=parsed,
+            detection_confidence=0.9, sharpness=120.0,
+        ))
+    agg.mark_seen(4, 2, (10, 20, 100, 60))
+    out = agg.flush_all()
+    assert len(out) == 1
+    assert out[0].to_dict()["discount_amount"] == "-286₽"
