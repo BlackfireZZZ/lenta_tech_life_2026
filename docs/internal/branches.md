@@ -3,9 +3,9 @@
 This repository is intentionally split into hackathon branches so the team can
 switch between safe baseline and richer experimental pipeline.
 
-> **Status (verified 2026-05-17).** `main` is no longer a thin shell — it now
+> **Status (verified 2026-05-19).** `main` is no longer a thin shell — it now
 > carries the **full consolidated pipeline** and is *ahead of*
-> `feature/full-autonomous-demo` (main HEAD `a4fc26a0` builds on that branch's
+> `feature/full-autonomous-demo` (main HEAD `8c07b601` builds on that branch's
 > tip). Treat `main` as the canonical, most-up-to-date branch. The `feature/*`
 > branches below are kept for history and for isolated baselines; their
 > descriptions are accurate for what each *introduced*, not for "what is most
