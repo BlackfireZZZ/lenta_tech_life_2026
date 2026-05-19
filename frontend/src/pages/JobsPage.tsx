@@ -138,6 +138,11 @@ export default function JobsPage() {
                           {s.label}
                           {j.status === "running" &&
                             ` · ${Math.round((j.progress ?? 0) * 100)}%`}
+                          {j.status === "queued" &&
+                            j.queue_position != null &&
+                            (j.queue_position > 0
+                              ? ` · перед вами ${j.queue_position}`
+                              : " · вы следующий")}
                         </Badge>
                       </TD>
                       <TD className="tabular-nums">

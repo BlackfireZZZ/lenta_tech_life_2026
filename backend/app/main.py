@@ -50,10 +50,20 @@ async def lifespan(app: FastAPI):
         settings.APP_NAME, settings.APP_VERSION, settings.MOCK_MODE,
     )
     # MOCK_MODE keeps the gateway standalone (no Postgres). The real product
-    # path needs the schema before the first request.
+    # path needs the schema before the first request, then the single FIFO
+    # video worker (one clip at a time on the cheap rented GPU —
+    # app/jobs_queue.py). Starting it also re-enqueues any jobs left
+    # queued/running by a previous process so the line survives a restart.
     if not settings.MOCK_MODE:
+        from app.jobs_queue import job_queue
+
         await _init_db_with_retry()
+        await job_queue.start()
     yield
+    if not settings.MOCK_MODE:
+        from app.jobs_queue import job_queue
+
+        await job_queue.stop()
     logger.info("shutting down")
 
 

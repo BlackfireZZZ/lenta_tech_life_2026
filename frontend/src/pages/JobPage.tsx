@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Crop,
   Download,
   Pause,
@@ -30,6 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Summary } from "@/components/job/Summary";
 import { TagsTable } from "@/components/job/TagsTable";
+import { ServerLimitNote } from "@/components/ServerLimitNote";
 import {
   colorMeta,
   completeness,
@@ -129,8 +131,8 @@ export default function JobPage() {
   if (error) return <ErrorCard message={error} />;
   if (job?.status === "failed")
     return <ErrorCard message={job.error || "Обработка завершилась с ошибкой."} />;
-  if (!job || job.status === "queued" || job.status === "running")
-    return <Processing job={job} />;
+  if (job?.status === "queued") return <Queued job={job} />;
+  if (!job || job.status === "running") return <Processing job={job} />;
   if (!pred || !view) return <ReviewSkeleton />;
 
   return (
@@ -800,17 +802,57 @@ const PHASE_LABEL: Record<string, string> = {
   done: "Формируем результат…",
 };
 
+// Waiting its turn — the single worker is busy with an earlier video. This
+// is a deliberate product limit (one cheap GPU), so it is explained, not
+// hidden behind a frozen progress bar.
+function Queued({ job }: { job: Job }) {
+  const pos = job.queue_position;
+  const line =
+    pos == null
+      ? "Готовим видео к обработке…"
+      : pos <= 0
+        ? "Вы следующий — обработка начнётся, как только освободится сервер."
+        : "Дождёмся их обработки и сразу возьмёмся за ваше видео.";
+  return (
+    <div className="grid place-items-center py-24">
+      <Card feature className="w-full max-w-md p-8 text-center">
+        <div className="mx-auto grid size-12 place-items-center rounded-card bg-chartwell-blue/10 text-chartwell-blue">
+          <Clock className="size-6" />
+        </div>
+        <h1 className="mt-5 font-display text-heading font-medium text-slate-text">
+          Видео в очереди
+        </h1>
+        <p className="mt-1 truncate text-caption text-ash-gray">
+          {job.filename}
+        </p>
+        {pos != null && pos > 0 && (
+          <p className="mt-5 font-display text-display font-medium tabular-nums text-slate-text">
+            {pos}
+            <span className="ml-2 align-middle text-caption font-normal text-ash-gray">
+              {pos === 1 ? "видео впереди" : "видео в очереди перед вами"}
+            </span>
+          </p>
+        )}
+        <p className="mt-4 text-[14px] leading-[1.6] text-slate-text">{line}</p>
+        <ServerLimitNote className="mt-6 text-left" />
+        <p className="mt-4 text-caption text-steel-gray">
+          Экран обновится сам — страницу можно не перезагружать.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
 function Processing({ job }: { job: Job | null }) {
   const progress = job?.progress ?? 0;
-  const phase =
-    !job || job.status === "queued"
-      ? "В очереди…"
-      : (job.phase && PHASE_LABEL[job.phase]) ||
-        (progress < 0.5
-          ? "Ищем ценники в кадрах…"
-          : progress < 0.9
-            ? "Распознаём поля и штрихкоды…"
-            : "Завершаем…");
+  const phase = !job
+    ? "Загружаем статус…"
+    : (job.phase && PHASE_LABEL[job.phase]) ||
+      (progress < 0.5
+        ? "Ищем ценники в кадрах…"
+        : progress < 0.9
+          ? "Распознаём поля и штрихкоды…"
+          : "Завершаем…");
   return (
     <div className="grid place-items-center py-24">
       <Card feature className="w-full max-w-md p-8 text-center">

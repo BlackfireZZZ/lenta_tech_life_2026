@@ -339,14 +339,22 @@ two-mirror lock-step does not cover it.
 ### 5.3 Sync vs. async
 
 Video processing is **minutes-long**, so the gateway uses the async
-pattern: `POST /jobs` returns immediately, an asyncio task runs the ML
-call out-of-band, the frontend polls `GET /api/v1/jobs/{id}`. The contract
+pattern: `POST /jobs` returns immediately with a `queued` job, the work
+runs out-of-band, the frontend polls `GET /api/v1/jobs/{id}`. The contract
 in §5.2 is identical — only *who waits* changed. **As-built:** the ML side
 runs the real pipeline as a *sync def* (FastAPI threadpool) so `/progress`
-stays answerable during a run; the gateway side is an in-process
-`asyncio.create_task` (one uvicorn worker, single-user local testing —
-**no** RabbitMQ/queue, deferred per §8). If scaled out, the only change is
-swapping that task spawn for a real queue — the contract is unchanged.
+stays answerable during a run; the gateway side is a **single in-process
+FIFO worker** (`app/jobs_queue.py`) — uploads are processed **strictly one
+at a time** because the deliberately cheap rented box has one small GPU and
+a single ML run already saturates its VRAM (two in flight ⇒ both far
+slower, or OOM). A second upload stays `queued` until the one ahead
+finishes; `JobResponse.queue_position` tells the user how many videos are
+ahead (0 = running / next up). The queue is in-process (one ML container —
+§5.5) but **durable across a restart**: on boot, `queued`/`running` rows in
+Postgres are re-enqueued in `created_at` order (Postgres stays the source
+of truth; the queue is just the scheduler). If ever scaled to several GPU
+boxes, this one worker is the single piece that becomes a shared broker —
+the contract is unchanged.
 
 ### 5.4 Files
 
@@ -440,8 +448,10 @@ non-ASCII paths, `"нет"` ≠ empty).
 ## 8. Deliberately dropped (hackathon weight-cut)
 
 No CI/CD, no OpenTelemetry/observability stack, no MCP/AI-assistant, no
-RabbitMQ (unless §5.3 forces a queue), no S3/MinIO (a shared volume covers
-the video handoff), no history/audit/rate-limit, no Storybook. What stays
+RabbitMQ/Celery (the cheap single GPU forces serialization, but a
+**single in-process FIFO worker** — §5.3 — covers it; a broker would be
+pure overhead for one box), no S3/MinIO (a shared volume covers the video
+handoff), no history/audit/rate-limit, no Storybook. What stays
 is the clean spine: layered backend + async SQLAlchemy + `create_all`
 (Alembic deferred, §3.10) + fail-open Redis + (optional) auth; typed
 frontend with a generated contract; ML as a separate service behind a thin
@@ -457,8 +467,9 @@ client.
    `PriceTagPipeline` on the GPU image with a guarded mock fallback +
    `/progress` (§5.4/§5.5); `meta` now also carries non-graded raw-clip
    geometry for the review overlay.
-4. **backend→ML wiring: done** — real async `client.process()` +
-   out-of-band `asyncio` task + `/progress` poll into `JobResponse.progress`
+4. **backend→ML wiring: done** — real async `client.process()` driven by a
+   single in-process FIFO worker (one video at a time on the cheap GPU,
+   `app/jobs_queue.py`) + `/progress` poll into `JobResponse.progress`
    (§3.4/§5.3). `ProcessRequest.filename` added (both mirrors) to keep the
    graded `filename` cell correct.
 5. **Cache: done** — fail-open `RedisCache`, terminal-only (§3.9).

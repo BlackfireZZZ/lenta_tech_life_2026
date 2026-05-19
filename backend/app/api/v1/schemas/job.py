@@ -90,6 +90,10 @@ class JobResponse(BaseModel):
     # Coarse ML stage (detect | finalize | dedup | done); None in MOCK_MODE
     # and before the first poll. The UI labels the bar from this.
     phase: str | None = None
+    # Place in the single-worker line while non-terminal (videos are
+    # processed one at a time — the rented GPU only fits one). 0 = running
+    # or next up; N>0 = N videos ahead; None = terminal / MOCK_MODE.
+    queue_position: int | None = None
     # All three are set together when the job succeeds. URLs are relative to
     # the gateway origin so the SPA can serve them through its dev proxy.
     result_csv_url: str | None = None

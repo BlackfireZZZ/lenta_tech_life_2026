@@ -15,10 +15,12 @@ off layer-by-layer):
   reviews still work without infra.
 * ``MOCK_MODE=false`` — the real product (docker-compose): jobs persist in
   Postgres; processing runs **out-of-band** (architecture.md §5.3) — the
-  request returns immediately and an asyncio task calls the ML service,
-  polling its ``/progress`` to drive ``JobResponse.progress`` while the
-  (minutes-long) pipeline runs, then persists the verbatim graded CSV and
-  the reconstructed review payload.
+  request returns immediately with a ``queued`` job and a single FIFO
+  worker (``app/jobs_queue.py``) runs them **one at a time** (the rented
+  GPU only fits one clip), polling ML ``/progress`` to drive
+  ``JobResponse.progress``, then persisting the verbatim graded CSV and the
+  reconstructed review payload. While a job waits its turn the response
+  carries ``queue_position`` (how many videos are ahead of it).
 
 The graded CSV is served byte-for-byte as the ML service produced it — the
 gateway never reshapes graded columns.
@@ -26,7 +28,6 @@ gateway never reshapes graded columns.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,9 +46,7 @@ from app.core.logger import logger
 from app.db.models.job import Job as _JobModel
 from app.db.session import session_scope
 from app.jobs_mock import build_csv, build_predictions, generate_tags
-from app.ml.client import ml_client
-from app.ml.schemas import ProcessRequest
-from app.predictions import build_predictions_from_csv
+from app.jobs_queue import job_queue, position_in_queue
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -159,11 +158,7 @@ def _mock_get(job_id: UUID) -> JobResponse:
 # Real path — Postgres + out-of-band ML processing
 # ===========================================================================
 
-# Keep strong refs to background tasks so they are not GC'd mid-run.
-_BG_TASKS: set[asyncio.Task] = set()
-
-
-def _job_response(job) -> JobResponse:
+def _job_response(job, queue_position: int | None = None) -> JobResponse:
     base = f"/api/v1/jobs/{job.id}"
     done = job.status == JobStatus.succeeded.value
     return JobResponse(
@@ -174,6 +169,9 @@ def _job_response(job) -> JobResponse:
         rows=job.rows,
         error=job.error,
         phase=job.phase,
+        # Only meaningful while non-terminal: how many videos the single
+        # worker must finish before this one (0 = running / next up).
+        queue_position=queue_position,
         result_csv_url=f"{base}/result.csv" if done else None,
         predictions_url=f"{base}/predictions" if done else None,
         video_url=f"{base}/video" if done else None,
@@ -182,46 +180,21 @@ def _job_response(job) -> JobResponse:
     )
 
 
-async def _stop(task: asyncio.Task) -> None:
-    """Cancel a task and wait for it to actually unwind (idempotent)."""
-    task.cancel()
-    try:
-        await task
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-        pass
-
-
-async def _poll_progress(job_id: UUID) -> None:
-    """Mirror the ML pipeline's progress into the job row until cancelled.
-
-    Best-effort: a flaky poll never fails the job (the outcome is decided by
-    ``ml_client.process``). Only advances; never marks the job done.
-    """
-    while True:
-        await asyncio.sleep(1.5)
-        snap = await ml_client.get_progress(str(job_id))
-        frac = snap.get("fraction")
-        if frac is None:
-            continue
-        try:
-            value = max(0.0, min(0.99, float(frac)))
-        except (TypeError, ValueError):
-            continue
-        phase = snap.get("phase") or None
-        try:
-            async with session_scope() as s:
-                job = await s.get(_JobModel, job_id)
-                if job is None or job.status != JobStatus.running.value:
-                    return
-                if value > job.progress:
-                    job.progress = value
-                # Phase can change even while the fraction barely moves (the
-                # long finalize/OCR burst) — persist it independently so the
-                # bar's label stays truthful.
-                if phase and phase != job.phase:
-                    job.phase = phase
-        except Exception as exc:  # pragma: no cover - never fatal
-            logger.debug("progress write failed (job=%s): %s", job_id, exc)
+async def _nonterminal_rows(s: AsyncSession) -> list:
+    """The (small) set of queued/running jobs — the input to
+    :func:`position_in_queue`. There is at most one running (single worker)
+    and rarely more than a handful waiting, so this stays cheap."""
+    return (
+        await s.execute(
+            select(
+                _JobModel.id, _JobModel.status, _JobModel.created_at
+            ).where(
+                _JobModel.status.in_(
+                    (JobStatus.queued.value, JobStatus.running.value)
+                )
+            )
+        )
+    ).all()
 
 
 ROTATIONS = {"none", "ccw", "cw"}
@@ -235,69 +208,6 @@ def _norm_rotation(value: str | None) -> str:
     override for sideways footage (e.g. the robot cam mounted 90° CW)."""
     v = (value or "none").strip().lower()
     return v if v in ROTATIONS else "none"
-
-
-async def _process_job(
-    job_id: UUID, video_path: str, filename: str, rotation: str
-) -> None:
-    """Out-of-band worker: run the ML pipeline, persist its result.
-
-    Owns its DB sessions (the request-scoped one is long gone by now).
-    Any failure → the job is marked ``failed`` with the message; it never
-    crashes the server.
-    """
-    async with session_scope() as s:
-        job = await s.get(_JobModel, job_id)
-        if job is None:
-            return
-        job.status = JobStatus.running.value
-        job.progress = 0.0
-
-    poller = asyncio.create_task(_poll_progress(job_id))
-    try:
-        resp = await ml_client.process(
-            ProcessRequest(
-                video_path=video_path,
-                job_id=str(job_id),
-                filename=filename,
-                rotation=rotation,
-            )
-        )
-    except Exception as exc:
-        await _stop(poller)
-        logger.exception("job=%s ML processing failed", job_id)
-        async with session_scope() as s:
-            job = await s.get(_JobModel, job_id)
-            if job is not None:
-                job.status = JobStatus.failed.value
-                job.error = str(exc)[:2000]
-                job.progress = 1.0
-        return
-
-    # Stop the poller *and wait for it to finish* before writing the
-    # terminal state, so it cannot race a stale sub-1.0 progress over the
-    # succeeded row.
-    await _stop(poller)
-
-    base = f"/api/v1/jobs/{job_id}"
-    preds = build_predictions_from_csv(
-        job_id=job_id,
-        filename=filename,
-        csv_text=resp.csv,
-        meta=resp.meta,
-        video_url=f"{base}/video",
-        csv_url=f"{base}/result.csv",
-    )
-    async with session_scope() as s:
-        job = await s.get(_JobModel, job_id)
-        if job is None:
-            return
-        job.status = JobStatus.succeeded.value
-        job.progress = 1.0
-        job.rows = resp.rows
-        job.result_csv = resp.csv
-        job.predictions_json = preds.model_dump_json()
-    logger.info("job=%s succeeded rows=%s", job_id, resp.rows)
 
 
 async def _get_job_or_404(s: AsyncSession, job_id: UUID) -> _JobModel:
@@ -350,7 +260,12 @@ async def list_jobs() -> list[JobResponse]:
                 .limit(100)
             )
         ).scalars().all()
-        return [_job_response(j) for j in rows]
+        # One small query for the queued/running set, reused for every row's
+        # place-in-line (terminal rows → None).
+        pending = await _nonterminal_rows(s)
+        return [
+            _job_response(j, position_in_queue(pending, j.id)) for j in rows
+        ]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=JobResponse)
@@ -423,17 +338,21 @@ async def create_job(
             )
         )
 
-    task = asyncio.create_task(
-        _process_job(job_id, str(video_path), filename, rotation)
-    )
-    _BG_TASKS.add(task)
-    task.add_done_callback(_BG_TASKS.discard)
+    # The `queued` row is committed (the `async with` block above exited);
+    # hand the id to the single FIFO worker. It will not run until every
+    # earlier video finishes — the rented GPU only fits one at a time
+    # (app/jobs_queue.py). The user sees its place in line on the next poll.
+    job_queue.enqueue(job_id)
+
+    async with session_scope() as s:
+        position = position_in_queue(await _nonterminal_rows(s), job_id)
 
     return JobResponse(
         id=job_id,
         status=JobStatus.queued,
         progress=0.0,
         filename=filename,
+        queue_position=position,
         created_at=_now(),
         updated_at=_now(),
     )
@@ -455,11 +374,16 @@ async def get_job(job_id: UUID) -> JobResponse:
 
     async with session_scope() as s:
         job = await _get_job_or_404(s, job_id)
-        resp = _job_response(job)
         terminal = job.status in (
             JobStatus.succeeded.value,
             JobStatus.failed.value,
         )
+        position = (
+            None
+            if terminal
+            else position_in_queue(await _nonterminal_rows(s), job_id)
+        )
+        resp = _job_response(job, position)
     if terminal:
         await cache.set_json(
             key, resp.model_dump(mode="json"), settings.CACHE_DEFAULT_TTL

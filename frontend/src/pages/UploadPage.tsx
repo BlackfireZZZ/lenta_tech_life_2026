@@ -14,6 +14,7 @@ import { jobsApi, type Rotation } from "@/api/jobs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { ServerLimitNote } from "@/components/ServerLimitNote";
 import { cn, formatBytes } from "@/lib/utils";
 
 const STEPS = [
@@ -245,6 +246,10 @@ export default function UploadPage() {
           </Button>
         </div>
       </Card>
+
+      {/* Why a video may wait — a real limit of the cheap rented server,
+          stated up front so the queue screen is no surprise. */}
+      <ServerLimitNote className="mx-auto w-full max-w-2xl" />
 
       {/* How it works */}
       <section className="mx-auto grid w-full max-w-4xl gap-4 sm:grid-cols-3">
