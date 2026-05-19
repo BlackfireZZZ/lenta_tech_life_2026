@@ -140,8 +140,9 @@ async def _poll_progress(job_id: UUID) -> None:
 async def _process_job(job_id: UUID) -> None:
     """Run the ML pipeline for one job and persist its result.
 
-    Keyed by id only: ``video_path``/``filename``/``rotation`` are already on
-    the row (the request that created it is long gone). Owns its DB sessions.
+    Keyed by id only: ``video_path``/``filename``/``rotation``/``mode`` are
+    already on the row (the request that created it is long gone). Owns its
+    DB sessions.
     Any failure → the job is marked ``failed`` with the message; it never
     crashes the worker (the loop catches and moves to the next job too).
     """
@@ -155,6 +156,7 @@ async def _process_job(job_id: UUID) -> None:
         video_path = job.video_path
         filename = job.filename
         rotation = job.rotation
+        mode = job.mode
 
     poller = asyncio.create_task(_poll_progress(job_id))
     try:
@@ -164,6 +166,7 @@ async def _process_job(job_id: UUID) -> None:
                 job_id=str(job_id),
                 filename=filename,
                 rotation=rotation,
+                mode=mode,
             )
         )
     except Exception as exc:

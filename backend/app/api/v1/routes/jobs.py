@@ -210,6 +210,19 @@ def _norm_rotation(value: str | None) -> str:
     return v if v in ROTATIONS else "none"
 
 
+MODES = {"full", "fast"}
+
+
+def _norm_mode(value: str | None) -> str:
+    """Recognition depth from the UI checkbox. Unknown/empty → 'full' (the
+    canonical balanced.yaml behaviour — every tag's top-K sharpest crops go
+    through Qwen3-VL). 'fast' makes the ML service cap that at the single
+    sharpest crop per tag: ~5× fewer (slow) VLM calls, a bit less voting
+    redundancy. Detection/tracking are never cut — they are cheap."""
+    v = (value or "full").strip().lower()
+    return v if v in MODES else "full"
+
+
 async def _get_job_or_404(s: AsyncSession, job_id: UUID) -> _JobModel:
     job = await s.get(_JobModel, job_id)
     if job is None:
@@ -218,16 +231,18 @@ async def _get_job_or_404(s: AsyncSession, job_id: UUID) -> _JobModel:
 
 
 async def _find_cached(
-    s: AsyncSession, content_hash: str, rotation: str
+    s: AsyncSession, content_hash: str, rotation: str, mode: str
 ) -> _JobModel | None:
-    """Newest succeeded job with the same bytes + rotation, complete enough
-    to replay. Rotation is part of the key because it changes detection
-    (and thus the output)."""
+    """Newest succeeded job with the same bytes + rotation + mode, complete
+    enough to replay. Rotation changes detection and mode changes how many
+    crops the VLM votes on — both change the output, so both are part of the
+    key (a fast run must never be served for a full request, or vice versa)."""
     stmt = (
         select(_JobModel)
         .where(
             _JobModel.content_hash == content_hash,
             _JobModel.rotation == rotation,
+            _JobModel.mode == mode,
             _JobModel.status == JobStatus.succeeded.value,
             _JobModel.result_csv.is_not(None),
             _JobModel.predictions_json.is_not(None),
@@ -270,18 +285,21 @@ async def list_jobs() -> list[JobResponse]:
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=JobResponse)
 async def create_job(
-    video: UploadFile, rotation: str = Form("none")
+    video: UploadFile,
+    rotation: str = Form("none"),
+    mode: str = Form("full"),
 ) -> JobResponse:
     if settings.MOCK_MODE:
         return _mock_create(video)
 
     rotation = _norm_rotation(rotation)
+    mode = _norm_mode(mode)
     job_id = uuid4()
     filename, video_path, content_hash = _save_upload(video, job_id)
     base = f"/api/v1/jobs/{job_id}"
 
     async with session_scope() as s:
-        cached = await _find_cached(s, content_hash, rotation)
+        cached = await _find_cached(s, content_hash, rotation, mode)
         if cached is not None:
             # Replay a prior identical run instantly (no pipeline). The new
             # job has its own stored clip, so /video works; we only repoint
@@ -303,6 +321,7 @@ async def create_job(
                     filename=filename,
                     video_path=str(video_path),
                     rotation=rotation,
+                    mode=mode,
                     content_hash=content_hash,
                     rows=cached.rows,
                     result_csv=cached.result_csv,
@@ -310,8 +329,8 @@ async def create_job(
                 )
             )
             logger.info(
-                "job=%s cache HIT (hash=%s… rot=%s) reused job=%s",
-                job_id, content_hash[:12], rotation, cached.id,
+                "job=%s cache HIT (hash=%s… rot=%s mode=%s) reused job=%s",
+                job_id, content_hash[:12], rotation, mode, cached.id,
             )
             return JobResponse(
                 id=job_id,
@@ -334,6 +353,7 @@ async def create_job(
                 filename=filename,
                 video_path=str(video_path),
                 rotation=rotation,
+                mode=mode,
                 content_hash=content_hash,
             )
         )

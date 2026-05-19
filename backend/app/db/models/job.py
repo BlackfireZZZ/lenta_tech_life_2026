@@ -46,10 +46,18 @@ class Job(Base):
     rotation: Mapped[str] = mapped_column(
         String(8), nullable=False, default="none", server_default="none"
     )
-    # sha256 of the uploaded bytes. Together with `rotation` it is the
-    # content-cache key: a re-upload of the same clip + same rotation reuses
-    # a prior succeeded job's result instead of re-running the pipeline
-    # (UI-debug loop without waiting out the full run again).
+    # Recognition depth chosen in the UI: "full" | "fast". "fast" makes the
+    # ML service cap the heavy Qwen3-VL OCR at the single sharpest crop per
+    # tag (vs the config's top-K) — faster, slightly less voting redundancy.
+    # Detection/tracking are unchanged. Part of the content-cache key below
+    # (a fast run ≠ a full run, so they must not cross-serve).
+    mode: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="full", server_default="full"
+    )
+    # sha256 of the uploaded bytes. Together with `rotation` + `mode` it is
+    # the content-cache key: a re-upload of the same clip + same rotation +
+    # same mode reuses a prior succeeded job's result instead of re-running
+    # the pipeline (UI-debug loop without waiting out the full run again).
     content_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )

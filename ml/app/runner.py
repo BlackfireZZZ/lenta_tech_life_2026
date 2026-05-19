@@ -44,6 +44,10 @@ if str(_PIPELINE_SRC) not in sys.path:
 
 _MOCK_CSV = "filename,frame_timestamp,x1,y1,x2,y2,barcode,name,price,...\n"
 
+# "fast" recognition: how many sharpest crops per tag the heavy VLM OCR
+# sees. 1 = just the single best frame per tag (vs balanced.yaml's 5).
+_FAST_TOP_K = 1
+
 
 def _video_meta(video_path: str) -> dict:
     """Raw-clip geometry for the gateway's *non-graded* review overlay.
@@ -370,6 +374,25 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
         cfg = replace(cfg, detector=replace(cfg.detector, frame_rotation=rot))
     LOGGER.info("detector frame_rotation = %s", cfg.detector.frame_rotation)
 
+    # Recognition depth, chosen in the UI ("full" | "fast"). The slow part of
+    # a run is the per-crop Qwen3-VL OCR: balanced.yaml decodes the top-K
+    # sharpest crops *per tag* (K=5) and the aggregator votes across them.
+    # "fast" caps that at the single sharpest crop (K=1) → ~5× fewer VLM
+    # calls, a bit less voting redundancy. Detection/tracking are untouched
+    # (they are cheap — the user explicitly does not want them cut). Unknown
+    # / "full" → no override, the canonical config stands.
+    mode = str(getattr(req, "mode", "full") or "full").strip().lower()
+    if mode == "fast" and cfg.ocr.top_k_crops_per_track > _FAST_TOP_K:
+        from dataclasses import replace
+
+        cfg = replace(
+            cfg, ocr=replace(cfg.ocr, top_k_crops_per_track=_FAST_TOP_K)
+        )
+    LOGGER.info(
+        "recognition mode=%s top_k_crops_per_track=%d",
+        mode, cfg.ocr.top_k_crops_per_track,
+    )
+
     tags = PriceTagPipeline(cfg).run(req.video_path, progress=_on_progress)
 
     # task.md §3.4: the released Lenta CSVs use a bare stem as `filename`.
@@ -396,6 +419,8 @@ def run_pipeline(req: ProcessRequest) -> ProcessResponse:
             "catalog": catalog_status,
             "weights": weights_src,
             "rotation": cfg.detector.frame_rotation,
+            "mode": mode,
+            "top_k_crops_per_track": cfg.ocr.top_k_crops_per_track,
             **_video_meta(req.video_path),
         },
     )

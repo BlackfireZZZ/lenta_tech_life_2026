@@ -9,8 +9,9 @@ import {
   Table2,
   UploadCloud,
   X,
+  Zap,
 } from "lucide-react";
-import { jobsApi, type Rotation } from "@/api/jobs";
+import { jobsApi, type ProcessingMode, type Rotation } from "@/api/jobs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -59,6 +60,10 @@ export default function UploadPage() {
   // changes the stored video, the review playback or the graded CSV
   // coords — only how the detector model sees frames.
   const [rotation, setRotation] = useState<Rotation>("none");
+  // Recognition depth. Default = full (unchecked): the heavy text model
+  // reads several shots per tag and votes. Checked = fast: one shot per
+  // tag, much quicker. Detection is the same in both — it is already fast.
+  const [fast, setFast] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   // Own the object URL for the local preview; revoke when it changes/clears.
@@ -96,7 +101,8 @@ export default function UploadPage() {
     if (!file || submitting) return;
     setSubmitting(true);
     try {
-      const job = await jobsApi.create(file, rotation);
+      const mode: ProcessingMode = fast ? "fast" : "full";
+      const job = await jobsApi.create(file, rotation, mode);
       navigate(`/jobs/${job.id}`);
     } catch (err) {
       setSubmitting(false);
@@ -104,7 +110,7 @@ export default function UploadPage() {
         description: err instanceof Error ? err.message : "Проверьте, что сервер запущен.",
       });
     }
-  }, [file, submitting, navigate, rotation]);
+  }, [file, submitting, navigate, rotation, fast]);
 
   return (
     <div className="flex flex-col gap-12">
@@ -235,15 +241,48 @@ export default function UploadPage() {
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-4 px-4 py-4">
-          <p className="text-caption text-ash-gray">
-            Обработка занимает несколько минут — прогресс будет виден на
-            следующем экране.
-          </p>
-          <Button size="lg" disabled={!file || submitting} onClick={submit}>
-            {submitting ? <Spinner /> : <UploadCloud />}
-            {submitting ? "Запуск…" : "Обработать видео"}
-          </Button>
+        <div className="flex flex-col gap-3 px-4 py-4">
+          {/* Fast vs full recognition. Detection is NOT cut here (it is
+              already fast — the user asked to keep it); only the slow
+              per-tag text recognition runs on fewer shots when fast is on. */}
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-3 rounded-card border px-4 py-3 transition-colors",
+              fast
+                ? "border-chartwell-blue bg-sky-tint/30"
+                : "border-stone-border bg-canvas-fog hover:border-chartwell-blue/60",
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={fast}
+              onChange={(e) => setFast(e.target.checked)}
+              className="mt-0.5 size-4 shrink-0 accent-chartwell-blue"
+            />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5 text-[14px] font-medium text-slate-text">
+                <Zap className="size-4 text-chartwell-blue" /> Быстрый прогон
+              </span>
+              <span className="mt-0.5 block text-caption leading-[1.55] text-ash-gray">
+                Чтение текста с ценников — самая долгая часть. В быстром
+                режиме нейросеть распознаёт каждый ценник по одному лучшему
+                кадру, а не по нескольким: заметно быстрее, точность чуть
+                ниже. Поиск ценников в кадре не меняется — он и так быстрый.
+              </span>
+            </span>
+          </label>
+
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-caption text-ash-gray">
+              {fast
+                ? "Быстрый режим: одна попытка распознавания на ценник."
+                : "Полный режим: несколько кадров на ценник и голосование за точность."}
+            </p>
+            <Button size="lg" disabled={!file || submitting} onClick={submit}>
+              {submitting ? <Spinner /> : <UploadCloud />}
+              {submitting ? "Запуск…" : "Обработать видео"}
+            </Button>
+          </div>
         </div>
       </Card>
 

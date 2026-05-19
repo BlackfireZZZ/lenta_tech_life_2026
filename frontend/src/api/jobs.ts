@@ -13,6 +13,14 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 /** Detector-only frame pre-rotation (never alters stored video / CSV). */
 export type Rotation = "none" | "ccw" | "cw";
 
+/**
+ * Recognition depth. "full" runs the heavy text-recognition model on the
+ * several sharpest shots of each price tag and votes across them; "fast"
+ * uses just the single best shot per tag — markedly quicker, a touch less
+ * robust. Detection is identical either way (it is already fast).
+ */
+export type ProcessingMode = "full" | "fast";
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -65,13 +73,20 @@ export interface JobPredictions {
 export const ABSENT = "нет"; // field not present on the tag (task.md §3.3)
 
 export const jobsApi = {
-  create: async (video: File, rotation: Rotation = "none"): Promise<Job> => {
+  create: async (
+    video: File,
+    rotation: Rotation = "none",
+    mode: ProcessingMode = "full",
+  ): Promise<Job> => {
     const form = new FormData();
     form.append("video", video);
     // Detector-only pre-rotation. The stored video, the review playback and
     // the graded CSV coords always stay in the uploaded orientation — this
     // only steers how the detector model sees frames (backend → ML).
     form.append("rotation", rotation);
+    // Recognition depth: "fast" trades OCR voting redundancy for speed
+    // (one VLM pass per tag instead of several). Backend → ML.
+    form.append("mode", mode);
     return (await apiClient.post<Job>("/api/v1/jobs", form)).data;
   },
 

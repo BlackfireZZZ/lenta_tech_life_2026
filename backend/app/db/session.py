@@ -83,6 +83,8 @@ async def init_models() -> None:
             "CREATE INDEX IF NOT EXISTS ix_jobs_content_hash "
             "ON jobs (content_hash)",
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phase VARCHAR(16)",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
+            "mode VARCHAR(8) NOT NULL DEFAULT 'full'",
         ):
             await conn.execute(text(ddl))
     logger.info("DB schema ready (create_all + additive DDL on %s)", settings.DB_HOST)

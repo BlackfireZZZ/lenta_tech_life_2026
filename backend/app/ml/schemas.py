@@ -28,6 +28,13 @@ class ProcessRequest(BaseModel):
     # detector sees it untouched. The UI rotate button is the per-clip
     # override for sideways footage (e.g. robot cam mounted 90° CW).
     rotation: str = "none"
+    # Recognition depth: "full" | "fast". "full" (default = canonical
+    # balanced.yaml) runs the heavy Qwen3-VL OCR on the top-K sharpest crops
+    # per tag; "fast" caps that at the single sharpest crop (~K× fewer VLM
+    # calls — the slow part). Detection/tracking are unchanged either way
+    # (they are cheap); only OCR redundancy is traded for speed. Unknown
+    # value → "full" (no override; keep the config's behaviour).
+    mode: str = "full"
 
 
 class ProcessResponse(BaseModel):

@@ -328,9 +328,17 @@ serves it unchanged. `ProcessRequest` gained **`filename`** (optional,
 default `""`) — both mirrors updated in lock-step (§5.1 rule 3). It is
 **required for correctness**: the clip is stored on disk as an ASCII-safe
 `source.<ext>`, so without it every graded CSV's `filename` cell would be
-`source` and break GT matching for barcode-less tags. `meta` carries
-non-graded raw-clip geometry (`frame_width/height`, `video_duration_s`)
-the gateway uses to rebuild the review overlay. **The graded contract is
+`source` and break GT matching for barcode-less tags. `ProcessRequest` also
+gained **`rotation`** (`none|ccw|cw`, default `none` — detector-only frame
+pre-rotation) and **`mode`** (`full|fast`, default `full`), both optional
+and in lock-step (§5.1 rule 3). `mode=fast` makes the runner cap the heavy
+Qwen3-VL OCR at the single sharpest crop per tag (vs balanced.yaml's top-K)
+— the slow part is OCR, so this is the speed lever; detection/tracking are
+deliberately untouched. `rotation`+`mode` are part of the gateway's
+content-cache key (a fast run ≠ a full run). `meta` carries non-graded
+raw-clip geometry (`frame_width/height`, `video_duration_s`) plus the
+applied `rotation`/`mode`/`top_k_crops_per_track`, the gateway uses the
+geometry to rebuild the review overlay. **The graded contract is
 `/process` + `/health`** and `ProcessResponse` is **unchanged**.
 `/progress/{job_id}` is **additive and optional**: the gateway MAY poll it
 to fill its own `JobResponse.progress`, but is not required to, and the
@@ -364,7 +372,9 @@ the contract is unchanged.
 `/progress` best-effort (any failure → `{}`, never fails the job).
 `MOCK_MODE=true` still returns the fake CSV so the gateway runs standalone.
 `ml/app/{contract,runner,main}.py` — contract mirror + the **real**
-pipeline bridge: `runner.py` calls
+pipeline bridge: `runner.py` `dataclasses.replace`s the loaded config from
+the request (`rotation` → `detector.frame_rotation`; `mode=fast` →
+`ocr.top_k_crops_per_track=1`) then calls
 `PriceTagPipeline(cfg).run(video, progress=…)` →
 `submission.final_tags_to_csv`, with a guarded mock fallback
 (`ML_MOCK=1`, or pipeline import fails → fake CSV so the monorepo still

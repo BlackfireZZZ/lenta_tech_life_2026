@@ -23,6 +23,12 @@ class ProcessRequest(BaseModel):
     # normal upright phone clip gets clean boxes at "none", garbage at "ccw").
     # The UI rotate button is the per-clip override for sideways footage.
     rotation: str = "none"
+    # Recognition depth: "full" | "fast". "full" (default) runs the heavy
+    # Qwen3-VL OCR on the top-K sharpest crops per tag; "fast" caps it at the
+    # single sharpest crop (~K× fewer VLM calls). Detection/tracking are
+    # unchanged (cheap); only OCR redundancy is traded for speed. Unknown
+    # value → "full". See the backend mirror for the full rationale.
+    mode: str = "full"
 
 
 class ProcessResponse(BaseModel):
