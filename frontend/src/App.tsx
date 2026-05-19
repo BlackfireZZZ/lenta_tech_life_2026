@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 const UploadPage = lazy(() => import("@/pages/UploadPage"));
 const JobPage = lazy(() => import("@/pages/JobPage"));
 const PipelinePage = lazy(() => import("@/pages/PipelinePage"));
+const ExperimentsPage = lazy(() => import("@/pages/ExperimentsPage"));
 
 function PageFallback() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<UploadPage />} />
               <Route path="/pipeline" element={<PipelinePage />} />
+              <Route path="/experiments" element={<ExperimentsPage />} />
               <Route path="/jobs/:id" element={<JobPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

@@ -21,12 +21,12 @@ runtime:
 
 detector:
   backend: yolo
-  model_path: hf://openfoodfacts/price-tag-detection/weights/best.pt
+  model_path: data/checkpoints/detector/best.pt   # fine-tuned, upright-trained (frame_rotation: ccw)
   conf: 0.20
   iou: 0.50
   device: null
   classes: null
-  tracker_yaml: botsort.yaml
+  tracker_yaml: configs/trackers/botsort.yaml
   image_size: 1280
 
 rectifier:

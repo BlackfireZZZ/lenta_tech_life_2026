@@ -1,0 +1,31 @@
+# ByteTrack — FAST FALLBACK only. Tuned for the Lenta robot.
+#
+# IMPORTANT: ByteTrack has NO global motion compensation. On a moving robot
+# camera every pan looks like object motion, so it WILL ID-switch more than
+# BoT-SORT (botsort.yaml). Use this only for the speed-first profile or as a
+# fallback; the primary tracker is configs/trackers/botsort.yaml.
+#
+# Detection thresholds mirror botsort.yaml for the same reasons (see that file
+# for the full scenario rationale). These are reasoned starting points to be
+# validated/swept by the tracker-only measurement harness, not proven optima.
+
+tracker_type: bytetrack
+
+# Start tracks only from confident detections. Same data-driven value as the
+# primary botsort.yaml (see its comment): 0.82 un-sticks ID-gluing across a
+# pan without over-fragmenting. THE dominant lever on this detector/data.
+new_track_thresh: 0.82
+
+# Cleaner first-stage association; keep low-score second-stage recovery so a
+# motion-blur dip does not fragment a track.
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+
+match_thresh: 0.8
+
+# Bridge ~2s occlusion/blur gaps; kept equal to aggregation.track_ttl_frames
+# (60). Without GMC this buffer also carries more ID-switch risk than under
+# BoT-SORT — another reason this profile is fallback-only.
+track_buffer: 60
+
+fuse_score: True

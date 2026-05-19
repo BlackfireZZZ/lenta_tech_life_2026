@@ -216,6 +216,28 @@ For frames where the VLM returns nulls or invalid JSON:
 
 Ship `bytetrack.yaml` and `botsort.yaml` locally (under `projects/price_tag_pipeline/configs/trackers/`) so we tune `track_buffer`, `match_thresh`, `proximity_thresh`, `appearance_thresh`, and CMC method per profile.
 
+> **Status (worktree-tracking, shipped + GPU-tuned).** Both files exist,
+> CMC `sparseOptFlow`, `track_buffer 60` == aggregation TTL, ReID off (tags
+> are one visual template). Latent bug fixed: a bare `tracker_yaml:
+> botsort.yaml` made Ultralytics load its *own* stock config and silently
+> ignore tuning; `detector.resolve_tracker_yaml()` now resolves the project
+> file (all 13 profiles point at it explicitly).
+>
+> **Two GPU-verified findings on the fine-tuned detector + full 5 videos:**
+> (1) *Orientation is the dominant lever.* The robot cam is mounted 90° CW;
+> feeding as-stored landscape fragments tracks catastrophically (26_12-20:
+> 219 tracks / 71 tags, median track 2 frames). `DetectorConfig.rotate=ccw`
+> (default) feeds upright frames → fragmentation gone. (2) That exposed
+> *under*-segmentation (sticky IDs gluing many tags across a pan).
+> `new_track_thresh` is the only knob with effect (`track_buffer`/
+> `match_thresh`/`track_high_thresh` provably inert here, left unchanged);
+> swept to **0.82**, which lands the recall-good motion videos ≈ one track
+> per tag (26_12-20 dup_ratio 0.17→0.92, 49_5 0.15→1.02) without
+> over-fragmenting (0.86 overshoots to 1.1–1.3). Harness/sweep:
+> `scripts/eval_tracking.py`, `scripts/sweep_trackers.py`,
+> `metrics/tracking.py`. Proxy = qual≈n_gt (no per-frame MOT GT). Re-sweep
+> if the detector changes.
+
 ### 4.2 Per-track frame selection
 
 Currently the scaffold runs OCR every N frames per track. Better:
@@ -226,6 +248,15 @@ Currently the scaffold runs OCR every N frames per track. Better:
 
 This decouples field-level correctness — a frame with great product_name but corrupted price still contributes good product_name.
 
+> **Status (worktree-tracking, shipped).** Per-track crop ranking is
+> `0.6·saturating_Tenengrad + 0.15·area + 0.25·det_conf`, multiplied by a
+> **border factor** (1.0→0.4 as the box hugs a frame edge — the tag
+> entering/leaving is blurred + truncated). Tenengrad replaces raw Laplacian
+> *for ranking only* (motion-blur-robust); the pipeline sharpness gate stays
+> Laplacian. The emitted row's bbox/timestamp now come from the
+> best-recognition observation, **not** `state.last_bbox` (which was the tag
+> leaving the frame), fixing no-barcode spatio-temporal GT matching (§3.4).
+
 ### 4.3 Cross-track deduplication (post-aggregation)
 
 Track-ID re-emission is real. After aggregation, run a dedup pass:
@@ -234,6 +265,20 @@ Track-ID re-emission is real. After aggregation, run a dedup pass:
 - Merge connected components; pick the highest-confidence representative.
 
 This protects against ID-switch double counting.
+
+> **Status (worktree-tracking, shipped).** The IoU-first rule above was
+> structurally wrong for a *moving* camera: two fragments of one tag sit at
+> different pixels (IoU≈0), so an IoU gate leaves the duplicate uncollapsed.
+> `dedup_final_tags` is now **content-first**: (1) equal decoded barcode ⇒
+> same physical tag, merged regardless of bbox/time (barcode is the GT primary
+> key, §5); (2) different decoded barcodes ⇒ never merged; (3) otherwise
+> price/name agreement within a **wall-clock-seconds** window
+> (`dedup_time_window_s` — FPS varies and `frame_timestamp` is ms, so a
+> frame-count window meant different durations per video), with IoU a positive
+> (not mandatory) signal; on low IoU it requires *both* price and name to
+> agree (precision guard). Representative prefers a barcode-bearing row. Uses
+> only fields the recognition layer already decoded — no barcode reading here
+> (that is a separate branch).
 
 ---
 

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { to: "/", label: "Загрузить", end: true },
   { to: "/pipeline", label: "Пайплайн", end: false },
+  { to: "/experiments", label: "Эксперименты", end: false },
 ];
 
 // DESIGN "Layout": the nav bar is full-bleed across the top; the main

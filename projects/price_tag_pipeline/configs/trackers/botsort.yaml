@@ -1,0 +1,72 @@
+# BoT-SORT — tuned for the Lenta robot: MOVING camera, STATIONARY tags.
+#
+# Why this file exists: passing a bare "botsort.yaml" makes Ultralytics load
+# its OWN stock defaults and silently ignore tuning. detector.resolve_tracker_yaml
+# resolves project paths so THIS file actually takes effect.
+#
+# Scenario shaping every value below:
+#  - The robot pans laterally along a shelf. A tag enters, crosses the frame,
+#    and exits an edge — once gone it must NOT be re-acquired with the same ID
+#    (a different, near-identical tag may later sit in the same pixel region).
+#  - The dominant failure is a few-frame DETECTION GAP mid-pan (motion blur /
+#    partial occlusion): track lost -> tag re-detected -> NEW id -> duplicate
+#    CSV row. Duplicates are a P0 metric hit (docs/index.md fact 3).
+#  - Tags share one visual template (only the printed text differs), so
+#    appearance ReID would CAUSE identity swaps, not prevent them.
+#
+# These are reasoned STARTING points, not proven optima. The measurement-first
+# phase (tracker-only harness: #tracks / fragmentation / #FinalTags-after-dedup
+# vs #GT-tags) is what validates/sweeps them. See [[verify-dont-assert]].
+
+tracker_type: botsort
+
+# Global motion compensation — THE lever for a moving camera. It models the
+# camera's frame-to-frame motion so a stationary tag keeps a high IoU with its
+# own predicted box instead of being treated as having "moved". Without this,
+# every pan looks like object motion and IDs churn.
+# sparseOptFlow = fast + good for smooth lateral robot motion.
+# Switch to `ecc` only if sparseOptFlow drifts under heavy motion blur (slower).
+gmc_method: sparseOptFlow
+
+# Start a track only from a CONFIDENT detection. THE dominant lever for this
+# data — empirically swept on the fine-tuned detector + upright frames
+# (scripts/sweep_trackers.py + full all-5 eval). Lower values make the tracker
+# "sticky": one ID glues across many tags as the shelf pans (0.6 → a single
+# 1747-frame track on an 89 s clip; dup_ratio ~0.15). Higher un-sticks it;
+# 0.86 overshoots back into fragmentation (dup 1.1–1.3). 0.82 lands the
+# recall-good motion videos almost exactly one-track-per-tag (26_12-20 dup
+# 0.92, 49_5 1.02) at the lowest churn — the data-driven pick. Other knobs
+# (track_buffer/match_thresh/track_high_thresh) were provably inert here, so
+# they keep their reasoned values unchanged. Re-sweep if the detector changes.
+new_track_thresh: 0.82
+
+# First-stage association uses high-confidence detections; raise from 0.25 for
+# cleaner association given our detector's score distribution.
+track_high_thresh: 0.5
+# Keep the ByteTrack-style second stage: low-score boxes still recover a track
+# through a motion-blur dip instead of dropping it (which would fragment IDs).
+track_low_thresh: 0.1
+
+# Association cost gate. With GMC compensating camera motion, a stationary
+# tag's IoU stays high frame-to-frame, so the stock 0.8 is fine.
+match_thresh: 0.8
+
+# Frames a lost track stays alive for re-association. Stock 30 (~1s @30fps) is
+# too short to bridge an occlusion/blur gap during a pan -> fragmentation.
+# 60 bridges ~2s yet is short enough not to resurrect a tag that left frame.
+# Kept equal to aggregation.track_ttl_frames (60) so the tracker's lost-life
+# and the aggregator's finalize-TTL agree — a mismatch is itself a dup source.
+# NOTE: Ultralytics warns larger buffer raises ID-switch risk on moving
+# cameras. 60 is a reasoned middle; this is the #1 knob to sweep in the harness.
+track_buffer: 60
+
+# Fuse detection score into the motion/IoU cost — stabilizes weak detections.
+fuse_score: True
+
+# ReID OFF by design: price tags are one visual template, so an appearance
+# model maximizes similarity across DIFFERENT tags and induces swaps. The two
+# thresholds below are inert while with_reid is False; kept for documentation.
+with_reid: False
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+model: auto

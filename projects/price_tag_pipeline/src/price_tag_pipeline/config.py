@@ -78,6 +78,20 @@ class OCRConfig:
     min_crop_area_px: int
     min_detection_confidence: float
     top_k_crops_per_track: int = 5
+    # Sweep the cheap QR/1D decoders over MORE of the track's best crops than
+    # OCR (>top_k to add anything). <=0 = OFF (default). Benchmarked on the
+    # Lenta footage: NO GT barcode-recall gain (input-bound ~1%, codes barely
+    # decode in motion) while it costs extra decode calls — so off by default
+    # to not waste compute. Raise (e.g. 24) only if a future dataset shows a
+    # win in scripts/eval_code_reading.py.
+    code_decode_top_k: int = 0
+    # Level-2: median-fuse this many of the track's sharpest crops into one
+    # denoised image and decode THAT too (codes only). Benchmarked: also NO
+    # lift on the Lenta footage (motion blur erases the code modules — fusion
+    # can't synthesise unsampled detail). 0 = OFF (default); kept behind the
+    # flag for if capture quality ever improves. See memory
+    # level2-fusion-no-lift-input-bound.
+    code_fuse_frames: int = 0
     vlm_model: str = "PaddlePaddle/PaddleOCR-VL"
     vlm_prompt_path: Optional[str] = None
     paddleocr_lang: str = "ru"
@@ -118,7 +132,8 @@ class AggregationConfig:
     price_fuzzy_tolerance: float = 0.5    # bucket prices within ±0.5 RUB
     name_fuzzy_ratio: float = 0.85        # Levenshtein ratio threshold for name bucketing
     dedup_iou_threshold: float = 0.4
-    dedup_time_window_frames: int = 150
+    dedup_time_window_frames: int = 150  # legacy; superseded by *_s below
+    dedup_time_window_s: float = 8.0     # cross-track dedup window, wall-clock
 
 
 @dataclass(frozen=True)
@@ -216,6 +231,8 @@ def _as_ocr(node: dict[str, Any]) -> OCRConfig:
         min_crop_area_px=int(node["min_crop_area_px"]),
         min_detection_confidence=float(node["min_detection_confidence"]),
         top_k_crops_per_track=int(_opt(node, "top_k_crops_per_track", 5)),
+        code_decode_top_k=int(_opt(node, "code_decode_top_k", 24)),
+        code_fuse_frames=int(_opt(node, "code_fuse_frames", 0)),
         vlm_model=str(_opt(node, "vlm_model", "PaddlePaddle/PaddleOCR-VL")),
         vlm_prompt_path=_opt(node, "vlm_prompt_path"),
         paddleocr_lang=str(_opt(node, "paddleocr_lang", "ru")),
@@ -255,6 +272,7 @@ def _as_aggregation(node: dict[str, Any]) -> AggregationConfig:
         name_fuzzy_ratio=float(_opt(node, "name_fuzzy_ratio", 0.85)),
         dedup_iou_threshold=float(_opt(node, "dedup_iou_threshold", 0.4)),
         dedup_time_window_frames=int(_opt(node, "dedup_time_window_frames", 150)),
+        dedup_time_window_s=float(_opt(node, "dedup_time_window_s", 8.0)),
     )
 
 

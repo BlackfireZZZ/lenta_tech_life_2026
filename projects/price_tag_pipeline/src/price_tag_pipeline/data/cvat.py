@@ -485,10 +485,27 @@ def yolo_txt_to_image_boxes(
 ) -> dict[str, ImageBoxes]:
     """Classic YOLO (one ``<stem>.txt`` of ``cls cx cy w h`` per image).
 
-    Provided for the case the external dataset really is YOLO-txt; needs
-    image sizes, read lazily via OpenCV only for images that have a label.
+    Provided for the case the external dataset really is YOLO-txt. Only image
+    dimensions are needed, so prefer Pillow when available and fall back to
+    the Unicode-safe OpenCV shim.
     """
-    from ..cv_io import imread  # local: keep module import cv2-free
+
+    def image_size(path: Path) -> tuple[int, int] | None:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as im:
+                return im.size
+        except ModuleNotFoundError:
+            from ..cv_io import imread  # local: keep module import cv2-free
+
+            arr = imread(path)
+            if arr is None:
+                return None
+            h, w = arr.shape[:2]
+            return w, h
+        except OSError:
+            return None
 
     labels_dir = labels_dir or images_dir
     out: dict[str, ImageBoxes] = {}
@@ -499,10 +516,10 @@ def yolo_txt_to_image_boxes(
         txt = labels_dir / f"{img.stem}.txt"
         if not txt.exists():
             continue
-        arr = imread(img)
-        if arr is None:
+        size = image_size(img)
+        if size is None:
             continue
-        h, w = arr.shape[:2]
+        w, h = size
         rec = ImageBoxes(name=img.name, width=w, height=h)
         for line in txt.read_text(encoding="utf-8").splitlines():
             p = line.split()
