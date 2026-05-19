@@ -354,7 +354,11 @@ def _norm_extra_field(key: str, value: object) -> object:
         return "нет"
     if key in _BARCODE_KEYS:
         digits = re.sub(r"\D", "", s)
-        return digits if len(digits) >= 6 else None
+        # EAN-8 (8 digits) is the shortest real GTIN — a 6–7 digit read can
+        # be no valid barcode. barcode is the P0 GT-matching key, so a
+        # spurious short value is worse than empty (it mis-keys the match
+        # AND scores 0 on the field). Matches aggregator._tag_barcode.
+        return digits if len(digits) >= 8 else None
     if key == "price_discount" and "%" in s:
         # A percent is discount_amount, not the third promo PRICE. The VLM
         # routinely duplicates "-44%" here; that is never a valid price.

@@ -112,6 +112,15 @@ def test_vlm_json_parse_happy_path():
     assert out.extra_fields["action_code_qr"] == "A123"
 
 
+def test_vlm_barcode_too_short_is_dropped_not_emitted():
+    # A 6–7 digit read can be no valid GTIN (EAN-8 = 8 is the shortest).
+    # As the P0 matching key a spurious short barcode is worse than empty.
+    raw = '{"barcode":"460123","qr_code_barcode":"4601234567890"}'
+    out = _parser().parse_vlm_json(raw, vlm_confidence=0.9)
+    assert "barcode" not in out.extra_fields  # 6 digits → dropped
+    assert out.extra_fields["qr_code_barcode"] == "4601234567890"  # 13 → kept
+
+
 def test_vlm_invalid_json_falls_back_to_text_parser():
     out = _parser().parse_vlm_json("not json — but 99,90 ₽ visible", vlm_confidence=0.7)
     assert out.regular_price == 99.90
