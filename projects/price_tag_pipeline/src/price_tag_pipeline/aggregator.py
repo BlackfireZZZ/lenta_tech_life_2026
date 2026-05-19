@@ -466,8 +466,27 @@ def _price_relation(a: FinalTag, b: FinalTag) -> str:
     return "agree" if seen else "unknown"
 
 
+def _is_absent_name(value: Optional[str]) -> bool:
+    """True when product_name carries NO information about identity.
+
+    `"нет"` is the task's *field-absent* sentinel (price-tag-guide / task
+    §5.3) — it means "this tag has no product name printed", NOT a name two
+    tags share. Treating two `"нет"` (or empty) names as a *match* makes the
+    cross-track dedup fuse every distinct barcode-less, same-price promo tag
+    on a shelf into one row (observed in prod: a whole "59 ₽" promo rail
+    collapsed to ~1 "Ценник"). `_tag_barcode` already excludes the same
+    `(None, "", "нет")` set for barcode identity; the name path must match.
+    """
+    if not value:
+        return True
+    return value.strip().casefold() in ("", "нет")
+
+
 def _name_relation(a: FinalTag, b: FinalTag) -> str:
-    if not a.product_name or not b.product_name:
+    # Empty OR the field-absent sentinel ("нет") is NOT corroborating
+    # evidence that two tags are the same physical tag — it is the *absence*
+    # of a name. Only a real, present name can agree/conflict.
+    if _is_absent_name(a.product_name) or _is_absent_name(b.product_name):
         return "unknown"
     r = _name_ratio(a.product_name.lower(), b.product_name.lower())
     if r >= 0.85:
