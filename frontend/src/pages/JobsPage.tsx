@@ -66,10 +66,10 @@ export default function JobsPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-heading-lg font-medium text-slate-text">
-            Задачи
+            Мои обработки
           </h1>
           <p className="mt-2 text-caption text-ash-gray">
-            Все загруженные видео — вернитесь к любой работе.
+            Все загруженные видео — можно вернуться к любому.
           </p>
         </div>
         <Link to="/">

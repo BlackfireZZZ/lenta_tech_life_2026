@@ -82,7 +82,7 @@ export default function JobPage() {
           timer = setTimeout(tick, POLL_MS);
         }
       } catch {
-        if (alive) setError("Задача не найдена. Возможно, бэкенд перезапустился.");
+        if (alive) setError("Не удалось найти эту обработку — возможно, сервер перезапустился.");
       }
     };
     tick();
@@ -546,8 +546,9 @@ function VideoStage({
         </span>
       </div>
       <p className="text-caption text-steel-gray">
-        Каждая точка — лучший кадр ценника: по нему распознаны данные и
-        взят таймкод. Нажмите, чтобы открыть; тяните дорожку для перемотки.
+        Каждая точка — лучший кадр ценника: именно по нему распознаны данные
+        и взято время в видео. Нажмите, чтобы открыть; тяните дорожку, чтобы
+        перемотать.
       </p>
 
       {/* The cropped tag image. */}
@@ -781,7 +782,7 @@ function Header({
       <a href={csvHref} download>
         <Button size="lg">
           <Download />
-          Скачать CSV
+          Скачать таблицу (CSV)
         </Button>
       </a>
     </div>
@@ -793,9 +794,9 @@ function Header({
 // its own moving stage. Falls back to fraction guesses only when the
 // backend gives no phase (MOCK_MODE / before the first poll).
 const PHASE_LABEL: Record<string, string> = {
-  detect: "Детекция и трекинг ценников…",
-  finalize: "Распознавание ценников нейросетью…",
-  dedup: "Объединение дубликатов…",
+  detect: "Ищем и ведём ценники в кадрах…",
+  finalize: "Распознаём ценники нейросетью…",
+  dedup: "Склеиваем повторы одного ценника…",
   done: "Формируем результат…",
 };
 
@@ -806,10 +807,10 @@ function Processing({ job }: { job: Job | null }) {
       ? "В очереди…"
       : (job.phase && PHASE_LABEL[job.phase]) ||
         (progress < 0.5
-          ? "Детекция ценников в кадрах…"
+          ? "Ищем ценники в кадрах…"
           : progress < 0.9
-            ? "Распознавание полей и штрихкодов…"
-            : "Завершение…");
+            ? "Распознаём поля и штрихкоды…"
+            : "Завершаем…");
   return (
     <div className="grid place-items-center py-24">
       <Card feature className="w-full max-w-md p-8 text-center">
