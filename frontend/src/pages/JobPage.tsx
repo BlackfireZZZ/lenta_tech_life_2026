@@ -251,19 +251,14 @@ function Reviewer({
 
   useEffect(() => {
     if (mode !== "detector" || trace || traceState !== "idle") return;
-    let alive = true;
     setTraceState("loading");
     jobsApi
       .getDetections(id)
       .then((t) => {
-        if (!alive) return;
         setTrace(t);
         setTraceState("ready");
       })
-      .catch(() => alive && setTraceState("error"));
-    return () => {
-      alive = false;
-    };
+      .catch(() => setTraceState("error"));
   }, [mode, trace, traceState, id]);
 
   return (
