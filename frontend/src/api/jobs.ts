@@ -12,6 +12,7 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
 /** Detector-only frame pre-rotation (never alters stored video / CSV). */
 export type Rotation = "none" | "ccw" | "cw";
+export const DEFAULT_ROTATION: Rotation = "ccw";
 
 /**
  * Recognition depth. "full" runs the heavy text-recognition model on the
@@ -75,7 +76,7 @@ export const ABSENT = "нет"; // field not present on the tag (task.md §3.3)
 export const jobsApi = {
   create: async (
     video: File,
-    rotation: Rotation = "none",
+    rotation: Rotation = DEFAULT_ROTATION,
     mode: ProcessingMode = "full",
   ): Promise<Job> => {
     const form = new FormData();

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Aperture,
@@ -9,8 +9,6 @@ import {
   Languages,
   Library,
   ListChecks,
-  Pause,
-  Play,
   QrCode,
   RotateCcw,
   ScanSearch,
@@ -63,41 +61,21 @@ const STAGES: Stage[] = PIPELINE_STAGES_TEXT.map((stage, i) => ({
   icon: STAGE_ICONS[i] ?? FileCheck2,
 }));
 
-const STEP_MS = 1700;
-
 export default function PipelinePage() {
   const [active, setActive] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const last = STAGES.length - 1;
   const pct = (active / last) * 100;
 
-  // Auto-advance while playing; stop at the final stage.
-  useEffect(() => {
-    if (!playing) return;
-    if (active >= last) {
-      setPlaying(false);
-      return;
-    }
-    timer.current = setTimeout(() => setActive((i) => i + 1), STEP_MS);
-    return () => clearTimeout(timer.current);
-  }, [playing, active, last]);
-
-  const onPlay = useCallback(() => {
-    if (active >= last) setActive(0);
-    setPlaying((p) => !p);
-  }, [active, last]);
-
   const reset = useCallback(() => {
-    setPlaying(false);
     setActive(0);
   }, []);
 
   const select = useCallback((i: number) => {
-    setPlaying(false);
     setActive((cur) => (cur === i ? -1 : i)); // click again to collapse
   }, []);
+  const cta = (PIPELINE_PAGE_COPY as { cta?: { reset?: string; resetAria?: string } }).cta;
+  const closing = (PIPELINE_PAGE_COPY as { closing?: { title?: string; text?: string } }).closing;
 
   return (
     <div className="flex flex-col gap-12">
@@ -123,28 +101,13 @@ export default function PipelinePage() {
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Button
-            size="lg"
-            onClick={onPlay}
-            aria-label={PIPELINE_PAGE_COPY.cta.runAria}
-            className="min-w-[220px] shadow-card transition-transform duration-200 hover:-translate-y-0.5"
-          >
-            {playing ? <Pause /> : <Play />}
-            {playing
-              ? PIPELINE_PAGE_COPY.cta.pause
-              : active >= last
-                ? PIPELINE_PAGE_COPY.cta.replay
-                : active <= 0
-                  ? PIPELINE_PAGE_COPY.cta.start
-                  : PIPELINE_PAGE_COPY.cta.resume}
-          </Button>
-          <Button
             variant="ghost"
             size="lg"
             onClick={reset}
-            aria-label={PIPELINE_PAGE_COPY.cta.resetAria}
+            aria-label={cta?.resetAria ?? "Сбросить"}
             className="min-w-[170px]"
           >
-            <RotateCcw /> {PIPELINE_PAGE_COPY.cta.reset}
+            <RotateCcw /> {cta?.reset ?? "Сброс"}
           </Button>
         </div>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
@@ -301,16 +264,18 @@ export default function PipelinePage() {
       </section>
 
       {/* Closing strip */}
-      <section className="mx-auto w-full max-w-3xl">
-        <Card className="flex flex-col items-center gap-2 p-6 text-center">
-          <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
-            {PIPELINE_PAGE_COPY.closing.title}
-          </p>
-          <p className="max-w-xl text-[14px] leading-[1.65] text-ash-gray">
-            {PIPELINE_PAGE_COPY.closing.text}
-          </p>
-        </Card>
-      </section>
+      {closing?.title && closing?.text && (
+        <section className="mx-auto w-full max-w-3xl">
+          <Card className="flex flex-col items-center gap-2 p-6 text-center">
+            <p className="text-caption font-medium uppercase tracking-[0.12em] text-chartwell-blue">
+              {closing.title}
+            </p>
+            <p className="max-w-xl text-[14px] leading-[1.65] text-ash-gray">
+              {closing.text}
+            </p>
+          </Card>
+        </section>
+      )}
     </div>
   );
 }
