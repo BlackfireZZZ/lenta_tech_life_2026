@@ -3,9 +3,9 @@ import { ScanBarcode } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { to: "/", label: "Загрузить", end: true },
-  { to: "/pipeline", label: "Пайплайн", end: false },
-  { to: "/experiments", label: "Эксперименты", end: false },
+  { to: "/", label: "Загрузить видео", end: true },
+  { to: "/pipeline", label: "Как это работает", end: false },
+  { to: "/experiments", label: "Что мы пробовали", end: false },
   { to: "/shelf", label: "Аудит полки", end: false },
 ];
 
