@@ -333,6 +333,26 @@ async def _find_cached(
 # ===========================================================================
 
 
+@router.get("", response_model=list[JobResponse])
+async def list_jobs() -> list[JobResponse]:
+    """Every job, newest first — the user's way back to earlier work.
+    Capped so the list stays cheap; the UI only needs recent history."""
+    if settings.MOCK_MODE:
+        jobs = sorted(
+            _MOCK_JOBS.values(), key=lambda j: j["created_at"], reverse=True
+        )
+        return [JobResponse.model_validate(j) for j in jobs]
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(_JobModel)
+                .order_by(_JobModel.created_at.desc())
+                .limit(100)
+            )
+        ).scalars().all()
+        return [_job_response(j) for j in rows]
+
+
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=JobResponse)
 async def create_job(
     video: UploadFile, rotation: str = Form("none")

@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 // Pages by feature, lazily loaded (architecture.md §4.6). No auth layer —
 // this flow is anonymous (architecture.md §3.8).
 const UploadPage = lazy(() => import("@/pages/UploadPage"));
+const JobsPage = lazy(() => import("@/pages/JobsPage"));
 const JobPage = lazy(() => import("@/pages/JobPage"));
 const PipelinePage = lazy(() => import("@/pages/PipelinePage"));
 const ExperimentsPage = lazy(() => import("@/pages/ExperimentsPage"));
@@ -30,6 +31,7 @@ export default function App() {
               <Route path="/" element={<UploadPage />} />
               <Route path="/pipeline" element={<PipelinePage />} />
               <Route path="/experiments" element={<ExperimentsPage />} />
+              <Route path="/jobs" element={<JobsPage />} />
               <Route path="/jobs/:id" element={<JobPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

@@ -71,6 +71,9 @@ export const jobsApi = {
     return (await apiClient.post<Job>("/api/v1/jobs", form)).data;
   },
 
+  list: async (): Promise<Job[]> =>
+    (await apiClient.get<Job[]>("/api/v1/jobs")).data,
+
   get: async (id: string): Promise<Job> =>
     (await apiClient.get<Job>(`/api/v1/jobs/${id}`)).data,
 
